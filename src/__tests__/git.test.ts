@@ -146,7 +146,29 @@ describe("git worktree management", () => {
     });
   });
 
+  it("fails gracefully when the worktree is already registered", async () => {
+    const worktreePath = join(repo.worktree_base, "gh-127-registered-worktree");
+    await mkdir(repo.worktree_base, { recursive: true });
+    await git(["worktree", "add", "--detach", worktreePath, "main"], repo.main_worktree);
+    await rm(worktreePath, { recursive: true, force: true });
+
+    await expect(
+      createWorktree({
+        repo,
+        workspace_name: "gh-127-registered-worktree",
+        base_branch: "main",
+      }),
+    ).rejects.toMatchObject({
+      name: "GitWorktreeError",
+      code: "WORKTREE_EXISTS",
+    });
+  });
+
   it("fails gracefully when removing a missing worktree", async () => {
+    await mkdir(join(repo.worktree_base, "gh-128-missing-worktree"), {
+      recursive: true,
+    });
+
     await expect(
       removeWorktree({
         repo,
@@ -177,6 +199,22 @@ describe("git worktree management", () => {
     });
   });
 
+  it("rejects a git metadata directory as the main worktree", async () => {
+    await expect(
+      createWorktree({
+        repo: {
+          ...repo,
+          main_worktree: join(repo.main_worktree, ".git"),
+        },
+        workspace_name: "gh-130-git-dir",
+        base_branch: "main",
+      }),
+    ).rejects.toMatchObject({
+      name: "GitWorktreeError",
+      code: "INVALID_MAIN_WORKTREE",
+    });
+  });
+
   it("throws typed errors for invalid workspace names", async () => {
     await expect(
       createWorktree({
@@ -184,6 +222,9 @@ describe("git worktree management", () => {
         workspace_name: "../bad-name",
         base_branch: "main",
       }),
-    ).rejects.toBeInstanceOf(GitWorktreeError);
+    ).rejects.toMatchObject({
+      name: "GitWorktreeError",
+      code: "INVALID_WORKSPACE_NAME",
+    });
   });
 });

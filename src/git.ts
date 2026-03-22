@@ -28,6 +28,7 @@ export interface WorktreeResult {
 type GitWorktreeErrorCode =
   | "MAIN_WORKTREE_MISSING"
   | "INVALID_MAIN_WORKTREE"
+  | "INVALID_WORKSPACE_NAME"
   | "BRANCH_EXISTS"
   | "WORKTREE_EXISTS"
   | "WORKTREE_MISSING"
@@ -110,7 +111,7 @@ function validateWorkspaceName(workspaceName: string): string {
     workspaceName.includes("\\")
   ) {
     throw new GitWorktreeError(
-      "COMMAND_FAILED",
+      "INVALID_WORKSPACE_NAME",
       `Invalid workspace name: ${workspaceName}`,
     );
   }
@@ -127,16 +128,47 @@ async function ensureMainWorktree(mainWorktree: string): Promise<void> {
   }
 
   try {
-    await runGit(["rev-parse", "--is-inside-work-tree"], mainWorktree);
-  } catch (err: unknown) {
-    if (err instanceof GitWorktreeError && err.code === "COMMAND_FAILED") {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["rev-parse", "--is-inside-work-tree"],
+      { cwd: mainWorktree },
+    );
+
+    if (stdout.trim() !== "true") {
       throw new GitWorktreeError(
         "INVALID_MAIN_WORKTREE",
         `Main worktree is not a git repository: ${mainWorktree}`,
       );
     }
+  } catch (err: unknown) {
+    if (err instanceof GitWorktreeError && err.code === "INVALID_MAIN_WORKTREE") {
+      throw err;
+    }
 
-    throw err;
+    throw new GitWorktreeError(
+      "INVALID_MAIN_WORKTREE",
+      `Main worktree is not a git repository: ${mainWorktree}`,
+    );
+  }
+}
+
+async function listRegisteredWorktrees(mainWorktree: string): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["worktree", "list", "--porcelain"],
+      { cwd: mainWorktree },
+    );
+
+    return stdout
+      .split("\n")
+      .filter((line) => line.startsWith("worktree "))
+      .map((line) => line.slice("worktree ".length).trim());
+  } catch (err: unknown) {
+    throw new GitWorktreeError(
+      "COMMAND_FAILED",
+      `Failed to list registered worktrees in ${mainWorktree}\n${formatGitError(err)}`,
+    );
   }
 }
 
@@ -191,7 +223,11 @@ export async function createWorktree(
     );
   }
 
-  if (await pathExists(worktreePath)) {
+  const registeredWorktrees = await listRegisteredWorktrees(mainWorktree);
+  if (
+    registeredWorktrees.includes(worktreePath) ||
+    (await pathExists(worktreePath))
+  ) {
     throw new GitWorktreeError(
       "WORKTREE_EXISTS",
       `Worktree already exists at ${worktreePath}`,
@@ -219,7 +255,8 @@ export async function removeWorktree(
 
   await ensureMainWorktree(mainWorktree);
 
-  if (!(await pathExists(worktreePath))) {
+  const registeredWorktrees = await listRegisteredWorktrees(mainWorktree);
+  if (!registeredWorktrees.includes(worktreePath)) {
     throw new GitWorktreeError(
       "WORKTREE_MISSING",
       `Worktree does not exist at ${worktreePath}`,
