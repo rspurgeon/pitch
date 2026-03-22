@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Formatting Rules
+
+- Markdown files: max 80 characters per line. Wrap prose
+  at word boundaries. Code blocks and tables are exempt
+  when wrapping would reduce readability.
+
 ## What This Is
 
 Pitch is a TypeScript MCP server (stdio transport) that orchestrates local coding agent workspaces. It automates the setup of git worktrees, tmux windows/panes, and coding agent processes (Claude Code, Codex) from a GitHub issue number.
@@ -23,16 +29,17 @@ make build         # Compile TypeScript to dist/
 make clean         # Remove build artifacts
 make start         # Launch the MCP server
 make lint          # Type-check without emitting
+make test          # Run unit tests (vitest)
 ```
-
-No test framework is configured yet. It will be added when the first issue requiring tests is implemented.
 
 ## Tech Stack
 
 - TypeScript (ESM, `"type": "module"`)
 - `@modelcontextprotocol/sdk` — MCP server with stdio transport
-- `zod` — tool parameter schema validation (peer dep of MCP SDK)
+- `zod` — schema validation (config + tool parameters)
+- `yaml` — YAML parsing for config and workspace state files
 - `tsx` — TypeScript execution without build step
+- `vitest` — test framework
 - Entry point: `src/index.ts`
 
 ## Important: stdio Protocol
