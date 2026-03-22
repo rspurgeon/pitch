@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Formatting Rules
+
+- Markdown files: max 80 characters per line. Wrap prose
+  at word boundaries. Code blocks and tables are exempt
+  when wrapping would reduce readability.
+
 ## What This Is
 
 Pitch is a TypeScript MCP server (stdio transport) that orchestrates local coding agent workspaces. It automates the setup of git worktrees, tmux windows/panes, and coding agent processes (Claude Code, Codex) from a GitHub issue number.
