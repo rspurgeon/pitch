@@ -1,8 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { ConfigError, loadConfig } from "./config.js";
+import { ConfigError, loadConfig, type PitchConfig } from "./config.js";
 
-let config;
+let config: PitchConfig;
 try {
   config = await loadConfig();
 } catch (err) {
@@ -12,6 +12,9 @@ try {
   }
   throw err;
 }
+
+// config is used by tool handlers added in later issues
+void config;
 
 const server = new McpServer({
   name: "pitch",

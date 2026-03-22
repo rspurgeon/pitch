@@ -31,11 +31,22 @@ const AgentProfileSchema = z.object({
   env: z.record(z.string(), z.string()).default({}),
 });
 
+const nullToUndefined = (v: unknown) => (v === null ? undefined : v);
+
 export const PitchConfigSchema = z.object({
-  defaults: DefaultsSchema.default({}),
-  repos: z.record(z.string(), RepoConfigSchema).default({}),
-  agents: z.record(z.string(), AgentConfigSchema).default({}),
-  agent_profiles: z.record(z.string(), AgentProfileSchema).default({}),
+  defaults: z.preprocess(nullToUndefined, DefaultsSchema.default({})),
+  repos: z.preprocess(
+    nullToUndefined,
+    z.record(z.string(), RepoConfigSchema).default({}),
+  ),
+  agents: z.preprocess(
+    nullToUndefined,
+    z.record(z.string(), AgentConfigSchema).default({}),
+  ),
+  agent_profiles: z.preprocess(
+    nullToUndefined,
+    z.record(z.string(), AgentProfileSchema).default({}),
+  ),
 });
 
 // --- Types (inferred from Zod) ---

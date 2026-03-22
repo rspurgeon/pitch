@@ -40,6 +40,16 @@ describe("loadConfig", () => {
     });
   });
 
+  describe("null YAML keys", () => {
+    it("treats null-valued keys as defaults", async () => {
+      const config = await loadConfig(fixture("null-keys-config.yaml"));
+      expect(config.defaults.base_branch).toBe("main");
+      expect(config.repos).toEqual({});
+      expect(config.agents).toEqual({});
+      expect(config.agent_profiles).toEqual({});
+    });
+  });
+
   describe("full config parsing", () => {
     it("parses all fields from a complete config", async () => {
       const config = await loadConfig(fixture("full-config.yaml"));
@@ -131,7 +141,9 @@ describe("loadConfig", () => {
         expect.fail("should have thrown");
       } catch (err) {
         expect(err).toBeInstanceOf(ConfigError);
-        expect((err as ConfigError).message).toMatch(/Invalid config/);
+        const message = (err as ConfigError).message;
+        expect(message).toMatch(/Invalid config/);
+        expect(message).toMatch(/defaults\.base_branch/);
       }
     });
   });
