@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -79,6 +79,42 @@ describe("workspace state", () => {
     await expect(
       readWorkspaceRecord("gh-999-missing", workspacesDir),
     ).resolves.toBeNull();
+  });
+
+  it("rejects workspace records with unexpected fields", async () => {
+    const workspace = makeWorkspace();
+    await writeWorkspaceRecord(workspace, workspacesDir);
+
+    const filePath = join(workspacesDir, `${workspace.name}.yaml`);
+    const rawContent = await readFile(filePath, "utf-8");
+    await writeFile(filePath, `${rawContent}unexpected_field: true\n`, "utf-8");
+
+    await expect(
+      readWorkspaceRecord(workspace.name, workspacesDir),
+    ).rejects.toThrow(WorkspaceStateError);
+  });
+
+  it("rejects a workspace file whose record name does not match the filename", async () => {
+    const workspace = makeWorkspace();
+    await writeWorkspaceRecord(workspace, workspacesDir);
+
+    const filePath = join(workspacesDir, `${workspace.name}.yaml`);
+    const rawContent = await readFile(filePath, "utf-8");
+    await writeFile(
+      filePath,
+      rawContent.replace(
+        `name: ${workspace.name}`,
+        "name: gh-999-mismatched-record",
+      ),
+      "utf-8",
+    );
+
+    await expect(
+      readWorkspaceRecord(workspace.name, workspacesDir),
+    ).rejects.toThrow(WorkspaceStateError);
+    await expect(listWorkspaceRecords({}, workspacesDir)).rejects.toThrow(
+      WorkspaceStateError,
+    );
   });
 
   it("lists all workspace records and supports filters", async () => {

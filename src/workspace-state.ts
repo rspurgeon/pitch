@@ -11,6 +11,20 @@ import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
 
+function isSafeWorkspaceName(name: string): boolean {
+  return (
+    name.length > 0 &&
+    name !== "." &&
+    name !== ".." &&
+    !name.includes("/") &&
+    !name.includes("\\")
+  );
+}
+
+const WorkspaceNameSchema = z
+  .string()
+  .refine(isSafeWorkspaceName, { message: "Invalid workspace name" });
+
 const TimestampSchema = z.preprocess(
   (value) => (value instanceof Date ? value.toISOString() : value),
   z.string(),
@@ -23,10 +37,10 @@ export const AgentSessionSchema = z.object({
   id: z.string(),
   started_at: TimestampSchema,
   status: z.string(),
-});
+}).strict();
 
 export const WorkspaceRecordSchema = z.object({
-  name: z.string(),
+  name: WorkspaceNameSchema,
   repo: z.string(),
   issue: z.number().int().positive(),
   branch: z.string(),
@@ -42,12 +56,12 @@ export const WorkspaceRecordSchema = z.object({
   status: WorkspaceStatusSchema,
   created_at: TimestampSchema,
   updated_at: TimestampSchema,
-});
+}).strict();
 
 const ListWorkspacesOptionsSchema = z.object({
   status: z.enum(["active", "closed", "all"]).optional(),
   repo: z.string().optional(),
-});
+}).strict();
 
 export type AgentSession = z.infer<typeof AgentSessionSchema>;
 export type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
@@ -68,13 +82,7 @@ function isNodeError(err: unknown): err is NodeJS.ErrnoException {
 }
 
 function validateWorkspaceName(name: string): string {
-  if (
-    name.length === 0 ||
-    name === "." ||
-    name === ".." ||
-    name.includes("/") ||
-    name.includes("\\")
-  ) {
+  if (!isSafeWorkspaceName(name)) {
     throw new WorkspaceStateError(`Invalid workspace name: ${name}`);
   }
 
@@ -94,6 +102,7 @@ function formatZodIssues(error: z.ZodError): string {
 function parseWorkspaceRecord(
   rawContent: string,
   filePath: string,
+  expectedName?: string,
 ): WorkspaceRecord {
   let parsed: unknown;
 
@@ -112,7 +121,14 @@ function parseWorkspaceRecord(
     );
   }
 
-  return result.data;
+  const workspace = result.data;
+  if (expectedName !== undefined && workspace.name !== expectedName) {
+    throw new WorkspaceStateError(
+      `Workspace state name mismatch in ${filePath}: expected ${expectedName}, found ${workspace.name}`,
+    );
+  }
+
+  return workspace;
 }
 
 function validateListOptions(
@@ -180,7 +196,8 @@ export async function readWorkspaceRecord(
   name: string,
   workspacesDir: string = DEFAULT_WORKSPACES_DIR,
 ): Promise<WorkspaceRecord | null> {
-  const filePath = workspaceStatePath(name, workspacesDir);
+  const validatedName = validateWorkspaceName(name);
+  const filePath = workspaceStatePath(validatedName, workspacesDir);
   let rawContent: string;
 
   try {
@@ -195,7 +212,7 @@ export async function readWorkspaceRecord(
     );
   }
 
-  return parseWorkspaceRecord(rawContent, filePath);
+  return parseWorkspaceRecord(rawContent, filePath, validatedName);
 }
 
 export async function listWorkspaceRecords(
@@ -220,9 +237,19 @@ export async function listWorkspaceRecords(
 
   const workspaces = await Promise.all(
     yamlFiles.map(async (entry) => {
+      const expectedName = entry.name.slice(0, -".yaml".length);
       const filePath = join(workspacesDir, entry.name);
-      const rawContent = await readFile(filePath, "utf-8");
-      return parseWorkspaceRecord(rawContent, filePath);
+      let rawContent: string;
+
+      try {
+        rawContent = await readFile(filePath, "utf-8");
+      } catch (err: unknown) {
+        throw new WorkspaceStateError(
+          `Failed to read workspace state at ${filePath}: ${String(err)}`,
+        );
+      }
+
+      return parseWorkspaceRecord(rawContent, filePath, expectedName);
     }),
   );
 
