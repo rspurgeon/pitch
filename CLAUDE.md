@@ -6,17 +6,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Pitch is a TypeScript MCP server (stdio transport) that orchestrates local coding agent workspaces. It automates the setup of git worktrees, tmux windows/panes, and coding agent processes (Claude Code, Codex) from a GitHub issue number.
 
-The project is being built according to the MVP issue sequence in `docs/design.md`. That document is the authoritative source for architecture decisions, data schemas, and acceptance criteria.
+The project is being built according to the MVP issue sequence tracked in [GitHub Issues](https://github.com/rspurgeon/pitch/issues). `docs/design.md` is the authoritative source for architecture decisions, data schemas, and acceptance criteria.
+
+## Prerequisites
+
+- [mise](https://mise.jdx.dev/) — manages required tool versions (see `.mise.toml`)
+- Run `mise install` to install the correct Node.js version
 
 ## Commands
 
+A `Makefile` provides common developer tasks:
+
 ```bash
-npm start          # Launch the MCP server
-npm test           # Run all tests
-npm run build      # Compile TypeScript to dist/
+make install       # Install npm dependencies
+make build         # Compile TypeScript to dist/
+make clean         # Remove build artifacts
+make start         # Launch the MCP server
+make lint          # Type-check without emitting
 ```
 
-The project uses `tsx` for running TypeScript directly without a compile step during development.
+No test framework is configured yet. It will be added when the first issue requiring tests is implemented.
+
+## Tech Stack
+
+- TypeScript (ESM, `"type": "module"`)
+- `@modelcontextprotocol/sdk` — MCP server with stdio transport
+- `zod` — tool parameter schema validation (peer dep of MCP SDK)
+- `tsx` — TypeScript execution without build step
+- Entry point: `src/index.ts`
+
+## Important: stdio Protocol
+
+The MCP server communicates over stdout via JSON-RPC. **Never use `console.log`** in server code — it corrupts the protocol stream. Use `console.error` (stderr) for any diagnostic output.
 
 ## Architecture
 
