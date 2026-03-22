@@ -23,16 +23,17 @@ make build         # Compile TypeScript to dist/
 make clean         # Remove build artifacts
 make start         # Launch the MCP server
 make lint          # Type-check without emitting
+make test          # Run unit tests (vitest)
 ```
-
-No test framework is configured yet. It will be added when the first issue requiring tests is implemented.
 
 ## Tech Stack
 
 - TypeScript (ESM, `"type": "module"`)
 - `@modelcontextprotocol/sdk` — MCP server with stdio transport
-- `zod` — tool parameter schema validation (peer dep of MCP SDK)
+- `zod` — schema validation (config + tool parameters)
+- `yaml` — YAML parsing for config and workspace state files
 - `tsx` — TypeScript execution without build step
+- `vitest` — test framework
 - Entry point: `src/index.ts`
 
 ## Important: stdio Protocol

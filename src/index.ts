@@ -1,5 +1,17 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { ConfigError, loadConfig } from "./config.js";
+
+let config;
+try {
+  config = await loadConfig();
+} catch (err) {
+  if (err instanceof ConfigError) {
+    console.error(`pitch: ${err.message}`);
+    process.exit(1);
+  }
+  throw err;
+}
 
 const server = new McpServer({
   name: "pitch",

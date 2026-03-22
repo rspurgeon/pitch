@@ -1,0 +1,43 @@
+defaults:
+  repo: kong/kongctl
+  agent: codex
+  base_branch: main
+
+repos:
+  kong/kongctl:
+    main_worktree: ~/dev/kong/kongctl
+    worktree_base: ~/.local/share/worktrees/kong/kongctl
+    tmux_session: kongctl
+
+agents:
+  codex:
+    runtime: native
+    defaults:
+      model: gpt-5.4
+      sandbox: workspace-write
+      approval: on-request
+    env:
+      CODEX_HOME: ~/.codex
+
+  claude:
+    runtime: docker
+    defaults:
+      model: sonnet
+      permission_mode: dangerously-skip-permissions
+    env:
+      CLAUDE_CONFIG_DIR: ~/.claude
+
+agent_profiles:
+  claude-personal:
+    agent: claude
+    runtime: native
+    env:
+      CLAUDE_CONFIG_DIR: ~/.claude-personal
+    defaults:
+      model: opus
+
+  codex-api:
+    agent: codex
+    env:
+      CODEX_HOME: ~/.codex-api
+      OPENAI_API_KEY: ${OPENAI_API_KEY_SECONDARY}

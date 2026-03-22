@@ -1,4 +1,4 @@
-.PHONY: install build clean start lint inspect ping tools-list
+.PHONY: install build clean start lint test inspect ping tools-list
 
 install: ## Install dependencies
 	npm install
@@ -14,6 +14,9 @@ start: ## Launch the MCP server
 
 lint: ## Type-check without emitting
 	npx tsc --noEmit
+
+test: ## Run unit tests
+	npx vitest run
 
 inspect: ## Open the MCP Inspector (interactive web UI for testing tools)
 	npx @modelcontextprotocol/inspector npx tsx src/index.ts

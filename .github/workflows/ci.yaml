@@ -13,3 +13,4 @@ jobs:
       - uses: jdx/mise-action@v2
       - run: npm ci
       - run: make lint
+      - run: make test
