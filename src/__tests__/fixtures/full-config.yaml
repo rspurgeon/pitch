@@ -8,22 +8,37 @@ repos:
     main_worktree: ~/dev/kong/kongctl
     worktree_base: ~/.local/share/worktrees/kong/kongctl
     tmux_session: kongctl
+    agent_overrides:
+      codex:
+        args:
+          - --add-dir
+          - /home/rspurgeon/.config/kongctl
+          - --add-dir
+          - /home/rspurgeon/go
+      claude-personal:
+        env:
+          CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1"
 
 agents:
   codex:
     runtime: native
-    defaults:
-      model: gpt-5.4
-      sandbox: workspace-write
-      approval: on-request
+    args:
+      - --model
+      - gpt-5.4
+      - --sandbox
+      - workspace-write
+      - --ask-for-approval
+      - on-request
     env:
       CODEX_HOME: ~/.codex
 
   claude:
     runtime: docker
-    defaults:
-      model: sonnet
-      permission_mode: dangerously-skip-permissions
+    args:
+      - --model
+      - sonnet
+      - --permission-mode
+      - bypassPermissions
     env:
       CLAUDE_CONFIG_DIR: ~/.claude
 
@@ -33,8 +48,9 @@ agent_profiles:
     runtime: native
     env:
       CLAUDE_CONFIG_DIR: ~/.claude-personal
-    defaults:
-      model: opus
+    args:
+      - --model
+      - opus
 
   codex-api:
     agent: codex

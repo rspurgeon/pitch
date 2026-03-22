@@ -62,24 +62,48 @@ describe("loadConfig", () => {
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
+        agent_overrides: {
+          codex: {
+            runtime: undefined,
+            args: [
+              "--add-dir",
+              "/home/rspurgeon/.config/kongctl",
+              "--add-dir",
+              "/home/rspurgeon/go",
+            ],
+            env: {},
+          },
+          "claude-personal": {
+            runtime: undefined,
+            args: [],
+            env: {
+              CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1",
+            },
+          },
+        },
       });
 
       expect(config.agents["codex"]).toEqual({
         runtime: "native",
-        defaults: {
-          model: "gpt-5.4",
-          sandbox: "workspace-write",
-          approval: "on-request",
-        },
+        args: [
+          "--model",
+          "gpt-5.4",
+          "--sandbox",
+          "workspace-write",
+          "--ask-for-approval",
+          "on-request",
+        ],
         env: { CODEX_HOME: "~/.codex" },
       });
 
       expect(config.agents["claude"]).toEqual({
         runtime: "docker",
-        defaults: {
-          model: "sonnet",
-          permission_mode: "dangerously-skip-permissions",
-        },
+        args: [
+          "--model",
+          "sonnet",
+          "--permission-mode",
+          "bypassPermissions",
+        ],
         env: { CLAUDE_CONFIG_DIR: "~/.claude" },
       });
 
@@ -87,7 +111,7 @@ describe("loadConfig", () => {
         agent: "claude",
         runtime: "native",
         env: { CLAUDE_CONFIG_DIR: "~/.claude-personal" },
-        defaults: { model: "opus" },
+        args: ["--model", "opus"],
       });
 
       expect(config.agent_profiles["codex-api"]).toEqual({
@@ -97,7 +121,7 @@ describe("loadConfig", () => {
           CODEX_HOME: "~/.codex-api",
           OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
         },
-        defaults: {},
+        args: [],
       });
     });
 
@@ -125,6 +149,14 @@ describe("loadConfig", () => {
       expect(config.repos).toEqual({});
       expect(config.agents).toEqual({});
       expect(config.agent_profiles).toEqual({});
+    });
+  });
+
+  describe("unsupported config shapes", () => {
+    it("rejects agent defaults maps in favor of args arrays", async () => {
+      await expect(
+        loadConfig(fixture("unsupported-agent-defaults-config.yaml")),
+      ).rejects.toThrow(ConfigError);
     });
   });
 

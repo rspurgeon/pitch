@@ -15,9 +15,10 @@ export interface AgentLauncher {
 export interface BuildStartCommandInput {
   config: PitchConfig;
   agent: string;
+  repo?: string;
   workspace_name: string;
   worktree_path: string;
-  overrides?: Record<string, string>;
+  override_args?: string[];
   runtime?: SupportedRuntime;
   session_id?: string;
 }
@@ -25,6 +26,7 @@ export interface BuildStartCommandInput {
 export interface BuildResumeCommandInput {
   config: PitchConfig;
   agent: string;
+  repo?: string;
   session_id: string;
   runtime?: SupportedRuntime;
 }
@@ -41,7 +43,7 @@ export interface BuiltAgentCommand {
 interface ResolvedAgentTarget {
   agent_type: SupportedAgentType;
   runtime: SupportedRuntime;
-  defaults: Record<string, string>;
+  args: string[];
   env: Record<string, string>;
   profile_name?: string;
 }
@@ -67,18 +69,46 @@ function isSupportedAgentType(agent: string): agent is SupportedAgentType {
   return agent === "claude" || agent === "codex";
 }
 
-function toFlagArgs(defaults: Record<string, string>): string[] {
-  return Object.entries(defaults).flatMap(([key, value]) => [`--${key}`, value]);
+function withoutReservedArgs(
+  args: string[],
+  reservedFlags: string[],
+): string[] {
+  const reservedFlagSet = new Set(reservedFlags);
+  const filtered: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    const equalSignIndex = arg.indexOf("=");
+    const normalizedFlag =
+      equalSignIndex === -1 ? arg : arg.slice(0, equalSignIndex);
+
+    if (reservedFlagSet.has(normalizedFlag)) {
+      if (equalSignIndex === -1) {
+        index += 1;
+      }
+      continue;
+    }
+
+    filtered.push(arg);
+  }
+
+  return filtered;
 }
 
-function withoutReservedKeys(
-  defaults: Record<string, string>,
-  reservedKeys: string[],
-): Record<string, string> {
-  const reservedKeySet = new Set(reservedKeys);
-  return Object.fromEntries(
-    Object.entries(defaults).filter(([key]) => !reservedKeySet.has(key)),
-  );
+function resolveRepoOverrides(
+  config: PitchConfig,
+  repo: string | undefined,
+): Record<string, PitchConfig["repos"][string]["agent_overrides"][string]> {
+  if (repo === undefined) {
+    return {};
+  }
+
+  const repoConfig = config.repos[repo];
+  if (repoConfig === undefined) {
+    throw new AgentLauncherError(`Repo is not configured: ${repo}`);
+  }
+
+  return repoConfig.agent_overrides;
 }
 
 function wrapRuntimeCommand(
@@ -103,11 +133,19 @@ function wrapRuntimeCommand(
 function resolveAgentTarget(
   config: PitchConfig,
   agent: string,
+  repo: string | undefined,
   runtimeOverride?: SupportedRuntime,
 ): ResolvedAgentTarget {
+  const repoOverrides = resolveRepoOverrides(config, repo);
   const profile = config.agent_profiles[agent];
   if (profile !== undefined) {
-    return resolveProfileTarget(config, agent, profile, runtimeOverride);
+    return resolveProfileTarget(
+      config,
+      agent,
+      profile,
+      repoOverrides,
+      runtimeOverride,
+    );
   }
 
   if (!isSupportedAgentType(agent)) {
@@ -119,11 +157,16 @@ function resolveAgentTarget(
     throw new AgentLauncherError(`Agent is not configured: ${agent}`);
   }
 
+  const repoOverride = repoOverrides[agent];
+
   return {
     agent_type: agent,
-    runtime: runtimeOverride ?? agentConfig.runtime,
-    defaults: { ...agentConfig.defaults },
-    env: { ...agentConfig.env },
+    runtime: runtimeOverride ?? repoOverride?.runtime ?? agentConfig.runtime,
+    args: [...agentConfig.args, ...(repoOverride?.args ?? [])],
+    env: {
+      ...agentConfig.env,
+      ...(repoOverride?.env ?? {}),
+    },
   };
 }
 
@@ -131,6 +174,7 @@ function resolveProfileTarget(
   config: PitchConfig,
   profileName: string,
   profile: AgentProfile,
+  repoOverrides: Record<string, PitchConfig["repos"][string]["agent_overrides"][string]>,
   runtimeOverride?: SupportedRuntime,
 ): ResolvedAgentTarget {
   if (!isSupportedAgentType(profile.agent)) {
@@ -146,16 +190,28 @@ function resolveProfileTarget(
     );
   }
 
+  const baseRepoOverride = repoOverrides[profile.agent];
+  const profileRepoOverride = repoOverrides[profileName];
+
   return {
     agent_type: profile.agent,
-    runtime: runtimeOverride ?? profile.runtime ?? baseAgent.runtime,
-    defaults: {
-      ...baseAgent.defaults,
-      ...profile.defaults,
-    },
+    runtime:
+      runtimeOverride ??
+      profileRepoOverride?.runtime ??
+      baseRepoOverride?.runtime ??
+      profile.runtime ??
+      baseAgent.runtime,
+    args: [
+      ...baseAgent.args,
+      ...profile.args,
+      ...(baseRepoOverride?.args ?? []),
+      ...(profileRepoOverride?.args ?? []),
+    ],
     env: {
       ...baseAgent.env,
       ...profile.env,
+      ...(baseRepoOverride?.env ?? {}),
+      ...(profileRepoOverride?.env ?? {}),
     },
     profile_name: profileName,
   };
@@ -166,21 +222,16 @@ function buildClaudeStartCommand(
   resolved: ResolvedAgentTarget,
 ): BuiltAgentCommand {
   const sessionId = input.session_id ?? randomUUID();
-  const layeredDefaults = withoutReservedKeys(
-    {
-      ...resolved.defaults,
-      ...(input.overrides ?? {}),
-    },
-    ["session-id", "cd", "name"],
+  const layeredArgs = withoutReservedArgs(
+    [...resolved.args, ...(input.override_args ?? [])],
+    ["--session-id", "--cd", "--name", "-n"],
   );
 
   const command = [
     AGENT_BINARIES.claude,
-    ...toFlagArgs(layeredDefaults),
+    ...layeredArgs,
     "--session-id",
     sessionId,
-    "--cd",
-    input.worktree_path,
     "--name",
     input.workspace_name,
   ];
@@ -228,17 +279,14 @@ function buildCodexStartCommand(
   input: BuildStartCommandInput,
   resolved: ResolvedAgentTarget,
 ): BuiltAgentCommand {
-  const layeredDefaults = withoutReservedKeys(
-    {
-      ...resolved.defaults,
-      ...(input.overrides ?? {}),
-    },
-    ["cd"],
+  const layeredArgs = withoutReservedArgs(
+    [...resolved.args, ...(input.override_args ?? [])],
+    ["--cd", "-C"],
   );
 
   const command = [
     AGENT_BINARIES.codex,
-    ...toFlagArgs(layeredDefaults),
+    ...layeredArgs,
     "--cd",
     input.worktree_path,
   ];
@@ -283,7 +331,12 @@ function buildCodexResumeCommand(
 
 class ClaudeLauncher implements AgentLauncher {
   buildStartCommand(input: BuildStartCommandInput): BuiltAgentCommand {
-    const resolved = resolveAgentTarget(input.config, input.agent, input.runtime);
+    const resolved = resolveAgentTarget(
+      input.config,
+      input.agent,
+      input.repo,
+      input.runtime,
+    );
     if (resolved.agent_type !== "claude") {
       throw new AgentLauncherError(
         `Claude launcher cannot build commands for ${resolved.agent_type}`,
@@ -294,7 +347,12 @@ class ClaudeLauncher implements AgentLauncher {
   }
 
   buildResumeCommand(input: BuildResumeCommandInput): BuiltAgentCommand {
-    const resolved = resolveAgentTarget(input.config, input.agent, input.runtime);
+    const resolved = resolveAgentTarget(
+      input.config,
+      input.agent,
+      input.repo,
+      input.runtime,
+    );
     if (resolved.agent_type !== "claude") {
       throw new AgentLauncherError(
         `Claude launcher cannot build commands for ${resolved.agent_type}`,
@@ -307,7 +365,12 @@ class ClaudeLauncher implements AgentLauncher {
 
 class CodexLauncher implements AgentLauncher {
   buildStartCommand(input: BuildStartCommandInput): BuiltAgentCommand {
-    const resolved = resolveAgentTarget(input.config, input.agent, input.runtime);
+    const resolved = resolveAgentTarget(
+      input.config,
+      input.agent,
+      input.repo,
+      input.runtime,
+    );
     if (resolved.agent_type !== "codex") {
       throw new AgentLauncherError(
         `Codex launcher cannot build commands for ${resolved.agent_type}`,
@@ -318,7 +381,12 @@ class CodexLauncher implements AgentLauncher {
   }
 
   buildResumeCommand(input: BuildResumeCommandInput): BuiltAgentCommand {
-    const resolved = resolveAgentTarget(input.config, input.agent, input.runtime);
+    const resolved = resolveAgentTarget(
+      input.config,
+      input.agent,
+      input.repo,
+      input.runtime,
+    );
     if (resolved.agent_type !== "codex") {
       throw new AgentLauncherError(
         `Codex launcher cannot build commands for ${resolved.agent_type}`,
@@ -343,13 +411,23 @@ export function getAgentLauncher(agentType: SupportedAgentType): AgentLauncher {
 export function buildAgentStartCommand(
   input: BuildStartCommandInput,
 ): BuiltAgentCommand {
-  const resolved = resolveAgentTarget(input.config, input.agent, input.runtime);
+  const resolved = resolveAgentTarget(
+    input.config,
+    input.agent,
+    input.repo,
+    input.runtime,
+  );
   return getAgentLauncher(resolved.agent_type).buildStartCommand(input);
 }
 
 export function buildAgentResumeCommand(
   input: BuildResumeCommandInput,
 ): BuiltAgentCommand {
-  const resolved = resolveAgentTarget(input.config, input.agent, input.runtime);
+  const resolved = resolveAgentTarget(
+    input.config,
+    input.agent,
+    input.repo,
+    input.runtime,
+  );
   return getAgentLauncher(resolved.agent_type).buildResumeCommand(input);
 }

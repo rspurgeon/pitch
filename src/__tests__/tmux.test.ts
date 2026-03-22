@@ -10,6 +10,7 @@ import {
   createTmuxWindow,
   ensureTmuxSession,
   isTmuxAvailable,
+  killTmuxWindow,
   sendKeysToPane,
   tmuxSessionExists,
   tmuxWindowExists,
@@ -117,6 +118,16 @@ async function capturePane(
   options: TmuxClientOptions,
 ): Promise<string> {
   return runTmux(["capture-pane", "-p", "-t", paneId], options);
+}
+
+async function activePaneId(
+  windowTarget: string,
+  options: TmuxClientOptions,
+): Promise<string> {
+  return runTmux(
+    ["display-message", "-p", "-t", windowTarget, "#{pane_id}"],
+    options,
+  );
 }
 
 async function ensureIsolatedTestSession(
@@ -256,6 +267,40 @@ tmuxDescribe("tmux management", () => {
     });
   });
 
+  it("kills an existing tmux window", async () => {
+    await ensureIsolatedTestSession(sessionName, worktreePath, options);
+    await createTmuxWindow(
+      {
+        session_name: sessionName,
+        window_name: windowName,
+        start_directory: worktreePath,
+      },
+      options,
+    );
+
+    await expect(
+      killTmuxWindow(
+        {
+          session_name: sessionName,
+          window_name: windowName,
+        },
+        options,
+      ),
+    ).resolves.toBe(true);
+    await expect(tmuxWindowExists(sessionName, windowName, options)).resolves.toBe(
+      false,
+    );
+    await expect(
+      killTmuxWindow(
+        {
+          session_name: sessionName,
+          window_name: windowName,
+        },
+        options,
+      ),
+    ).resolves.toBe(false);
+  });
+
   it("creates the three-pane layout and cds each pane to the worktree path", async () => {
     await ensureIsolatedTestSession(sessionName, worktreePath, options);
     const otherStartDirectory = join(tempRoot, "other-start-dir");
@@ -318,6 +363,9 @@ tmuxDescribe("tmux management", () => {
         Object.values(panes).map((paneId) => paneCurrentPath(paneId, options)),
       ),
     ).resolves.toEqual([worktreePath, worktreePath, worktreePath]);
+    await expect(activePaneId(layout.window_target, options)).resolves.toBe(
+      panes.agent_pane_id,
+    );
   });
 
   it("sends a command to a specific pane", async () => {
