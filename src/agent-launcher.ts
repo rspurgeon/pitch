@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import type {
-  AgentConfig,
   AgentProfile,
   PitchConfig,
 } from "./config.js";
@@ -27,7 +26,6 @@ export interface BuildResumeCommandInput {
   config: PitchConfig;
   agent: string;
   session_id: string;
-  overrides?: Record<string, string>;
   runtime?: SupportedRuntime;
 }
 
@@ -73,6 +71,16 @@ function toFlagArgs(defaults: Record<string, string>): string[] {
   return Object.entries(defaults).flatMap(([key, value]) => [`--${key}`, value]);
 }
 
+function withoutReservedKeys(
+  defaults: Record<string, string>,
+  reservedKeys: string[],
+): Record<string, string> {
+  const reservedKeySet = new Set(reservedKeys);
+  return Object.fromEntries(
+    Object.entries(defaults).filter(([key]) => !reservedKeySet.has(key)),
+  );
+}
+
 function wrapRuntimeCommand(
   agentType: SupportedAgentType,
   runtime: SupportedRuntime,
@@ -87,7 +95,7 @@ function wrapRuntimeCommand(
   }
 
   return {
-    command: ["agent-en-place", agentType, ...command],
+    command: ["agent-en-place", agentType, ...command.slice(1)],
     env,
   };
 }
@@ -158,20 +166,23 @@ function buildClaudeStartCommand(
   resolved: ResolvedAgentTarget,
 ): BuiltAgentCommand {
   const sessionId = input.session_id ?? randomUUID();
-  const layeredDefaults = {
-    ...resolved.defaults,
-    ...(input.overrides ?? {}),
-  };
+  const layeredDefaults = withoutReservedKeys(
+    {
+      ...resolved.defaults,
+      ...(input.overrides ?? {}),
+    },
+    ["session-id", "cd", "name"],
+  );
 
   const command = [
     AGENT_BINARIES.claude,
+    ...toFlagArgs(layeredDefaults),
     "--session-id",
     sessionId,
     "--cd",
     input.worktree_path,
     "--name",
     input.workspace_name,
-    ...toFlagArgs(layeredDefaults),
   ];
 
   const runtimeCommand = wrapRuntimeCommand(
@@ -217,16 +228,19 @@ function buildCodexStartCommand(
   input: BuildStartCommandInput,
   resolved: ResolvedAgentTarget,
 ): BuiltAgentCommand {
-  const layeredDefaults = {
-    ...resolved.defaults,
-    ...(input.overrides ?? {}),
-  };
+  const layeredDefaults = withoutReservedKeys(
+    {
+      ...resolved.defaults,
+      ...(input.overrides ?? {}),
+    },
+    ["cd"],
+  );
 
   const command = [
     AGENT_BINARIES.codex,
+    ...toFlagArgs(layeredDefaults),
     "--cd",
     input.worktree_path,
-    ...toFlagArgs(layeredDefaults),
   ];
 
   const runtimeCommand = wrapRuntimeCommand(

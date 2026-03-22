@@ -81,8 +81,12 @@ describe("agent launcher", () => {
 
     expect(command.agent_type).toBe("claude");
     expect(command.runtime).toBe("native");
-    expect(command.command.slice(0, 7)).toEqual([
+    expect(command.command).toEqual([
       "claude",
+      "--model",
+      "sonnet",
+      "--permission_mode",
+      "dangerously-skip-permissions",
       "--session-id",
       command.session_id!,
       "--cd",
@@ -90,8 +94,6 @@ describe("agent launcher", () => {
       "--name",
       "gh-565-fix-validation",
     ]);
-    expect(command.command).toContain("--model");
-    expect(command.command).toContain("sonnet");
     expect(command.env).toEqual({
       CLAUDE_CONFIG_DIR: "~/.claude",
     });
@@ -108,6 +110,7 @@ describe("agent launcher", () => {
       overrides: {
         model: "gpt-5.5",
         approval: "never",
+        cd: "/tmp/ignored",
       },
     });
 
@@ -115,14 +118,14 @@ describe("agent launcher", () => {
     expect(command.runtime).toBe("native");
     expect(command.command).toEqual([
       "codex",
-      "--cd",
-      "/tmp/worktree",
       "--model",
       "gpt-5.5",
       "--sandbox",
       "workspace-write",
       "--approval",
       "never",
+      "--cd",
+      "/tmp/worktree",
     ]);
     expect(command.session_id).toBeUndefined();
     expect(command.env).toEqual({
@@ -173,17 +176,16 @@ describe("agent launcher", () => {
     expect(command.command).toEqual([
       "agent-en-place",
       "claude",
-      "claude",
+      "--model",
+      "opus",
+      "--permission_mode",
+      "dangerously-skip-permissions",
       "--session-id",
       "claude-session",
       "--cd",
       "/tmp/worktree",
       "--name",
       "gh-565-fix-validation",
-      "--model",
-      "opus",
-      "--permission_mode",
-      "dangerously-skip-permissions",
     ]);
     expect(command.env).toEqual({
       CLAUDE_CONFIG_DIR: "~/.claude-personal",
@@ -206,15 +208,14 @@ describe("agent launcher", () => {
     expect(command.command).toEqual([
       "agent-en-place",
       "codex",
-      "codex",
-      "--cd",
-      "/tmp/worktree",
       "--model",
       "gpt-5.4",
       "--sandbox",
       "workspace-write",
       "--approval",
       "on-request",
+      "--cd",
+      "/tmp/worktree",
     ]);
     expect(command.env).toEqual({
       CODEX_HOME: "~/.codex-api",
@@ -236,9 +237,40 @@ describe("agent launcher", () => {
     expect(command.command).toEqual([
       "agent-en-place",
       "claude",
-      "claude",
       "--resume",
       "resume-123",
+    ]);
+  });
+
+  it("does not let Claude overrides replace required workspace flags", () => {
+    const config = makeConfig();
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "claude",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+      session_id: "pitch-session",
+      overrides: {
+        model: "opus",
+        "session-id": "user-session",
+        cd: "/tmp/ignored",
+        name: "wrong-name",
+      },
+    });
+
+    expect(command.command).toEqual([
+      "claude",
+      "--model",
+      "opus",
+      "--permission_mode",
+      "dangerously-skip-permissions",
+      "--session-id",
+      "pitch-session",
+      "--cd",
+      "/tmp/worktree",
+      "--name",
+      "gh-565-fix-validation",
     ]);
   });
 
@@ -258,10 +290,11 @@ describe("agent launcher", () => {
   it("throws when a profile references an unconfigured base agent", () => {
     const config = makeConfig();
     config.agent_profiles.broken = {
-      agent: "claude-alt",
+      agent: "claude",
       defaults: {},
       env: {},
     };
+    delete config.agents["claude"];
 
     expect(() =>
       buildAgentStartCommand({
@@ -270,7 +303,7 @@ describe("agent launcher", () => {
         workspace_name: "gh-565-fix-validation",
         worktree_path: "/tmp/worktree",
       }),
-    ).toThrow(AgentLauncherError);
+    ).toThrow("references unconfigured agent: claude");
   });
 
   it("exposes concrete launchers for direct use", () => {
