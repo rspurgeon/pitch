@@ -23,6 +23,7 @@ import {
   writeWorkspaceRecord,
   type WorkspaceRecord,
 } from "./workspace-state.js";
+import { shellEscape } from "./shell.js";
 
 export const CreateWorkspaceInputSchema = z
   .object({
@@ -158,10 +159,6 @@ function buildAgentOverrides(
   }
 
   return ["--model", input.model];
-}
-
-function shellEscape(value: string): string {
-  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
 }
 
 function shouldAllowShellExpansion(value: string): boolean {

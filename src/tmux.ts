@@ -2,6 +2,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { shellEscape } from "./shell.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -193,10 +194,6 @@ function validateWindowName(windowName: string): string {
 
 function windowTarget(sessionName: string, windowName: string): string {
   return `${validateSessionName(sessionName)}:${validateWindowName(windowName)}`;
-}
-
-function shellEscape(path: string): string {
-  return `'${path.replaceAll("'", `'\"'\"'`)}'`;
 }
 
 async function getPaneIds(
