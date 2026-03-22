@@ -11,6 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm ci
       - run: make lint
       - run: make test

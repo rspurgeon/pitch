@@ -273,3 +273,8 @@ quick CLI verification.
 `make inspect` launches the
 [MCP Inspector](https://github.com/modelcontextprotocol/inspector),
 a web UI for interactively browsing and calling tools.
+
+The tmux integration tests run as part of `make test` when
+`tmux` is installed and usable in the local environment.
+If `tmux` is unavailable or cannot start a tmux server,
+those tests are skipped.
