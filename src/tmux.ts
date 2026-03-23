@@ -391,19 +391,14 @@ export async function getTmuxWindowPane(
 ): Promise<string> {
   const target = windowTarget(params.session_name, params.window_name);
   const paneIndex = params.pane_index ?? 0;
-  const paneTarget = `${target}.${paneIndex}`;
 
   try {
-    const { stdout } = await runTmux(
-      ["display-message", "-p", "-t", paneTarget, "#{pane_id}"],
-      options,
-    );
-
-    const paneId = stdout.trim();
-    if (paneId.length === 0) {
+    const paneIds = await getPaneIds(target, options);
+    const paneId = paneIds[paneIndex];
+    if (paneId === undefined) {
       throw new TmuxError(
         "COMMAND_FAILED",
-        `tmux pane lookup returned no pane id for ${paneTarget}`,
+        `tmux pane does not exist: ${target} pane index ${paneIndex}`,
       );
     }
 
@@ -416,7 +411,7 @@ export async function getTmuxWindowPane(
     ) {
       throw new TmuxError(
         "COMMAND_FAILED",
-        `tmux pane does not exist: ${paneTarget}`,
+        `tmux pane does not exist: ${target} pane index ${paneIndex}`,
       );
     }
 

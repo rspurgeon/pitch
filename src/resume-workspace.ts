@@ -187,10 +187,14 @@ export async function resumeWorkspace(
   }
 
   try {
-    await dependencies.restoreWorktree({
+    const restoredWorktree = await dependencies.restoreWorktree({
       repo: repoConfig,
       workspace_name: workspace.name,
     });
+    workspace = {
+      ...workspace,
+      worktree_path: restoredWorktree.worktree_path,
+    };
   } catch (error: unknown) {
     throw new ResumeWorkspaceError(
       `Failed to restore worktree for ${workspace.name}: ${formatError(error)}`,
@@ -280,10 +284,19 @@ export async function resumeWorkspace(
     );
   }
 
+  let paneCommand: string;
+  try {
+    paneCommand = formatAgentPaneCommand(command);
+  } catch (error: unknown) {
+    throw new ResumeWorkspaceError(
+      `Failed to format agent command for ${workspace.name}: ${formatError(error)}`,
+    );
+  }
+
   try {
     await dependencies.sendKeysToPane({
       pane_id: agentPaneId,
-      command: formatAgentPaneCommand(command),
+      command: paneCommand,
     });
   } catch (error: unknown) {
     throw new ResumeWorkspaceError(

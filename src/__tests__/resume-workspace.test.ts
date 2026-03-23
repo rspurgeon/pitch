@@ -246,6 +246,47 @@ describe("resume workspace", () => {
     });
   });
 
+  it("uses the restored worktree path for recovery and state updates", async () => {
+    const config = makeConfig();
+    const restoredWorktreePath = "/tmp/restored/gh-42-fix-bug";
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          worktree_path: "/tmp/stale/gh-42-fix-bug",
+        }),
+      ),
+      restoreWorktree: vi.fn(async () => ({
+        branch: "gh-42-fix-bug",
+        worktree_path: restoredWorktreePath,
+      })),
+      tmuxWindowExists: vi.fn(async () => false),
+    });
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.ensureTmuxSession).toHaveBeenCalledWith({
+      session_name: "kongctl",
+      start_directory: restoredWorktreePath,
+    });
+    expect(dependencies.createTmuxWindow).toHaveBeenCalledWith({
+      session_name: "kongctl",
+      window_name: "gh-42-fix-bug",
+      start_directory: restoredWorktreePath,
+    });
+    expect(dependencies.createTmuxLayout).toHaveBeenCalledWith({
+      session_name: "kongctl",
+      window_name: "gh-42-fix-bug",
+      worktree_path: restoredWorktreePath,
+    });
+    expect(workspace.worktree_path).toBe(restoredWorktreePath);
+  });
+
   it("recreates the tmux window and layout when the window is missing", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
@@ -441,6 +482,31 @@ describe("resume workspace", () => {
     ).rejects.toThrow(
       "Failed to send agent command to tmux pane for gh-42-fix-bug: send failed",
     );
+  });
+
+  it("wraps command formatting failures separately from tmux send failures", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      buildAgentResumeCommand: vi.fn(() => ({
+        ...makeClaudeResumeCommand(),
+        env: {
+          "BAD-NAME": "value",
+        },
+      })),
+    });
+
+    await expect(
+      resumeWorkspace(
+        {
+          name: "gh-42-fix-bug",
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow(
+      "Failed to format agent command for gh-42-fix-bug: Invalid environment variable name: BAD-NAME",
+    );
+    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
   });
 
   it("rejects invalid input before reading state", async () => {
