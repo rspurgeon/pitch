@@ -12,9 +12,11 @@ import {
   createTmuxLayout,
   createTmuxWindow,
   ensureTmuxSession,
+  getTmuxWindowPaneInfo,
   getTmuxWindowPane,
   sendKeysToPane,
   tmuxWindowExists,
+  type TmuxPaneInfo,
 } from "./tmux.js";
 import {
   readWorkspaceRecord,
@@ -38,6 +40,7 @@ export interface ResumeWorkspaceDependencies {
   createTmuxWindow: typeof createTmuxWindow;
   ensureTmuxSession: typeof ensureTmuxSession;
   findCodexSessionForWorkspace: typeof findCodexSessionForWorkspace;
+  getTmuxWindowPaneInfo: typeof getTmuxWindowPaneInfo;
   getTmuxWindowPane: typeof getTmuxWindowPane;
   readWorkspaceRecord: typeof readWorkspaceRecord;
   restoreWorktree: typeof restoreWorktree;
@@ -54,6 +57,7 @@ const defaultDependencies: ResumeWorkspaceDependencies = {
   createTmuxWindow,
   ensureTmuxSession,
   findCodexSessionForWorkspace,
+  getTmuxWindowPaneInfo,
   getTmuxWindowPane,
   readWorkspaceRecord,
   restoreWorktree,
@@ -192,6 +196,21 @@ function buildNextAgentSession(
   };
 }
 
+function isCompatibleRunningAgentPane(
+  workspace: WorkspaceRecord,
+  paneInfo: TmuxPaneInfo | null,
+): boolean {
+  if (paneInfo === null || paneInfo.current_path !== workspace.worktree_path) {
+    return false;
+  }
+
+  if (workspace.agent_runtime !== "native") {
+    return false;
+  }
+
+  return paneInfo.current_command === workspace.agent_type;
+}
+
 export async function resumeWorkspace(
   params: ResumeWorkspaceInput,
   config: PitchConfig,
@@ -254,6 +273,7 @@ export async function resumeWorkspace(
   }
 
   let agentPaneId: string;
+  let existingPaneInfo: TmuxPaneInfo | null = null;
   try {
     const windowExists = await dependencies.tmuxWindowExists(
       workspace.tmux_session,
@@ -279,6 +299,11 @@ export async function resumeWorkspace(
         );
       }
     } else {
+      existingPaneInfo = await dependencies.getTmuxWindowPaneInfo({
+        session_name: workspace.tmux_session,
+        window_name: workspace.tmux_window,
+        pane_index: 0,
+      });
       agentPaneId = await dependencies.getTmuxWindowPane({
         session_name: workspace.tmux_session,
         window_name: workspace.tmux_window,
@@ -337,6 +362,16 @@ export async function resumeWorkspace(
         latestSessionId = discoveredSession.id;
       }
     }
+  }
+
+  if (
+    !isAgentContextChanged &&
+    latestSessionId === null &&
+    findLatestPendingSessionIndex(workspace) === null &&
+    isCompatibleRunningAgentPane(workspace, existingPaneInfo)
+  ) {
+    await dependencies.writeWorkspaceRecord(workspace);
+    return workspace;
   }
 
   let command: BuiltAgentCommand;

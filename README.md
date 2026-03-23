@@ -292,9 +292,10 @@ create_workspace \
 - **ping** — Returns "pong". Verifies the server is
   running.
 - **create_workspace** — Creates a workspace from a
-  GitHub issue by provisioning the git worktree, tmux
-  window layout, agent launch command, and workspace
-  state record.
+  GitHub issue by provisioning or adopting the git
+  worktree, reusing a matching tmux window when safe,
+  launching the agent when needed, and writing the
+  workspace state record.
 - **list_workspaces** — Lists tracked workspaces with
   status, issue, agent type, and tmux location.
 - **get_workspace** — Returns the full saved workspace

@@ -370,7 +370,14 @@ Pitch exposes the following MCP tools over stdio:
 
 ### `create_workspace`
 
-Creates a new workspace: branch, worktree, tmux window, pane layout, agent launch, state persistence.
+Creates a new workspace: branch, worktree, tmux window,
+pane layout, agent launch, state persistence.
+
+If no workspace state file exists but the expected
+branch, worktree path, or tmux window already exists for
+the derived workspace name, Pitch adopts those matching
+resources instead of failing. Existing tracked
+workspaces are still rejected.
 
 **Parameters:**
 - `repo` (string, optional) — GitHub org/repo, defaults from config

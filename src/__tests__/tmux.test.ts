@@ -9,6 +9,7 @@ import {
   createTmuxLayout,
   createTmuxWindow,
   ensureTmuxSession,
+  getTmuxWindowPaneInfo,
   getTmuxWindowPane,
   isTmuxAvailable,
   killTmuxWindow,
@@ -397,6 +398,20 @@ tmuxDescribe("tmux management", () => {
         options,
       ),
     ).resolves.toBe(panes.bottom_right_pane_id);
+    await expect(
+      getTmuxWindowPaneInfo(
+        {
+          session_name: sessionName,
+          window_name: windowName,
+          pane_index: 0,
+        },
+        options,
+      ),
+    ).resolves.toEqual({
+      pane_id: panes.agent_pane_id,
+      current_command: "sh",
+      current_path: worktreePath,
+    });
   });
 
   it("sends a command to a specific pane", async () => {
