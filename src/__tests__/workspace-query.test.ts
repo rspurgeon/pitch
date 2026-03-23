@@ -112,6 +112,18 @@ describe("workspace query tools", () => {
     expect(dependencies.listWorkspaceRecords).not.toHaveBeenCalled();
   });
 
+  it("wraps list_workspaces dependency failures in WorkspaceQueryError", async () => {
+    const dependencies = makeDependencies({
+      listWorkspaceRecords: vi.fn(async () => {
+        throw new Error("filesystem exploded");
+      }),
+    });
+
+    await expect(listWorkspaces({}, dependencies)).rejects.toThrow(
+      "Failed to list workspaces: filesystem exploded",
+    );
+  });
+
   it("returns the full workspace record by name", async () => {
     const dependencies = makeDependencies();
 
@@ -155,5 +167,24 @@ describe("workspace query tools", () => {
       ),
     ).rejects.toThrow(WorkspaceQueryError);
     expect(dependencies.readWorkspaceRecord).not.toHaveBeenCalled();
+  });
+
+  it("wraps workspace read failures in WorkspaceQueryError", async () => {
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () => {
+        throw new Error("Invalid workspace name: ../oops");
+      }),
+    });
+
+    await expect(
+      getWorkspace(
+        {
+          name: "../oops",
+        },
+        dependencies,
+      ),
+    ).rejects.toThrow(
+      'Failed to read workspace "../oops": Invalid workspace name: ../oops',
+    );
   });
 });

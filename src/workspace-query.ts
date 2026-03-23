@@ -48,6 +48,14 @@ export class WorkspaceQueryError extends Error {
   }
 }
 
+function formatError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
 function formatZodIssues(error: z.ZodError): string {
   return error.issues
     .map((issue) => `  - ${issue.path.join(".")}: ${issue.message}`)
@@ -100,8 +108,18 @@ export async function listWorkspaces(
     ...dependencyOverrides,
   };
 
-  const workspaces = await dependencies.listWorkspaceRecords(input);
-  return workspaces.map(toWorkspaceSummary);
+  try {
+    const workspaces = await dependencies.listWorkspaceRecords(input);
+    return workspaces.map(toWorkspaceSummary);
+  } catch (error: unknown) {
+    if (error instanceof WorkspaceQueryError) {
+      throw error;
+    }
+
+    throw new WorkspaceQueryError(
+      `Failed to list workspaces: ${formatError(error)}`,
+    );
+  }
 }
 
 export async function getWorkspace(
@@ -114,12 +132,22 @@ export async function getWorkspace(
     ...dependencyOverrides,
   };
 
-  const workspace = await dependencies.readWorkspaceRecord(input.name);
-  if (workspace === null) {
-    throw new WorkspaceQueryError(`Workspace not found: ${input.name}`);
-  }
+  try {
+    const workspace = await dependencies.readWorkspaceRecord(input.name);
+    if (workspace === null) {
+      throw new WorkspaceQueryError(`Workspace not found: ${input.name}`);
+    }
 
-  return workspace;
+    return workspace;
+  } catch (error: unknown) {
+    if (error instanceof WorkspaceQueryError) {
+      throw error;
+    }
+
+    throw new WorkspaceQueryError(
+      `Failed to read workspace "${input.name}": ${formatError(error)}`,
+    );
+  }
 }
 
 export function registerWorkspaceQueryTools(
