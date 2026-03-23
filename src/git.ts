@@ -20,6 +20,11 @@ export interface RemoveWorktreeParams {
   workspace_name: string;
 }
 
+export interface RestoreWorktreeParams {
+  repo: GitRepoConfig;
+  workspace_name: string;
+}
+
 export interface WorktreeResult {
   branch: string;
   worktree_path: string;
@@ -29,6 +34,7 @@ type GitWorktreeErrorCode =
   | "MAIN_WORKTREE_MISSING"
   | "INVALID_MAIN_WORKTREE"
   | "INVALID_WORKSPACE_NAME"
+  | "BRANCH_MISSING"
   | "BRANCH_EXISTS"
   | "WORKTREE_EXISTS"
   | "WORKTREE_MISSING"
@@ -264,6 +270,72 @@ export async function removeWorktree(
   }
 
   await runGit(["worktree", "remove", worktreePath], mainWorktree);
+
+  return {
+    branch,
+    worktree_path: worktreePath,
+  };
+}
+
+export async function restoreWorktree(
+  params: RestoreWorktreeParams,
+): Promise<WorktreeResult> {
+  const branch = validateWorkspaceName(params.workspace_name);
+  const mainWorktree = expandHomePath(params.repo.main_worktree);
+  const worktreePath = buildWorktreePath(params.repo, branch);
+
+  await ensureMainWorktree(mainWorktree);
+
+  if (await pathExists(worktreePath)) {
+    try {
+      const { stdout } = await execFileAsync(
+        "git",
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+        { cwd: worktreePath },
+      );
+
+      if (stdout.trim() !== branch) {
+        throw new GitWorktreeError(
+          "WORKTREE_EXISTS",
+          `Existing path is not the expected worktree branch at ${worktreePath}`,
+        );
+      }
+    } catch (error: unknown) {
+      if (error instanceof GitWorktreeError) {
+        throw error;
+      }
+
+      throw new GitWorktreeError(
+        "WORKTREE_EXISTS",
+        `Existing path is not a usable git worktree at ${worktreePath}`,
+      );
+    }
+
+    return {
+      branch,
+      worktree_path: worktreePath,
+    };
+  }
+
+  await runGit(["worktree", "prune"], mainWorktree);
+
+  const registeredWorktrees = await listRegisteredWorktrees(mainWorktree);
+  if (registeredWorktrees.includes(worktreePath)) {
+    throw new GitWorktreeError(
+      "WORKTREE_EXISTS",
+      `Worktree already exists at ${worktreePath}`,
+    );
+  }
+
+  if (!(await branchExists(mainWorktree, branch))) {
+    throw new GitWorktreeError(
+      "BRANCH_MISSING",
+      `Branch does not exist: ${branch}`,
+    );
+  }
+
+  await mkdir(expandHomePath(params.repo.worktree_base), { recursive: true });
+  await runGit(["worktree", "add", worktreePath, branch], mainWorktree);
 
   return {
     branch,

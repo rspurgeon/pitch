@@ -40,6 +40,12 @@ export interface SendKeysToPaneParams {
   enter?: boolean;
 }
 
+export interface GetTmuxWindowPaneParams {
+  session_name: string;
+  window_name: string;
+  pane_index?: number;
+}
+
 export interface TmuxSessionResult {
   session_name: string;
   created: boolean;
@@ -377,6 +383,45 @@ export async function sendKeysToPane(
   }
 
   await runTmux(args, options);
+}
+
+export async function getTmuxWindowPane(
+  params: GetTmuxWindowPaneParams,
+  options: TmuxClientOptions = {},
+): Promise<string> {
+  const target = windowTarget(params.session_name, params.window_name);
+  const paneIndex = params.pane_index ?? 0;
+  const paneTarget = `${target}.${paneIndex}`;
+
+  try {
+    const { stdout } = await runTmux(
+      ["display-message", "-p", "-t", paneTarget, "#{pane_id}"],
+      options,
+    );
+
+    const paneId = stdout.trim();
+    if (paneId.length === 0) {
+      throw new TmuxError(
+        "COMMAND_FAILED",
+        `tmux pane lookup returned no pane id for ${paneTarget}`,
+      );
+    }
+
+    return paneId;
+  } catch (error: unknown) {
+    if (
+      error instanceof TmuxError &&
+      error.code === "COMMAND_FAILED" &&
+      error.message.includes("can't find")
+    ) {
+      throw new TmuxError(
+        "COMMAND_FAILED",
+        `tmux pane does not exist: ${paneTarget}`,
+      );
+    }
+
+    throw error;
+  }
 }
 
 export async function createTmuxLayout(

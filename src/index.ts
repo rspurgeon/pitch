@@ -4,6 +4,7 @@ import { z } from "zod";
 import { registerCloseWorkspaceTool } from "./close-workspace.js";
 import { ConfigError, loadConfig, type PitchConfig } from "./config.js";
 import { registerCreateWorkspaceTool } from "./create-workspace.js";
+import { registerResumeWorkspaceTool } from "./resume-workspace.js";
 import { registerWorkspaceQueryTools } from "./workspace-query.js";
 
 let config: PitchConfig;
@@ -50,6 +51,7 @@ server.registerTool(
 registerCreateWorkspaceTool(server, config);
 registerWorkspaceQueryTools(server);
 registerCloseWorkspaceTool(server, config);
+registerResumeWorkspaceTool(server, config);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
