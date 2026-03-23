@@ -404,7 +404,10 @@ Returns full detail for a specific workspace.
 
 ### `resume_workspace`
 
-Relaunches the coding agent in an existing workspace, using the most recent session ID.
+Relaunches the coding agent in an existing workspace, using the most recent
+session ID. For native Codex workspaces whose latest session is still pending,
+Pitch may recover the real session ID from the local Codex session store before
+falling back to a fresh launch.
 
 **Parameters:**
 - `name` (string, required) — workspace name

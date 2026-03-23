@@ -57,7 +57,9 @@ The codebase is organized around independent subsystems wired together by MCP to
 - **Git** — Thin wrapper around `git worktree add/remove` shell commands
 - **tmux** — Thin wrapper around `tmux` commands for session/window/pane management
 - **Agent launcher** — Builds start/resume command arrays per agent type (Claude, Codex) and runtime (native, Docker via `agent-en-place`)
-- **MCP tools** — Tool handlers that orchestrate the subsystems: `create_workspace`, `list_workspaces`, `get_workspace`, `resume_workspace`, `close_workspace`, `capture_session_id`
+- **MCP tools** — Tool handlers that orchestrate the subsystems:
+  `create_workspace`, `list_workspaces`, `get_workspace`,
+  `resume_workspace`, `close_workspace`
 
 ### Key Concepts
 
@@ -69,7 +71,9 @@ The codebase is organized around independent subsystems wired together by MCP to
 
 **tmux layout:** Each workspace window has a fixed three-pane layout — left tall pane for the coding agent, top-right and bottom-right empty shells for the user.
 
-**Session IDs:** Claude session IDs are pre-generated (UUID) and passed at launch. Codex session IDs are discovered post-launch from pane output via `tmux capture-pane`.
+**Session IDs:** Claude session IDs are pre-generated (UUID) and passed
+at launch. Codex session IDs may be discovered later from the local
+Codex session store when a workspace is resumed.
 
 ### State Schema
 

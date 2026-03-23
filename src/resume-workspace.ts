@@ -6,6 +6,7 @@ import {
   type BuiltAgentCommand,
 } from "./agent-launcher.js";
 import type { PitchConfig } from "./config.js";
+import { findCodexSessionForWorkspace } from "./codex-session-store.js";
 import { restoreWorktree } from "./git.js";
 import {
   createTmuxLayout,
@@ -36,6 +37,7 @@ export interface ResumeWorkspaceDependencies {
   createTmuxLayout: typeof createTmuxLayout;
   createTmuxWindow: typeof createTmuxWindow;
   ensureTmuxSession: typeof ensureTmuxSession;
+  findCodexSessionForWorkspace: typeof findCodexSessionForWorkspace;
   getTmuxWindowPane: typeof getTmuxWindowPane;
   readWorkspaceRecord: typeof readWorkspaceRecord;
   restoreWorktree: typeof restoreWorktree;
@@ -51,6 +53,7 @@ const defaultDependencies: ResumeWorkspaceDependencies = {
   createTmuxLayout,
   createTmuxWindow,
   ensureTmuxSession,
+  findCodexSessionForWorkspace,
   getTmuxWindowPane,
   readWorkspaceRecord,
   restoreWorktree,
@@ -116,6 +119,36 @@ function findLatestResumableSessionId(workspace: WorkspaceRecord): string | null
   }
 
   return null;
+}
+
+function findLatestPendingSessionIndex(workspace: WorkspaceRecord): number | null {
+  for (let index = workspace.agent_sessions.length - 1; index >= 0; index -= 1) {
+    const session = workspace.agent_sessions[index];
+    if (session.id === "pending") {
+      return index;
+    }
+  }
+
+  return null;
+}
+
+function backfillPendingSessionId(
+  workspace: WorkspaceRecord,
+  pendingIndex: number,
+  sessionId: string,
+): WorkspaceRecord {
+  return {
+    ...workspace,
+    agent_sessions: workspace.agent_sessions.map((session, index) =>
+      index === pendingIndex
+        ? {
+            ...session,
+            id: sessionId,
+            status: "active",
+          }
+        : session,
+    ),
+  };
 }
 
 function buildNextAgentSession(
@@ -255,10 +288,41 @@ export async function resumeWorkspace(
   }
 
   const agentName = resolveAgentName(workspace, input.agent);
-  const latestSessionId =
-    input.agent !== undefined && input.agent !== currentWorkspaceAgentName(workspace)
-      ? null
-      : findLatestResumableSessionId(workspace);
+  const isAgentContextChanged =
+    input.agent !== undefined && input.agent !== currentWorkspaceAgentName(workspace);
+
+  let latestSessionId = isAgentContextChanged
+    ? null
+    : findLatestResumableSessionId(workspace);
+
+  if (!isAgentContextChanged && latestSessionId === null && workspace.agent_type === "codex") {
+    const pendingSessionIndex = findLatestPendingSessionIndex(workspace);
+
+    if (pendingSessionIndex !== null) {
+      const pendingSession = workspace.agent_sessions[pendingSessionIndex];
+      let discoveredSession: Awaited<
+        ReturnType<ResumeWorkspaceDependencies["findCodexSessionForWorkspace"]>
+      > = null;
+      try {
+        discoveredSession = await dependencies.findCodexSessionForWorkspace({
+          worktree_path: workspace.worktree_path,
+          started_at: pendingSession.started_at,
+          agent_env: workspace.agent_env,
+        });
+      } catch {
+        discoveredSession = null;
+      }
+
+      if (discoveredSession !== null) {
+        workspace = backfillPendingSessionId(
+          workspace,
+          pendingSessionIndex,
+          discoveredSession.id,
+        );
+        latestSessionId = discoveredSession.id;
+      }
+    }
+  }
 
   let command: BuiltAgentCommand;
   try {
