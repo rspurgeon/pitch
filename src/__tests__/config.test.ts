@@ -129,6 +129,23 @@ describe("loadConfig", () => {
       });
     });
 
+    it("derives repo worktree_base and tmux_session when omitted", async () => {
+      const config = await loadConfig(fixture("derived-repo-config.yaml"));
+
+      expect(config.repos["kong/kongctl"]).toEqual({
+        default_agent: "claude-enterprise",
+        main_worktree: "~/dev/kong/kongctl",
+        worktree_base: "~/.local/share/worktrees/kong/kongctl",
+        tmux_session: "kongctl",
+        agent_defaults: {
+          runtime: undefined,
+          args: [],
+          env: {},
+        },
+        agent_overrides: {},
+      });
+    });
+
     it("preserves tilde paths as-is", async () => {
       const config = await loadConfig(fixture("full-config.yaml"));
       expect(config.repos["kong/kongctl"].main_worktree).toBe(
