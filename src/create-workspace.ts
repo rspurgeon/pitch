@@ -6,15 +6,17 @@ import {
 } from "./agent-launcher.js";
 import type { PitchConfig, RepoConfig } from "./config.js";
 import {
-  createWorktree,
+  ensureWorkspaceWorktree,
   removeWorktree,
 } from "./git.js";
 import {
   createTmuxLayout,
   createTmuxWindow,
   ensureTmuxSession,
+  getTmuxWindowPaneInfo,
   killTmuxWindow,
   sendKeysToPane,
+  tmuxWindowExists,
 } from "./tmux.js";
 import {
   deleteWorkspaceRecord,
@@ -24,6 +26,7 @@ import {
   type WorkspaceRecord,
 } from "./workspace-state.js";
 import { formatAgentPaneCommand } from "./agent-pane-command.js";
+import { shellEscape } from "./shell.js";
 
 export const CreateWorkspaceInputSchema = z
   .object({
@@ -50,10 +53,12 @@ export interface CreateWorkspaceDependencies {
   readWorkspaceRecord: typeof readWorkspaceRecord;
   writeWorkspaceRecord: typeof writeWorkspaceRecord;
   deleteWorkspaceRecord: typeof deleteWorkspaceRecord;
-  createWorktree: typeof createWorktree;
+  ensureWorkspaceWorktree: typeof ensureWorkspaceWorktree;
   removeWorktree: typeof removeWorktree;
   ensureTmuxSession: typeof ensureTmuxSession;
+  tmuxWindowExists: typeof tmuxWindowExists;
   createTmuxWindow: typeof createTmuxWindow;
+  getTmuxWindowPaneInfo: typeof getTmuxWindowPaneInfo;
   killTmuxWindow: typeof killTmuxWindow;
   createTmuxLayout: typeof createTmuxLayout;
   sendKeysToPane: typeof sendKeysToPane;
@@ -76,14 +81,26 @@ interface RollbackState {
   workspace_record_written: boolean;
 }
 
+type ExistingPaneState =
+  | {
+      kind: "shell";
+      pane_id: string;
+    }
+  | {
+      kind: "agent";
+      pane_id: string;
+    };
+
 const defaultDependencies: CreateWorkspaceDependencies = {
   readWorkspaceRecord,
   writeWorkspaceRecord,
   deleteWorkspaceRecord,
-  createWorktree,
+  ensureWorkspaceWorktree,
   removeWorktree,
   ensureTmuxSession,
+  tmuxWindowExists,
   createTmuxWindow,
+  getTmuxWindowPaneInfo,
   killTmuxWindow,
   createTmuxLayout,
   sendKeysToPane,
@@ -190,6 +207,51 @@ function buildAgentSessions(
   ];
 }
 
+const SHELL_COMMANDS = new Set([
+  "ash",
+  "bash",
+  "dash",
+  "fish",
+  "ksh",
+  "nu",
+  "sh",
+  "zsh",
+]);
+
+function classifyExistingPane(
+  currentCommand: string,
+  agentCommand: BuiltAgentCommand,
+): ExistingPaneState["kind"] | "unsupported" {
+  if (SHELL_COMMANDS.has(currentCommand)) {
+    return "shell";
+  }
+
+  if (
+    currentCommand === "claude" &&
+    agentCommand.agent_type === "claude" &&
+    agentCommand.runtime === "native"
+  ) {
+    return "agent";
+  }
+
+  if (
+    currentCommand === "codex" &&
+    agentCommand.agent_type === "codex" &&
+    agentCommand.runtime === "native"
+  ) {
+    return "agent";
+  }
+
+  if (
+    currentCommand === "agent-en-place" &&
+    agentCommand.runtime === "docker"
+  ) {
+    return "agent";
+  }
+
+  return "unsupported";
+}
+
 async function rollbackCreateWorkspace(
   state: RollbackState,
   dependencies: CreateWorkspaceDependencies,
@@ -266,29 +328,16 @@ export async function createWorkspace(
       throw new CreateWorkspaceError(`Workspace already exists: ${workspaceName}`);
     }
 
-    const worktree = await dependencies.createWorktree({
+    const worktree = await dependencies.ensureWorkspaceWorktree({
       repo: repoConfig,
       workspace_name: workspaceName,
       base_branch: baseBranch,
     });
-    rollbackState.worktree_created = true;
+    rollbackState.worktree_created = !worktree.adopted;
 
     await dependencies.ensureTmuxSession({
       session_name: repoConfig.tmux_session,
       start_directory: worktree.worktree_path,
-    });
-
-    await dependencies.createTmuxWindow({
-      session_name: repoConfig.tmux_session,
-      window_name: workspaceName,
-      start_directory: worktree.worktree_path,
-    });
-    rollbackState.tmux_window_created = true;
-
-    const layout = await dependencies.createTmuxLayout({
-      session_name: repoConfig.tmux_session,
-      window_name: workspaceName,
-      worktree_path: worktree.worktree_path,
     });
 
     const agentCommand = dependencies.buildAgentStartCommand({
@@ -300,6 +349,51 @@ export async function createWorkspace(
       override_args: buildAgentOverrides(input),
       runtime: input.runtime,
     });
+
+    let existingPane: ExistingPaneState | null = null;
+    let agentPaneId: string;
+    const windowExists = await dependencies.tmuxWindowExists(
+      repoConfig.tmux_session,
+      workspaceName,
+    );
+
+    if (windowExists) {
+      const paneInfo = await dependencies.getTmuxWindowPaneInfo({
+        session_name: repoConfig.tmux_session,
+        window_name: workspaceName,
+        pane_index: 0,
+      });
+      const paneKind = classifyExistingPane(
+        paneInfo.current_command,
+        agentCommand,
+      );
+
+      if (paneKind === "unsupported") {
+        throw new CreateWorkspaceError(
+          `Existing tmux window ${repoConfig.tmux_session}:${workspaceName} has unsupported pane 0 command: ${paneInfo.current_command}`,
+        );
+      }
+
+      existingPane = {
+        kind: paneKind,
+        pane_id: paneInfo.pane_id,
+      };
+      agentPaneId = paneInfo.pane_id;
+    } else {
+      await dependencies.createTmuxWindow({
+        session_name: repoConfig.tmux_session,
+        window_name: workspaceName,
+        start_directory: worktree.worktree_path,
+      });
+      rollbackState.tmux_window_created = true;
+
+      const layout = await dependencies.createTmuxLayout({
+        session_name: repoConfig.tmux_session,
+        window_name: workspaceName,
+        worktree_path: worktree.worktree_path,
+      });
+      agentPaneId = layout.panes.agent_pane_id;
+    }
 
     const timestamp = dependencies.now().toISOString();
     const workspaceRecord: WorkspaceRecord = {
@@ -315,7 +409,10 @@ export async function createWorkspace(
       agent_profile: agentCommand.profile_name ?? null,
       agent_runtime: agentCommand.runtime,
       agent_env: agentCommand.env,
-      agent_sessions: buildAgentSessions(agentCommand, timestamp),
+      agent_sessions:
+        existingPane?.kind === "agent"
+          ? []
+          : buildAgentSessions(agentCommand, timestamp),
       status: "active",
       created_at: timestamp,
       updated_at: timestamp,
@@ -324,10 +421,19 @@ export async function createWorkspace(
     const persistedRecord = await dependencies.writeWorkspaceRecord(workspaceRecord);
     rollbackState.workspace_record_written = true;
 
-    await dependencies.sendKeysToPane({
-      pane_id: layout.panes.agent_pane_id,
-      command: formatAgentPaneCommand(agentCommand),
-    });
+    if (existingPane?.kind !== "agent") {
+      if (existingPane?.kind === "shell") {
+        await dependencies.sendKeysToPane({
+          pane_id: agentPaneId,
+          command: `cd -- ${shellEscape(worktree.worktree_path)}`,
+        });
+      }
+
+      await dependencies.sendKeysToPane({
+        pane_id: agentPaneId,
+        command: formatAgentPaneCommand(agentCommand),
+      });
+    }
 
     return persistedRecord;
   } catch (error: unknown) {

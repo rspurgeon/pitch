@@ -46,6 +46,12 @@ export interface GetTmuxWindowPaneParams {
   pane_index?: number;
 }
 
+export interface TmuxPaneInfo {
+  pane_id: string;
+  current_command: string;
+  current_path: string;
+}
+
 export interface TmuxSessionResult {
   session_name: string;
   created: boolean;
@@ -417,6 +423,47 @@ export async function getTmuxWindowPane(
 
     throw error;
   }
+}
+
+export async function getTmuxWindowPaneInfo(
+  params: GetTmuxWindowPaneParams,
+  options: TmuxClientOptions = {},
+): Promise<TmuxPaneInfo> {
+  const paneId = await getTmuxWindowPane(params, options);
+
+  const { stdout } = await runTmux(
+    [
+      "display-message",
+      "-p",
+      "-t",
+      paneId,
+      "#{pane_current_command}\t#{pane_current_path}",
+    ],
+    options,
+  );
+
+  const [currentCommand, currentPath] = stdout
+    .trim()
+    .split("\t", 2)
+    .map((value) => value.trim());
+
+  if (
+    currentCommand === undefined ||
+    currentCommand.length === 0 ||
+    currentPath === undefined ||
+    currentPath.length === 0
+  ) {
+    throw new TmuxError(
+      "COMMAND_FAILED",
+      `Failed to inspect tmux pane: ${paneId}`,
+    );
+  }
+
+  return {
+    pane_id: paneId,
+    current_command: currentCommand,
+    current_path: currentPath,
+  };
 }
 
 export async function createTmuxLayout(

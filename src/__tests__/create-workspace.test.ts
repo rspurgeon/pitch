@@ -6,6 +6,7 @@ import {
   CreateWorkspaceError,
   type CreateWorkspaceDependencies,
 } from "../create-workspace.js";
+import type { TmuxPaneInfo } from "../tmux.js";
 import type { WorkspaceRecord } from "../workspace-state.js";
 
 function makeConfig(): PitchConfig {
@@ -132,9 +133,10 @@ function makeDependencies(
     readWorkspaceRecord: vi.fn(async () => null),
     writeWorkspaceRecord: vi.fn(async (workspace: WorkspaceRecord) => workspace),
     deleteWorkspaceRecord: vi.fn(async () => true),
-    createWorktree: vi.fn(async () => ({
+    ensureWorkspaceWorktree: vi.fn(async () => ({
       branch: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      adopted: false,
     })),
     removeWorktree: vi.fn(async () => ({
       branch: "gh-42-fix-bug",
@@ -144,12 +146,21 @@ function makeDependencies(
       session_name: "kongctl",
       created: true,
     })),
+    tmuxWindowExists: vi.fn(async () => false),
     createTmuxWindow: vi.fn(async () => ({
       session_name: "kongctl",
       window_name: "gh-42-fix-bug",
       window_target: "kongctl:gh-42-fix-bug",
       pane_id: "%1",
     })),
+    getTmuxWindowPaneInfo: vi.fn(
+      async () =>
+        ({
+          pane_id: "%1",
+          current_command: "zsh",
+          current_path: "/tmp/worktrees/gh-42-fix-bug",
+        }) satisfies TmuxPaneInfo,
+    ),
     killTmuxWindow: vi.fn(async () => true),
     createTmuxLayout: vi.fn(async () => ({
       session_name: "kongctl",
@@ -268,7 +279,7 @@ describe("create workspace", () => {
       ),
     ).rejects.toThrow(CreateWorkspaceError);
     expect(dependencies.readWorkspaceRecord).not.toHaveBeenCalled();
-    expect(dependencies.createWorktree).not.toHaveBeenCalled();
+    expect(dependencies.ensureWorkspaceWorktree).not.toHaveBeenCalled();
   });
 
   it("fails when a workspace record already exists", async () => {
@@ -287,7 +298,7 @@ describe("create workspace", () => {
         dependencies,
       ),
     ).rejects.toThrow("Workspace already exists: gh-42-fix-bug");
-    expect(dependencies.createWorktree).not.toHaveBeenCalled();
+    expect(dependencies.ensureWorkspaceWorktree).not.toHaveBeenCalled();
   });
 
   it("rolls back the worktree when tmux setup fails", async () => {
@@ -314,6 +325,139 @@ describe("create workspace", () => {
     });
     expect(dependencies.killTmuxWindow).not.toHaveBeenCalled();
     expect(dependencies.deleteWorkspaceRecord).not.toHaveBeenCalled();
+  });
+
+  it("reuses an existing tmux window shell without recreating layout", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      tmuxWindowExists: vi.fn(async () => true),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%9",
+            current_command: "zsh",
+            current_path: "/tmp/other",
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.createTmuxWindow).not.toHaveBeenCalled();
+    expect(dependencies.createTmuxLayout).not.toHaveBeenCalled();
+    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(1, {
+      pane_id: "%9",
+      command: "cd -- '/tmp/worktrees/gh-42-fix-bug'",
+    });
+    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(2, {
+      pane_id: "%9",
+      command:
+        "CLAUDE_CONFIG_DIR=~/.claude command -- 'claude' '--model' 'opus' " +
+        "'--session-id' 'claude-session' '--name' 'gh-42-fix-bug'",
+    });
+  });
+
+  it("adopts an existing agent window without launching a second agent", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      tmuxWindowExists: vi.fn(async () => true),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%9",
+            current_command: "claude",
+            current_path: "/tmp/worktrees/gh-42-fix-bug",
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    const workspace = await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
+    expect(workspace.agent_sessions).toEqual([]);
+  });
+
+  it("errors when an existing tmux window pane is occupied by another process", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      tmuxWindowExists: vi.fn(async () => true),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%9",
+            current_command: "vim",
+            current_path: "/tmp/worktrees/gh-42-fix-bug",
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    await expect(
+      createWorkspace(
+        {
+          issue: 42,
+          slug: "fix-bug",
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow(
+      "Existing tmux window kongctl:gh-42-fix-bug has unsupported pane 0 command: vim",
+    );
+    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
+  });
+
+  it("does not remove adopted git resources when later steps fail", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      ensureWorkspaceWorktree: vi.fn(async () => ({
+        branch: "gh-42-fix-bug",
+        worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+        adopted: true,
+      })),
+      tmuxWindowExists: vi.fn(async () => true),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%9",
+            current_command: "zsh",
+            current_path: "/tmp/worktrees/gh-42-fix-bug",
+          }) satisfies TmuxPaneInfo,
+      ),
+      sendKeysToPane: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("agent launch failed")),
+    });
+
+    await expect(
+      createWorkspace(
+        {
+          issue: 42,
+          slug: "fix-bug",
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow("agent launch failed");
+    expect(dependencies.removeWorktree).not.toHaveBeenCalled();
+    expect(dependencies.killTmuxWindow).not.toHaveBeenCalled();
+    expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith(
+      "gh-42-fix-bug",
+    );
   });
 
   it("cleans up state, tmux window, and worktree when agent launch fails", async () => {

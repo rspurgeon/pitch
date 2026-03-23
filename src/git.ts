@@ -15,6 +15,12 @@ export interface CreateWorktreeParams {
   base_branch: string;
 }
 
+export interface EnsureWorkspaceWorktreeParams {
+  repo: GitRepoConfig;
+  workspace_name: string;
+  base_branch: string;
+}
+
 export interface RemoveWorktreeParams {
   repo: GitRepoConfig;
   workspace_name: string;
@@ -28,6 +34,10 @@ export interface RestoreWorktreeParams {
 export interface WorktreeResult {
   branch: string;
   worktree_path: string;
+}
+
+export interface EnsuredWorktreeResult extends WorktreeResult {
+  adopted: boolean;
 }
 
 type GitWorktreeErrorCode =
@@ -206,6 +216,44 @@ async function branchExists(
   }
 }
 
+async function currentBranch(path: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["rev-parse", "--abbrev-ref", "HEAD"],
+      { cwd: path },
+    );
+    return stdout.trim();
+  } catch {
+    throw new GitWorktreeError(
+      "WORKTREE_EXISTS",
+      `Existing path is not a usable git worktree at ${path}`,
+    );
+  }
+}
+
+async function ensureAdoptableWorktree(
+  mainWorktree: string,
+  worktreePath: string,
+  branch: string,
+): Promise<void> {
+  const registeredWorktrees = await listRegisteredWorktrees(mainWorktree);
+  if (!registeredWorktrees.includes(worktreePath)) {
+    throw new GitWorktreeError(
+      "WORKTREE_EXISTS",
+      `Existing path is not a registered worktree at ${worktreePath}`,
+    );
+  }
+
+  const activeBranch = await currentBranch(worktreePath);
+  if (activeBranch !== branch) {
+    throw new GitWorktreeError(
+      "WORKTREE_EXISTS",
+      `Existing path is not the expected worktree branch at ${worktreePath}`,
+    );
+  }
+}
+
 export function buildWorktreePath(
   repo: Pick<GitRepoConfig, "worktree_base">,
   workspaceName: string,
@@ -252,6 +300,42 @@ export async function createWorktree(
   };
 }
 
+export async function ensureWorkspaceWorktree(
+  params: EnsureWorkspaceWorktreeParams,
+): Promise<EnsuredWorktreeResult> {
+  const branch = validateWorkspaceName(params.workspace_name);
+  const mainWorktree = expandHomePath(params.repo.main_worktree);
+  const worktreePath = buildWorktreePath(params.repo, branch);
+
+  await ensureMainWorktree(mainWorktree);
+
+  if (await pathExists(worktreePath)) {
+    await ensureAdoptableWorktree(mainWorktree, worktreePath, branch);
+    return {
+      branch,
+      worktree_path: worktreePath,
+      adopted: true,
+    };
+  }
+
+  if (await branchExists(mainWorktree, branch)) {
+    const restored = await restoreWorktree({
+      repo: params.repo,
+      workspace_name: branch,
+    });
+    return {
+      ...restored,
+      adopted: true,
+    };
+  }
+
+  const created = await createWorktree(params);
+  return {
+    ...created,
+    adopted: false,
+  };
+}
+
 export async function removeWorktree(
   params: RemoveWorktreeParams,
 ): Promise<WorktreeResult> {
@@ -287,29 +371,7 @@ export async function restoreWorktree(
   await ensureMainWorktree(mainWorktree);
 
   if (await pathExists(worktreePath)) {
-    try {
-      const { stdout } = await execFileAsync(
-        "git",
-        ["rev-parse", "--abbrev-ref", "HEAD"],
-        { cwd: worktreePath },
-      );
-
-      if (stdout.trim() !== branch) {
-        throw new GitWorktreeError(
-          "WORKTREE_EXISTS",
-          `Existing path is not the expected worktree branch at ${worktreePath}`,
-        );
-      }
-    } catch (error: unknown) {
-      if (error instanceof GitWorktreeError) {
-        throw error;
-      }
-
-      throw new GitWorktreeError(
-        "WORKTREE_EXISTS",
-        `Existing path is not a usable git worktree at ${worktreePath}`,
-      );
-    }
+    await ensureAdoptableWorktree(mainWorktree, worktreePath, branch);
 
     return {
       branch,
