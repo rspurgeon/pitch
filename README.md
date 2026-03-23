@@ -299,6 +299,9 @@ create_workspace \
   status, issue, agent type, and tmux location.
 - **get_workspace** — Returns the full saved workspace
   record for a specific workspace name.
+- **close_workspace** — Closes the tmux window and,
+  by default, removes the git worktree and workspace
+  state file.
 
 ## Development
 
