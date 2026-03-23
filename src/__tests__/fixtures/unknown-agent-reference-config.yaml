@@ -1,21 +1,21 @@
 defaults:
   repo: kong/kongctl
-  agent: codex
-  base_branch: main
+  agent: missing-agent
 
 repos:
   kong/kongctl:
+    default_agent: claude-enterprise
     main_worktree: ~/dev/kong/kongctl
     worktree_base: ~/.local/share/worktrees/kong/kongctl
     tmux_session: kongctl
+    agent_overrides:
+      codex: {}
+      missing-agent: {}
 
 agents:
   codex:
     type: codex
     runtime: native
-    defaults:
-      model: gpt-5.4
-      sandbox: workspace-write
-      ask-for-approval: on-request
-    env:
-      CODEX_HOME: ~/.codex
+  claude-enterprise:
+    type: claude
+    runtime: native

@@ -13,19 +13,27 @@ function makeConfig(): PitchConfig {
   return {
     defaults: {
       repo: "kong/kongctl",
-      agent: "claude",
+      agent: "codex",
       base_branch: "main",
+      worktree_root: "~/.local/share/worktrees",
     },
     repos: {
       "kong/kongctl": {
+        default_agent: "claude-enterprise",
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
+        agent_defaults: {
+          runtime: undefined,
+          args: [],
+          env: {},
+        },
         agent_overrides: {},
       },
     },
     agents: {
-      claude: {
+      "claude-enterprise": {
+        type: "claude",
         runtime: "native",
         args: ["--model", "sonnet"],
         env: {
@@ -33,16 +41,15 @@ function makeConfig(): PitchConfig {
         },
       },
       codex: {
+        type: "codex",
         runtime: "native",
         args: ["--model", "gpt-5.4"],
         env: {
           CODEX_HOME: "~/.codex",
         },
       },
-    },
-    agent_profiles: {
       "codex-api": {
-        agent: "codex",
+        type: "codex",
         runtime: "docker",
         args: [],
         env: {
@@ -66,8 +73,8 @@ function makeWorkspaceRecord(
     base_branch: "main",
     tmux_session: "kongctl",
     tmux_window: "gh-42-fix-bug",
+    agent_name: "claude-enterprise",
     agent_type: "claude",
-    agent_profile: null,
     agent_runtime: "native",
     agent_env: {
       CLAUDE_CONFIG_DIR: "~/.claude",
@@ -88,6 +95,7 @@ function makeWorkspaceRecord(
 
 function makeClaudeCommand(): BuiltAgentCommand {
   return {
+    agent_name: "claude-enterprise",
     agent_type: "claude",
     runtime: "native",
     command: [
@@ -108,6 +116,7 @@ function makeClaudeCommand(): BuiltAgentCommand {
 
 function makeCodexCommand(): BuiltAgentCommand {
   return {
+    agent_name: "codex-api",
     agent_type: "codex",
     runtime: "docker",
     command: [
@@ -122,7 +131,6 @@ function makeCodexCommand(): BuiltAgentCommand {
       CODEX_HOME: "~/.codex-api",
       OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
     },
-    profile_name: "codex-api",
   };
 }
 
@@ -197,7 +205,7 @@ describe("create workspace", () => {
     expect(workspace).toEqual(makeWorkspaceRecord());
     expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith({
       config,
-      agent: "claude",
+      agent: "claude-enterprise",
       repo: "kong/kongctl",
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
@@ -239,8 +247,8 @@ describe("create workspace", () => {
 
     expect(workspace).toEqual(
       makeWorkspaceRecord({
+        agent_name: "codex-api",
         agent_type: "codex",
-        agent_profile: "codex-api",
         agent_runtime: "docker",
         agent_env: {
           CODEX_HOME: "~/.codex-api",

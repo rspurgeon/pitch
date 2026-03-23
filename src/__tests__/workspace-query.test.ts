@@ -19,8 +19,8 @@ function makeWorkspaceRecord(
     base_branch: "main",
     tmux_session: "kongctl",
     tmux_window: "gh-42-fix-bug",
+    agent_name: "claude-enterprise",
     agent_type: "claude",
-    agent_profile: null,
     agent_runtime: "native",
     agent_env: {
       CLAUDE_CONFIG_DIR: "~/.claude",
@@ -57,6 +57,7 @@ describe("workspace query tools", () => {
         makeWorkspaceRecord({
           name: "gh-43-follow-up",
           issue: 43,
+          agent_name: "codex",
           agent_type: "codex",
           status: "closed",
           tmux_window: "gh-43-follow-up",
@@ -78,6 +79,7 @@ describe("workspace query tools", () => {
         repo: "kong/kongctl",
         issue: 42,
         status: "active",
+        agent_name: "claude-enterprise",
         agent_type: "claude",
         tmux_session: "kongctl",
         tmux_window: "gh-42-fix-bug",
@@ -87,6 +89,7 @@ describe("workspace query tools", () => {
         repo: "kong/kongctl",
         issue: 43,
         status: "closed",
+        agent_name: "codex",
         agent_type: "codex",
         tmux_session: "kongctl",
         tmux_window: "gh-43-follow-up",

@@ -2,25 +2,28 @@ defaults:
   repo: kong/kongctl
   agent: codex
   base_branch: main
+  worktree_root: ~/.local/share/worktrees
 
 repos:
   kong/kongctl:
+    default_agent: claude-enterprise
     main_worktree: ~/dev/kong/kongctl
-    worktree_base: ~/.local/share/worktrees/kong/kongctl
-    tmux_session: kongctl
+    agent_defaults:
+      args:
+        - --add-dir
+        - /home/rspurgeon/go
     agent_overrides:
       codex:
         args:
           - --add-dir
           - /home/rspurgeon/.config/kongctl
-          - --add-dir
-          - /home/rspurgeon/go
       claude-personal:
         env:
           CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1"
 
 agents:
   codex:
+    type: codex
     runtime: native
     args:
       - --model
@@ -32,7 +35,8 @@ agents:
     env:
       CODEX_HOME: ~/.codex
 
-  claude:
+  claude-enterprise:
+    type: claude
     runtime: docker
     args:
       - --model
@@ -42,9 +46,8 @@ agents:
     env:
       CLAUDE_CONFIG_DIR: ~/.claude
 
-agent_profiles:
   claude-personal:
-    agent: claude
+    type: claude
     runtime: native
     env:
       CLAUDE_CONFIG_DIR: ~/.claude-personal
@@ -53,7 +56,8 @@ agent_profiles:
       - opus
 
   codex-api:
-    agent: codex
+    type: codex
+    runtime: native
     env:
       CODEX_HOME: ~/.codex-api
       OPENAI_API_KEY: ${OPENAI_API_KEY_SECONDARY}

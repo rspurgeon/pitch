@@ -153,11 +153,15 @@ function resolveRepoConfig(config: PitchConfig, repoName: string): RepoConfig {
   return repoConfig;
 }
 
-function resolveAgentName(config: PitchConfig, agent?: string): string {
-  const resolved = agent ?? config.defaults.agent;
+function resolveAgentName(
+  config: PitchConfig,
+  repoConfig: RepoConfig,
+  agent?: string,
+): string {
+  const resolved = agent ?? repoConfig.default_agent ?? config.defaults.agent;
   if (resolved === undefined) {
     throw new CreateWorkspaceError(
-      "No agent was provided and config.defaults.agent is not set",
+      "No agent was provided and neither repo default_agent nor config.defaults.agent is set",
     );
   }
 
@@ -303,7 +307,7 @@ export async function createWorkspace(
 
   const repoName = resolveRepoName(config, input.repo);
   const repoConfig = resolveRepoConfig(config, repoName);
-  const agentName = resolveAgentName(config, input.agent);
+  const agentName = resolveAgentName(config, repoConfig, input.agent);
   const baseBranch = input.base_branch ?? config.defaults.base_branch;
   const workspaceName = buildWorkspaceName(input.issue, input.slug);
 
@@ -407,8 +411,8 @@ export async function createWorkspace(
       base_branch: baseBranch,
       tmux_session: repoConfig.tmux_session,
       tmux_window: workspaceName,
+      agent_name: agentCommand.agent_name,
       agent_type: agentCommand.agent_type,
-      agent_profile: agentCommand.profile_name ?? null,
       agent_runtime: agentCommand.runtime,
       agent_env: agentCommand.env,
       agent_sessions:

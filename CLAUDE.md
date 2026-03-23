@@ -52,7 +52,8 @@ The MCP server communicates over stdout via JSON-RPC. **Never use `console.log`*
 
 The codebase is organized around independent subsystems wired together by MCP tool handlers:
 
-- **Config** — Loads `~/.pitch/config.yaml` at startup; typed interfaces for repos, agents, agent profiles
+- **Config** — Loads `~/.pitch/config.yaml` at startup; typed interfaces for
+  repos, named agents, and repo-specific overrides/defaults
 - **Workspace state** — YAML CRUD layer at `~/.pitch/workspaces/{name}.yaml`
 - **Git** — Thin wrapper around `git worktree add/remove` shell commands
 - **tmux** — Thin wrapper around `tmux` commands for session/window/pane management
@@ -65,9 +66,15 @@ The codebase is organized around independent subsystems wired together by MCP to
 
 **Workspace identity:** A workspace is identified by its branch name, formatted as `gh-{issue}-{slug}` (e.g. `gh-565-fix-validation`). This same string is used as the git branch name, worktree directory name, and tmux window name.
 
-**Agent launcher layering:** Agent commands are assembled from three sources in priority order: (1) agent defaults from config, (2) per-workspace overrides from `create_workspace` params, (3) hardcoded Pitch requirements (e.g. `--cd` for worktree path).
+**Agent launcher layering:** Agent commands are assembled from four
+sources in priority order: (1) the selected named agent entry from
+config, (2) repo-specific overrides for that agent, (3) per-workspace
+overrides from `create_workspace` params, (4) hardcoded Pitch
+requirements (e.g. `--cd` for worktree path).
 
-**Agent profiles:** A profile extends a base agent type with alternate env vars (e.g. `CLAUDE_CONFIG_DIR`, `CODEX_HOME`) to support multi-account usage. Profile resolution happens in the agent launcher before command building.
+**Named agents:** The keys under `agents` are the user-facing launch
+targets. Multiple named entries can share the same underlying agent type
+(`claude` or `codex`) while using different env vars, args, or runtimes.
 
 **tmux layout:** Each workspace window has a fixed three-pane layout — left tall pane for the coding agent, top-right and bottom-right empty shells for the user.
 

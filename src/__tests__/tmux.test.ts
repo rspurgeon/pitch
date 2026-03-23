@@ -269,6 +269,34 @@ tmuxDescribe("tmux management", () => {
     });
   });
 
+  it("creates a new window when the tmux session uses base-index 1", async () => {
+    await ensureIsolatedTestSession(sessionName, worktreePath, options);
+    await runTmux(["set-option", "-g", "base-index", "1"], options);
+    await runTmux(["move-window", "-r", "-s", `${sessionName}:0`], options);
+
+    const before = await runTmux(
+      ["list-windows", "-t", sessionName, "-F", "#{window_index}:#{window_name}"],
+      options,
+    );
+    expect(before).toContain("1:");
+
+    const created = await createTmuxWindow(
+      {
+        session_name: sessionName,
+        window_name: windowName,
+        start_directory: worktreePath,
+      },
+      options,
+    );
+
+    expect(created.window_target).toBe(`${sessionName}:${windowName}`);
+    const after = await runTmux(
+      ["list-windows", "-t", sessionName, "-F", "#{window_index}:#{window_name}"],
+      options,
+    );
+    expect(after).toContain(`2:${windowName}`);
+  });
+
   it("kills an existing tmux window", async () => {
     await ensureIsolatedTestSession(sessionName, worktreePath, options);
     await createTmuxWindow(

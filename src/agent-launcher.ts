@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type {
-  AgentProfile,
+  AgentType,
   PitchConfig,
 } from "./config.js";
 
-export type SupportedAgentType = "claude" | "codex";
+export type SupportedAgentType = AgentType;
 export type SupportedRuntime = "native" | "docker";
 
 export interface AgentLauncher {
@@ -32,20 +32,20 @@ export interface BuildResumeCommandInput {
 }
 
 export interface BuiltAgentCommand {
+  agent_name: string;
   agent_type: SupportedAgentType;
   runtime: SupportedRuntime;
   command: string[];
   env: Record<string, string>;
   session_id?: string;
-  profile_name?: string;
 }
 
 interface ResolvedAgentTarget {
+  agent_name: string;
   agent_type: SupportedAgentType;
   runtime: SupportedRuntime;
   args: string[];
   env: Record<string, string>;
-  profile_name?: string;
 }
 
 interface AgentRuntimeCommand {
@@ -64,10 +64,6 @@ const AGENT_BINARIES: Record<SupportedAgentType, string> = {
   claude: "claude",
   codex: "codex",
 };
-
-function isSupportedAgentType(agent: string): agent is SupportedAgentType {
-  return agent === "claude" || agent === "codex";
-}
 
 function withoutReservedArgs(
   args: string[],
@@ -95,12 +91,12 @@ function withoutReservedArgs(
   return filtered;
 }
 
-function resolveRepoOverrides(
+function resolveRepoConfig(
   config: PitchConfig,
   repo: string | undefined,
-): Record<string, PitchConfig["repos"][string]["agent_overrides"][string]> {
+): PitchConfig["repos"][string] | null {
   if (repo === undefined) {
-    return {};
+    return null;
   }
 
   const repoConfig = config.repos[repo];
@@ -108,7 +104,7 @@ function resolveRepoOverrides(
     throw new AgentLauncherError(`Repo is not configured: ${repo}`);
   }
 
-  return repoConfig.agent_overrides;
+  return repoConfig;
 }
 
 function wrapRuntimeCommand(
@@ -132,88 +128,37 @@ function wrapRuntimeCommand(
 
 function resolveAgentTarget(
   config: PitchConfig,
-  agent: string,
+  agentName: string,
   repo: string | undefined,
   runtimeOverride?: SupportedRuntime,
 ): ResolvedAgentTarget {
-  const repoOverrides = resolveRepoOverrides(config, repo);
-  const profile = config.agent_profiles[agent];
-  if (profile !== undefined) {
-    return resolveProfileTarget(
-      config,
-      agent,
-      profile,
-      repoOverrides,
-      runtimeOverride,
-    );
-  }
-
-  if (!isSupportedAgentType(agent)) {
-    throw new AgentLauncherError(`Unsupported agent type: ${agent}`);
-  }
-
-  const agentConfig = config.agents[agent];
+  const repoConfig = resolveRepoConfig(config, repo);
+  const agentConfig = config.agents[agentName];
   if (agentConfig === undefined) {
-    throw new AgentLauncherError(`Agent is not configured: ${agent}`);
+    throw new AgentLauncherError(`Agent is not configured: ${agentName}`);
   }
 
-  const repoOverride = repoOverrides[agent];
+  const repoDefaults = repoConfig?.agent_defaults;
+  const repoOverride = repoConfig?.agent_overrides[agentName];
 
   return {
-    agent_type: agent,
-    runtime: runtimeOverride ?? repoOverride?.runtime ?? agentConfig.runtime,
-    args: [...agentConfig.args, ...(repoOverride?.args ?? [])],
-    env: {
-      ...agentConfig.env,
-      ...(repoOverride?.env ?? {}),
-    },
-  };
-}
-
-function resolveProfileTarget(
-  config: PitchConfig,
-  profileName: string,
-  profile: AgentProfile,
-  repoOverrides: Record<string, PitchConfig["repos"][string]["agent_overrides"][string]>,
-  runtimeOverride?: SupportedRuntime,
-): ResolvedAgentTarget {
-  if (!isSupportedAgentType(profile.agent)) {
-    throw new AgentLauncherError(
-      `Agent profile ${profileName} references unsupported agent type: ${profile.agent}`,
-    );
-  }
-
-  const baseAgent = config.agents[profile.agent];
-  if (baseAgent === undefined) {
-    throw new AgentLauncherError(
-      `Agent profile ${profileName} references unconfigured agent: ${profile.agent}`,
-    );
-  }
-
-  const baseRepoOverride = repoOverrides[profile.agent];
-  const profileRepoOverride = repoOverrides[profileName];
-
-  return {
-    agent_type: profile.agent,
+    agent_name: agentName,
+    agent_type: agentConfig.type,
     runtime:
       runtimeOverride ??
-      profileRepoOverride?.runtime ??
-      baseRepoOverride?.runtime ??
-      profile.runtime ??
-      baseAgent.runtime,
+      repoOverride?.runtime ??
+      repoDefaults?.runtime ??
+      agentConfig.runtime,
     args: [
-      ...baseAgent.args,
-      ...profile.args,
-      ...(baseRepoOverride?.args ?? []),
-      ...(profileRepoOverride?.args ?? []),
+      ...agentConfig.args,
+      ...(repoDefaults?.args ?? []),
+      ...(repoOverride?.args ?? []),
     ],
     env: {
-      ...baseAgent.env,
-      ...profile.env,
-      ...(baseRepoOverride?.env ?? {}),
-      ...(profileRepoOverride?.env ?? {}),
+      ...agentConfig.env,
+      ...(repoDefaults?.env ?? {}),
+      ...(repoOverride?.env ?? {}),
     },
-    profile_name: profileName,
   };
 }
 
@@ -244,12 +189,12 @@ function buildClaudeStartCommand(
   );
 
   return {
+    agent_name: resolved.agent_name,
     agent_type: "claude",
     runtime: resolved.runtime,
     command: runtimeCommand.command,
     env: runtimeCommand.env,
     session_id: sessionId,
-    profile_name: resolved.profile_name,
   };
 }
 
@@ -266,12 +211,12 @@ function buildClaudeResumeCommand(
   );
 
   return {
+    agent_name: resolved.agent_name,
     agent_type: "claude",
     runtime: resolved.runtime,
     command: runtimeCommand.command,
     env: runtimeCommand.env,
     session_id: input.session_id,
-    profile_name: resolved.profile_name,
   };
 }
 
@@ -299,11 +244,11 @@ function buildCodexStartCommand(
   );
 
   return {
+    agent_name: resolved.agent_name,
     agent_type: "codex",
     runtime: resolved.runtime,
     command: runtimeCommand.command,
     env: runtimeCommand.env,
-    profile_name: resolved.profile_name,
   };
 }
 
@@ -320,12 +265,12 @@ function buildCodexResumeCommand(
   );
 
   return {
+    agent_name: resolved.agent_name,
     agent_type: "codex",
     runtime: resolved.runtime,
     command: runtimeCommand.command,
     env: runtimeCommand.env,
     session_id: input.session_id,
-    profile_name: resolved.profile_name,
   };
 }
 

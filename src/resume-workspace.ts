@@ -107,11 +107,11 @@ function resolveAgentName(
     return overrideAgent;
   }
 
-  return workspace.agent_profile ?? workspace.agent_type;
+  return workspace.agent_name;
 }
 
 function currentWorkspaceAgentName(workspace: WorkspaceRecord): string {
-  return workspace.agent_profile ?? workspace.agent_type;
+  return workspace.agent_name;
 }
 
 function findLatestResumableSessionId(workspace: WorkspaceRecord): string | null {
@@ -421,8 +421,8 @@ export async function resumeWorkspace(
   const startedAt = dependencies.now().toISOString();
   const updatedWorkspace: WorkspaceRecord = {
     ...workspace,
+    agent_name: command.agent_name,
     agent_type: command.agent_type,
-    agent_profile: command.profile_name ?? null,
     agent_runtime: command.runtime,
     agent_env: command.env,
     agent_sessions: [
