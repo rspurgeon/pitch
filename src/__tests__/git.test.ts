@@ -9,6 +9,7 @@ import {
   createWorktree,
   GitWorktreeError,
   removeWorktree,
+  restoreWorktree,
 } from "../git.js";
 
 const execFileAsync = promisify(execFile);
@@ -225,6 +226,38 @@ describe("git worktree management", () => {
     ).rejects.toMatchObject({
       name: "GitWorktreeError",
       code: "INVALID_WORKSPACE_NAME",
+    });
+  });
+
+  it("restores a deleted worktree from its existing branch", async () => {
+    const created = await createWorktree({
+      repo,
+      workspace_name: "gh-131-restore-worktree",
+      base_branch: "main",
+    });
+
+    await rm(created.worktree_path, { recursive: true, force: true });
+
+    const restored = await restoreWorktree({
+      repo,
+      workspace_name: "gh-131-restore-worktree",
+    });
+
+    expect(restored).toEqual(created);
+    await expect(
+      git(["rev-parse", "--abbrev-ref", "HEAD"], restored.worktree_path),
+    ).resolves.toBe("gh-131-restore-worktree");
+  });
+
+  it("fails to restore when the branch no longer exists", async () => {
+    await expect(
+      restoreWorktree({
+        repo,
+        workspace_name: "gh-132-missing-branch",
+      }),
+    ).rejects.toMatchObject({
+      name: "GitWorktreeError",
+      code: "BRANCH_MISSING",
     });
   });
 });

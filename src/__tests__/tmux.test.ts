@@ -9,6 +9,7 @@ import {
   createTmuxLayout,
   createTmuxWindow,
   ensureTmuxSession,
+  getTmuxWindowPane,
   isTmuxAvailable,
   killTmuxWindow,
   sendKeysToPane,
@@ -366,6 +367,36 @@ tmuxDescribe("tmux management", () => {
     await expect(activePaneId(layout.window_target, options)).resolves.toBe(
       panes.agent_pane_id,
     );
+    await expect(
+      getTmuxWindowPane(
+        {
+          session_name: sessionName,
+          window_name: windowName,
+          pane_index: 0,
+        },
+        options,
+      ),
+    ).resolves.toBe(panes.agent_pane_id);
+    await expect(
+      getTmuxWindowPane(
+        {
+          session_name: sessionName,
+          window_name: windowName,
+          pane_index: 1,
+        },
+        options,
+      ),
+    ).resolves.toBe(panes.top_right_pane_id);
+    await expect(
+      getTmuxWindowPane(
+        {
+          session_name: sessionName,
+          window_name: windowName,
+          pane_index: 2,
+        },
+        options,
+      ),
+    ).resolves.toBe(panes.bottom_right_pane_id);
   });
 
   it("sends a command to a specific pane", async () => {

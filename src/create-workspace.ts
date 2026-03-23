@@ -23,7 +23,7 @@ import {
   writeWorkspaceRecord,
   type WorkspaceRecord,
 } from "./workspace-state.js";
-import { shellEscape } from "./shell.js";
+import { formatAgentPaneCommand } from "./agent-pane-command.js";
 
 export const CreateWorkspaceInputSchema = z
   .object({
@@ -159,35 +159,6 @@ function buildAgentOverrides(
   }
 
   return ["--model", input.model];
-}
-
-function shouldAllowShellExpansion(value: string): boolean {
-  return (
-    value === "~" ||
-    value.startsWith("~/") ||
-    /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(value) ||
-    /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value)
-  );
-}
-
-function formatEnvAssignment(key: string, value: string): string {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-    throw new CreateWorkspaceError(`Invalid environment variable name: ${key}`);
-  }
-
-  const renderedValue = shouldAllowShellExpansion(value)
-    ? value
-    : shellEscape(value);
-  return `${key}=${renderedValue}`;
-}
-
-function formatAgentPaneCommand(command: BuiltAgentCommand): string {
-  const envAssignments = Object.entries(command.env).map(([key, value]) =>
-    formatEnvAssignment(key, value),
-  );
-  const argv = command.command.map((part) => shellEscape(part));
-
-  return [...envAssignments, "command", "--", ...argv].join(" ");
 }
 
 function buildAgentSessions(
