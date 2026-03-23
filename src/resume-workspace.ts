@@ -132,6 +132,14 @@ function findLatestPendingSessionIndex(workspace: WorkspaceRecord): number | nul
   return null;
 }
 
+function hasTrailingPendingSession(workspace: WorkspaceRecord): boolean {
+  const pendingSessionIndex = findLatestPendingSessionIndex(workspace);
+  return (
+    pendingSessionIndex !== null &&
+    pendingSessionIndex === workspace.agent_sessions.length - 1
+  );
+}
+
 function backfillPendingSessionId(
   workspace: WorkspaceRecord,
   pendingIndex: number,
@@ -290,12 +298,19 @@ export async function resumeWorkspace(
   const agentName = resolveAgentName(workspace, input.agent);
   const isAgentContextChanged =
     input.agent !== undefined && input.agent !== currentWorkspaceAgentName(workspace);
+  const trailingPendingSession = hasTrailingPendingSession(workspace);
 
-  let latestSessionId = isAgentContextChanged
+  let latestSessionId = isAgentContextChanged || trailingPendingSession
     ? null
     : findLatestResumableSessionId(workspace);
 
-  if (!isAgentContextChanged && latestSessionId === null && workspace.agent_type === "codex") {
+  if (
+    !isAgentContextChanged &&
+    trailingPendingSession &&
+    latestSessionId === null &&
+    workspace.agent_type === "codex" &&
+    workspace.agent_runtime === "native"
+  ) {
     const pendingSessionIndex = findLatestPendingSessionIndex(workspace);
 
     if (pendingSessionIndex !== null) {

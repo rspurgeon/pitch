@@ -120,4 +120,34 @@ describe("codex session store", () => {
 
     expect(session).toBeNull();
   });
+
+  it("finds a matching session created days after the pending start", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "pitch-codex-session-"));
+    tempRoots.push(tempRoot);
+
+    await writeRollout(
+      tempRoot,
+      "2026/03/23",
+      "rollout-delayed.jsonl",
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          id: "delayed-session",
+          timestamp: "2026-03-23T14:27:05.000Z",
+          cwd: "/tmp/worktrees/gh-42-fix-bug",
+        },
+      }),
+    );
+
+    const session = await findCodexSessionForWorkspace({
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      started_at: "2026-03-20T14:27:00.000Z",
+      agent_env: {
+        CODEX_HOME: tempRoot,
+      },
+      now: new Date("2026-03-23T14:30:00.000Z"),
+    });
+
+    expect(session?.id).toBe("delayed-session");
+  });
 });

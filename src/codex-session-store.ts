@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { open, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -18,6 +18,8 @@ export interface CodexSessionMeta {
 }
 
 const SESSION_META_CLOCK_SKEW_MS = 60_000;
+const MAX_SESSION_META_LINE_BYTES = 64 * 1024;
+const SESSION_META_READ_CHUNK_SIZE = 4096;
 
 const SessionMetaLineSchema = z
   .object({
@@ -52,14 +54,9 @@ function resolveCodexSessionsRoot(agentEnv: Record<string, string>): string {
 }
 
 function parseSessionMetaLine(
-  rawContent: string,
+  firstLine: string,
   filePath: string,
 ): CodexSessionMeta | null {
-  const firstLine = rawContent.split("\n", 1)[0]?.trim();
-  if (firstLine === undefined || firstLine.length === 0) {
-    return null;
-  }
-
   let parsed: unknown;
   try {
     parsed = JSON.parse(firstLine);
@@ -78,6 +75,43 @@ function parseSessionMetaLine(
     cwd: result.data.payload.cwd,
     file_path: filePath,
   };
+}
+
+async function readFirstLine(filePath: string): Promise<string | null> {
+  const handle = await open(filePath, "r");
+
+  try {
+    let position = 0;
+    let line = "";
+
+    while (line.length < MAX_SESSION_META_LINE_BYTES) {
+      const remainingBytes = MAX_SESSION_META_LINE_BYTES - line.length;
+      const buffer = Buffer.alloc(
+        Math.min(SESSION_META_READ_CHUNK_SIZE, remainingBytes),
+      );
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+
+      if (bytesRead === 0) {
+        break;
+      }
+
+      const chunk = buffer.toString("utf8", 0, bytesRead);
+      const newlineIndex = chunk.indexOf("\n");
+
+      if (newlineIndex !== -1) {
+        line += chunk.slice(0, newlineIndex);
+        break;
+      }
+
+      line += chunk;
+      position += bytesRead;
+    }
+
+    const trimmed = line.replace(/\r$/, "").trim();
+    return trimmed.length === 0 ? null : trimmed;
+  } finally {
+    await handle.close();
+  }
 }
 
 function* enumerateSearchDates(
@@ -111,7 +145,6 @@ export async function findCodexSessionForWorkspace(
 
   const now = input.now ?? new Date();
   const sessionsRoot = resolveCodexSessionsRoot(input.agent_env);
-  const matches: CodexSessionMeta[] = [];
 
   for (const relativeDatePath of enumerateSearchDates(startedAt, now)) {
     const dayDirectory = join(sessionsRoot, relativeDatePath);
@@ -130,16 +163,21 @@ export async function findCodexSessionForWorkspace(
       .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
       .map((entry) => join(dayDirectory, entry.name))
       .sort();
+    const dayMatches: CodexSessionMeta[] = [];
 
     for (const filePath of rolloutFiles) {
-      let rawContent: string;
+      let firstLine: string | null;
       try {
-        rawContent = await readFile(filePath, "utf-8");
+        firstLine = await readFirstLine(filePath);
       } catch {
         continue;
       }
 
-      const meta = parseSessionMetaLine(rawContent, filePath);
+      if (firstLine === null) {
+        continue;
+      }
+
+      const meta = parseSessionMetaLine(firstLine, filePath);
       if (meta === null || meta.cwd !== input.worktree_path) {
         continue;
       }
@@ -156,15 +194,21 @@ export async function findCodexSessionForWorkspace(
         continue;
       }
 
-      matches.push(meta);
+      dayMatches.push(meta);
+    }
+
+    dayMatches.sort((left, right) => {
+      const leftTime = new Date(left.timestamp).getTime();
+      const rightTime = new Date(right.timestamp).getTime();
+      return (
+        leftTime - rightTime || left.file_path.localeCompare(right.file_path)
+      );
+    });
+
+    if (dayMatches.length > 0) {
+      return dayMatches[0] ?? null;
     }
   }
 
-  matches.sort((left, right) => {
-    const leftTime = new Date(left.timestamp).getTime();
-    const rightTime = new Date(right.timestamp).getTime();
-    return leftTime - rightTime || left.file_path.localeCompare(right.file_path);
-  });
-
-  return matches[0] ?? null;
+  return null;
 }
