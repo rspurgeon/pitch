@@ -270,7 +270,34 @@ describe("close workspace", () => {
       "Failed to clean up worktree for gh-42-fix-bug: worktree remove failed",
     );
     expect(dependencies.deleteWorkspaceRecord).not.toHaveBeenCalled();
-    expect(dependencies.writeWorkspaceRecord).not.toHaveBeenCalled();
+    expect(dependencies.writeWorkspaceRecord).toHaveBeenCalledWith(
+      makeWorkspaceRecord({
+        status: "closed",
+        updated_at: "2026-03-23T03:00:00.000Z",
+      }),
+    );
+  });
+
+  it("reports fallback failure when worktree cleanup and closed-state write both fail", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      removeWorktree: vi.fn(async () => {
+        throw new Error("worktree remove failed");
+      }),
+      writeWorkspaceRecord: vi.fn(async () => {
+        throw new Error("fallback write failed");
+      }),
+    });
+
+    await expect(
+      closeWorkspace(
+        {
+          name: "gh-42-fix-bug",
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow("Fallback state write also failed: fallback write failed");
   });
 
   it("falls back to a persisted closed record if deleting workspace state fails", async () => {

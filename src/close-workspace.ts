@@ -119,11 +119,9 @@ export async function closeWorkspace(
   const closedAt = dependencies.now().toISOString();
   const closedWorkspace = buildClosedWorkspaceRecord(existingWorkspace, closedAt);
   const shouldCleanupWorktree = input.cleanup_worktree ?? true;
-
-  let repoConfig: RepoConfig | undefined;
-  if (shouldCleanupWorktree) {
-    repoConfig = resolveRepoConfig(config, existingWorkspace.repo);
-  }
+  const repoConfig: RepoConfig | undefined = shouldCleanupWorktree
+    ? resolveRepoConfig(config, existingWorkspace.repo)
+    : undefined;
 
   try {
     await dependencies.killTmuxWindow({
@@ -146,12 +144,27 @@ export async function closeWorkspace(
     }
   }
 
+  if (repoConfig === undefined) {
+    throw new CloseWorkspaceError(
+      `Internal error: missing repo config for ${existingWorkspace.repo}`,
+    );
+  }
+
   try {
     await dependencies.removeWorktree({
-      repo: repoConfig as RepoConfig,
+      repo: repoConfig,
       workspace_name: existingWorkspace.name,
     });
   } catch (error: unknown) {
+    try {
+      await dependencies.writeWorkspaceRecord(closedWorkspace);
+    } catch (fallbackError: unknown) {
+      throw new CloseWorkspaceError(
+        `Failed to clean up worktree for ${input.name}: ${formatError(error)}\n` +
+          `Fallback state write also failed: ${formatError(fallbackError)}`,
+      );
+    }
+
     throw new CloseWorkspaceError(
       `Failed to clean up worktree for ${input.name}: ${formatError(error)}`,
     );
