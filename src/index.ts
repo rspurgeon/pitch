@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { registerCloseWorkspaceTool } from "./close-workspace.js";
 import { ConfigError, loadConfig, type PitchConfig } from "./config.js";
 import { registerCreateWorkspaceTool } from "./create-workspace.js";
 import { registerWorkspaceQueryTools } from "./workspace-query.js";
@@ -48,6 +49,7 @@ server.registerTool(
 
 registerCreateWorkspaceTool(server, config);
 registerWorkspaceQueryTools(server);
+registerCloseWorkspaceTool(server, config);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

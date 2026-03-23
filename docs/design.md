@@ -414,11 +414,15 @@ Relaunches the coding agent in an existing workspace, using the most recent sess
 
 ### `close_workspace`
 
-Marks a workspace as inactive and optionally cleans up the worktree.
+Closes a workspace by tearing down its tmux window. By
+default it also removes the git worktree and deletes the
+workspace state file.
 
 **Parameters:**
 - `name` (string, required) — workspace name
-- `cleanup_worktree` (boolean, optional) — remove the git worktree, defaults to `false`
+- `cleanup_worktree` (boolean, optional) — if `false`,
+  keep the workspace state file and worktree as a closed
+  record; defaults to `true`
 
 **Returns:** Updated workspace record
 
