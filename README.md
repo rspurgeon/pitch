@@ -140,7 +140,7 @@ agents:
 
 This is enough to start creating workspaces. The `claude`
 agent will run with all of its built-in defaults — no
-`defaults` or `env` overrides are needed unless you want to
+`args` or `env` overrides are needed unless you want to
 change the agent's default behavior (e.g., pin a model or
 set a permission mode).
 
@@ -167,18 +167,19 @@ Each repo requires:
 | `main_worktree` | Path to the repo's primary checkout |
 | `worktree_base` | Directory where Pitch creates worktrees |
 | `tmux_session` | tmux session name for this repo |
+| `agent_overrides` | Optional per-repo agent/profile overrides |
 
 #### `agents`
 
 Map of agent names to their configuration. Pitch supports
 Claude Code and Codex. Only `runtime` is required — the
-`defaults` and `env` fields are optional and only needed
+`args` and `env` fields are optional and only needed
 when you want to override the agent's built-in behavior.
 
 | Field | Description |
 |---|---|
 | `runtime` | `native` (run directly) or `docker` (via `agent-en-place`) |
-| `defaults` | Key-value map of CLI flags passed to the agent |
+| `args` | Ordered CLI arguments appended exactly as written |
 | `env` | Environment variables set when launching the agent |
 
 Example with both agents and optional overrides:
@@ -187,32 +188,40 @@ Example with both agents and optional overrides:
 agents:
   claude:
     runtime: native
-    defaults:
-      model: sonnet
-      permission_mode: dangerously-skip-permissions
+    args:
+      - --model
+      - sonnet
+      - --permission-mode
+      - bypassPermissions
     env:
       CLAUDE_CONFIG_DIR: ~/.claude
 
   codex:
     runtime: native
-    defaults:
-      model: gpt-5.4
-      approval: on-request
+    args:
+      - --model
+      - gpt-5.4
+      - --ask-for-approval
+      - on-request
     env:
       CODEX_HOME: ~/.codex
 ```
 
+Use `args` whenever you need repeatable flags such as
+`--add-dir`, bare flags such as `--search`, or precise
+argument ordering.
+
 #### `agent_profiles`
 
 Profiles are optional. They extend a base agent with
-alternate environment variables or defaults. This is how
+alternate environment variables or args. This is how
 you run the same agent with different accounts or API keys.
 
 | Field | Description |
 |---|---|
 | `agent` | **(required)** Base agent name to extend |
 | `runtime` | Override the base agent's runtime |
-| `defaults` | CLI flag overrides merged over base |
+| `args` | Additional CLI arguments appended over base |
 | `env` | Env var overrides merged over base |
 
 Example — a personal Claude account using a separate
@@ -225,8 +234,44 @@ agent_profiles:
     runtime: native
     env:
       CLAUDE_CONFIG_DIR: ~/.claude-personal
-    defaults:
-      model: opus
+    args:
+      - --model
+      - opus
+```
+
+#### `repos.<repo>.agent_overrides`
+
+`agent_overrides` lets you attach project-specific launch
+behavior to a repo without encoding that repo into the
+profile name. Override keys can be base agents like
+`claude`/`codex` or profile names like `codex-api`.
+
+| Field | Description |
+|---|---|
+| `runtime` | Optional repo-specific runtime override |
+| `args` | Additional ordered CLI args for this repo |
+| `env` | Additional env vars for this repo |
+
+Example — `kong/kongctl` needs extra writable dirs for
+Go and `kongctl` config:
+
+```yaml
+repos:
+  kong/kongctl:
+    main_worktree: ~/dev/kong/kongctl
+    worktree_base: ~/.local/share/worktrees/kong/kongctl
+    tmux_session: kongctl
+    agent_overrides:
+      codex:
+        args:
+          - --add-dir
+          - /home/rspurgeon/.config/kongctl
+          - --add-dir
+          - /home/rspurgeon/go
+      claude:
+        args:
+          - --add-dir
+          - /home/rspurgeon/go
 ```
 
 Set up the alternate config directory independently:
@@ -246,6 +291,10 @@ create_workspace \
 
 - **ping** — Returns "pong". Verifies the server is
   running.
+- **create_workspace** — Creates a workspace from a
+  GitHub issue by provisioning the git worktree, tmux
+  window layout, agent launch command, and workspace
+  state record.
 
 ## Development
 

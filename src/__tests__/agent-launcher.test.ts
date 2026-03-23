@@ -20,26 +20,59 @@ function makeConfig(): PitchConfig {
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
+        agent_overrides: {
+          claude: {
+            runtime: undefined,
+            args: ["--add-dir", "/home/rspurgeon/go"],
+            env: {
+              GO_SRC: "/home/rspurgeon/go",
+            },
+          },
+          codex: {
+            runtime: undefined,
+            args: [
+              "--add-dir",
+              "/home/rspurgeon/.config/kongctl",
+              "--add-dir",
+              "/home/rspurgeon/go",
+            ],
+            env: {
+              KONGCTL_CONFIG_DIR: "/home/rspurgeon/.config/kongctl",
+            },
+          },
+          "codex-api": {
+            runtime: undefined,
+            args: ["--search"],
+            env: {
+              OPENAI_BASE_URL: "https://api.example.invalid",
+            },
+          },
+        },
       },
     },
     agents: {
       claude: {
         runtime: "native",
-        defaults: {
-          model: "sonnet",
-          permission_mode: "dangerously-skip-permissions",
-        },
+        args: [
+          "--model",
+          "sonnet",
+          "--permission-mode",
+          "bypassPermissions",
+        ],
         env: {
           CLAUDE_CONFIG_DIR: "~/.claude",
         },
       },
       codex: {
         runtime: "native",
-        defaults: {
-          model: "gpt-5.4",
-          sandbox: "workspace-write",
-          approval: "on-request",
-        },
+        args: [
+          "--model",
+          "gpt-5.4",
+          "--sandbox",
+          "workspace-write",
+          "--ask-for-approval",
+          "on-request",
+        ],
         env: {
           CODEX_HOME: "~/.codex",
         },
@@ -49,16 +82,15 @@ function makeConfig(): PitchConfig {
       "claude-personal": {
         agent: "claude",
         runtime: "docker",
-        defaults: {
-          model: "opus",
-        },
+        args: ["--model", "opus"],
         env: {
           CLAUDE_CONFIG_DIR: "~/.claude-personal",
         },
       },
       "codex-api": {
         agent: "codex",
-        defaults: {},
+        runtime: undefined,
+        args: [],
         env: {
           CODEX_HOME: "~/.codex-api",
           OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
@@ -85,12 +117,10 @@ describe("agent launcher", () => {
       "claude",
       "--model",
       "sonnet",
-      "--permission_mode",
-      "dangerously-skip-permissions",
+      "--permission-mode",
+      "bypassPermissions",
       "--session-id",
       command.session_id!,
-      "--cd",
-      "/tmp/worktree",
       "--name",
       "gh-565-fix-validation",
     ]);
@@ -105,13 +135,17 @@ describe("agent launcher", () => {
     const command = buildAgentStartCommand({
       config,
       agent: "codex",
+      repo: "kong/kongctl",
       workspace_name: "gh-565-fix-validation",
       worktree_path: "/tmp/worktree",
-      overrides: {
-        model: "gpt-5.5",
-        approval: "never",
-        cd: "/tmp/ignored",
-      },
+      override_args: [
+        "--model",
+        "gpt-5.5",
+        "--ask-for-approval",
+        "never",
+        "--cd",
+        "/tmp/ignored",
+      ],
     });
 
     expect(command.agent_type).toBe("codex");
@@ -119,10 +153,18 @@ describe("agent launcher", () => {
     expect(command.command).toEqual([
       "codex",
       "--model",
-      "gpt-5.5",
+      "gpt-5.4",
       "--sandbox",
       "workspace-write",
-      "--approval",
+      "--ask-for-approval",
+      "on-request",
+      "--add-dir",
+      "/home/rspurgeon/.config/kongctl",
+      "--add-dir",
+      "/home/rspurgeon/go",
+      "--model",
+      "gpt-5.5",
+      "--ask-for-approval",
       "never",
       "--cd",
       "/tmp/worktree",
@@ -130,6 +172,7 @@ describe("agent launcher", () => {
     expect(command.session_id).toBeUndefined();
     expect(command.env).toEqual({
       CODEX_HOME: "~/.codex",
+      KONGCTL_CONFIG_DIR: "/home/rspurgeon/.config/kongctl",
     });
   });
 
@@ -165,6 +208,7 @@ describe("agent launcher", () => {
     const command = buildAgentStartCommand({
       config,
       agent: "claude-personal",
+      repo: "kong/kongctl",
       workspace_name: "gh-565-fix-validation",
       worktree_path: "/tmp/worktree",
       session_id: "claude-session",
@@ -177,18 +221,21 @@ describe("agent launcher", () => {
       "agent-en-place",
       "claude",
       "--model",
+      "sonnet",
+      "--permission-mode",
+      "bypassPermissions",
+      "--model",
       "opus",
-      "--permission_mode",
-      "dangerously-skip-permissions",
+      "--add-dir",
+      "/home/rspurgeon/go",
       "--session-id",
       "claude-session",
-      "--cd",
-      "/tmp/worktree",
       "--name",
       "gh-565-fix-validation",
     ]);
     expect(command.env).toEqual({
       CLAUDE_CONFIG_DIR: "~/.claude-personal",
+      GO_SRC: "/home/rspurgeon/go",
     });
   });
 
@@ -198,6 +245,7 @@ describe("agent launcher", () => {
     const command = buildAgentStartCommand({
       config,
       agent: "codex-api",
+      repo: "kong/kongctl",
       workspace_name: "gh-565-fix-validation",
       worktree_path: "/tmp/worktree",
       runtime: "docker",
@@ -212,14 +260,21 @@ describe("agent launcher", () => {
       "gpt-5.4",
       "--sandbox",
       "workspace-write",
-      "--approval",
+      "--ask-for-approval",
       "on-request",
+      "--add-dir",
+      "/home/rspurgeon/.config/kongctl",
+      "--add-dir",
+      "/home/rspurgeon/go",
+      "--search",
       "--cd",
       "/tmp/worktree",
     ]);
     expect(command.env).toEqual({
       CODEX_HOME: "~/.codex-api",
       OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
+      KONGCTL_CONFIG_DIR: "/home/rspurgeon/.config/kongctl",
+      OPENAI_BASE_URL: "https://api.example.invalid",
     });
   });
 
@@ -251,24 +306,30 @@ describe("agent launcher", () => {
       workspace_name: "gh-565-fix-validation",
       worktree_path: "/tmp/worktree",
       session_id: "pitch-session",
-      overrides: {
-        model: "opus",
-        "session-id": "user-session",
-        cd: "/tmp/ignored",
-        name: "wrong-name",
-      },
+      override_args: [
+        "--model",
+        "opus",
+        "--session-id",
+        "user-session",
+        "--cd",
+        "/tmp/ignored",
+        "--name",
+        "wrong-name",
+        "-n",
+        "wrong-name-short",
+      ],
     });
 
     expect(command.command).toEqual([
       "claude",
       "--model",
+      "sonnet",
+      "--permission-mode",
+      "bypassPermissions",
+      "--model",
       "opus",
-      "--permission_mode",
-      "dangerously-skip-permissions",
       "--session-id",
       "pitch-session",
-      "--cd",
-      "/tmp/worktree",
       "--name",
       "gh-565-fix-validation",
     ]);
@@ -291,7 +352,8 @@ describe("agent launcher", () => {
     const config = makeConfig();
     config.agent_profiles.broken = {
       agent: "claude",
-      defaults: {},
+      runtime: undefined,
+      args: [],
       env: {},
     };
     delete config.agents["claude"];

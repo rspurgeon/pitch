@@ -1,6 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
 import { ConfigError, loadConfig, type PitchConfig } from "./config.js";
+import { registerCreateWorkspaceTool } from "./create-workspace.js";
 
 let config: PitchConfig;
 try {
@@ -18,10 +20,12 @@ const server = new McpServer({
   version: "0.1.0",
 });
 
-server.tool(
+server.registerTool(
   "ping",
-  "Health check — returns server status and config summary",
-  {},
+  {
+    description: "Health check — returns server status and config summary",
+    inputSchema: z.object({}).strict(),
+  },
   async () => {
     const repos = Object.keys(config.repos);
     const agents = Object.keys(config.agents);
@@ -40,6 +44,8 @@ server.tool(
     };
   },
 );
+
+registerCreateWorkspaceTool(server, config);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

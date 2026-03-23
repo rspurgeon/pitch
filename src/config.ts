@@ -12,26 +12,54 @@ const DefaultsSchema = z.object({
   base_branch: z.string().default("main"),
 });
 
-const RepoConfigSchema = z.object({
-  main_worktree: z.string(),
-  worktree_base: z.string(),
-  tmux_session: z.string(),
-});
-
-const AgentConfigSchema = z.object({
-  runtime: z.enum(["native", "docker"]),
-  defaults: z.record(z.string(), z.string()).default({}),
-  env: z.record(z.string(), z.string()).default({}),
-});
-
-const AgentProfileSchema = z.object({
-  agent: z.string(),
-  runtime: z.enum(["native", "docker"]).optional(),
-  defaults: z.record(z.string(), z.string()).default({}),
-  env: z.record(z.string(), z.string()).default({}),
-});
-
 const nullToUndefined = (v: unknown) => (v === null ? undefined : v);
+
+const AgentArgListSchema = z.preprocess(
+  nullToUndefined,
+  z.array(z.string()).default([]),
+);
+
+const AgentEnvSchema = z.preprocess(
+  nullToUndefined,
+  z.record(z.string(), z.string()).default({}),
+);
+
+const AgentConfigSchema = z
+  .object({
+    runtime: z.enum(["native", "docker"]),
+    args: AgentArgListSchema,
+    env: AgentEnvSchema,
+  })
+  .strict();
+
+const AgentProfileSchema = z
+  .object({
+    agent: z.string(),
+    runtime: z.enum(["native", "docker"]).optional(),
+    args: AgentArgListSchema,
+    env: AgentEnvSchema,
+  })
+  .strict();
+
+const AgentOverrideSchema = z
+  .object({
+    runtime: z.enum(["native", "docker"]).optional(),
+    args: AgentArgListSchema,
+    env: AgentEnvSchema,
+  })
+  .strict();
+
+const RepoConfigSchema = z
+  .object({
+    main_worktree: z.string(),
+    worktree_base: z.string(),
+    tmux_session: z.string(),
+    agent_overrides: z.preprocess(
+      nullToUndefined,
+      z.record(z.string(), AgentOverrideSchema).default({}),
+    ),
+  })
+  .strict();
 
 export const PitchConfigSchema = z.object({
   defaults: z.preprocess(nullToUndefined, DefaultsSchema.default({})),
@@ -56,6 +84,7 @@ export type Defaults = z.infer<typeof DefaultsSchema>;
 export type RepoConfig = z.infer<typeof RepoConfigSchema>;
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 export type AgentProfile = z.infer<typeof AgentProfileSchema>;
+export type AgentOverride = z.infer<typeof AgentOverrideSchema>;
 
 // --- Error class ---
 

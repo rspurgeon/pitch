@@ -183,11 +183,20 @@ Docker provides a sandbox: the agent can run with maximum permissions (`--danger
 
 ### 3. Configuration Layering
 
-Command flags are assembled from three sources, in priority order:
+Command args and env are assembled from five sources, in
+priority order:
 
-1. **Agent defaults** (from Pitch config) — applied to every workspace for that agent type
-2. **Workspace overrides** (from `create_workspace` params) — per-workspace settings
-3. **Hardcoded requirements** — flags Pitch always sets (e.g. `--cd` for worktree path)
+1. **Base agent config** — global args/env for `claude`
+   or `codex`
+2. **Agent profile config** — account-specific args/env
+   layered over the base agent
+3. **Repo agent overrides** — repo-specific args/env for
+   the base agent and optionally the selected profile
+4. **Workspace overrides** — per-workspace settings from
+   `create_workspace` params
+5. **Hardcoded requirements** — args Pitch always sets
+   (for example Claude `--session-id` and `--name`, or
+   Codex `--cd`)
 
 ### Agent Specifics
 
@@ -195,13 +204,15 @@ Command flags are assembled from three sources, in priority order:
 
 ```
 # Start
-claude --session-id {uuid} --cd {worktree_path} --name {workspace_name} [user flags]
+claude --session-id {uuid} --name {workspace_name} [user flags]
 
 # Resume
 claude --resume {session_id}
 ```
 
-Session ID is pre-generated (UUID) and passed at launch. Pitch controls the ID.
+Session ID is pre-generated (UUID) and passed at launch.
+Pitch controls the ID. Claude runs in the tmux pane whose
+working directory has already been changed to the worktree.
 
 **Codex:**
 
@@ -234,13 +245,23 @@ Coding agents don't natively support multiple accounts, but their behavior can b
 - **Claude Code:** `CLAUDE_CONFIG_DIR` changes where Claude reads its config, credentials, and session data. Pointing to a different directory effectively switches accounts.
 - **Codex:** `CODEX_HOME` changes the config/session root. `OPENAI_API_KEY` can be overridden per invocation.
 
-Pitch supports this through **agent profiles**. A profile extends a base agent type with alternate environment variables and defaults. When creating a workspace, you can specify a profile instead of (or in addition to) an agent type:
+Pitch supports this through **agent profiles**. A profile
+extends a base agent type with alternate environment
+variables and ordered CLI args. When creating a workspace,
+you can specify a profile instead of (or in addition to)
+an agent type:
 
 ```
 create_workspace --issue 565 --slug fix-bug --agent claude-personal
 ```
 
-Pitch resolves `claude-personal` as a profile, looks up the base agent (`claude`), merges the profile's `env` and `defaults` over the base, and launches accordingly. This means the agent process starts with `CLAUDE_CONFIG_DIR=~/.claude-personal`, using a completely separate set of credentials, settings, and session history.
+Pitch resolves `claude-personal` as a profile, looks up
+the base agent (`claude`), merges the profile's `env`
+and `args` over the base, then applies any repo-specific
+agent overrides. This means the agent process starts with
+`CLAUDE_CONFIG_DIR=~/.claude-personal`, using a
+completely separate set of credentials, settings, and
+session history.
 
 The user sets up each config directory independently (e.g. `CLAUDE_CONFIG_DIR=~/.claude-personal claude auth login`). Pitch doesn't manage authentication — it just points the agent at the right config directory.
 
@@ -261,35 +282,49 @@ repos:
     main_worktree: ~/dev/kong/kongctl
     worktree_base: ~/.local/share/worktrees/kong/kongctl
     tmux_session: kongctl
+    agent_overrides:
+      codex:
+        args:
+          - --add-dir
+          - /home/rspurgeon/.config/kongctl
+          - --add-dir
+          - /home/rspurgeon/go
 
 agents:
   codex:
     runtime: native
-    defaults:
-      model: gpt-5.4
-      sandbox: workspace-write
-      approval: on-request
+    args:
+      - --model
+      - gpt-5.4
+      - --sandbox
+      - workspace-write
+      - --ask-for-approval
+      - on-request
     env:
       CODEX_HOME: ~/.codex
 
   claude:
     runtime: docker
-    defaults:
-      model: sonnet
-      permission_mode: dangerously-skip-permissions
+    args:
+      - --model
+      - sonnet
+      - --permission-mode
+      - bypassPermissions
     env:
       CLAUDE_CONFIG_DIR: ~/.claude
 
-# Agent profiles allow running agents with different accounts, API keys, or settings.
-# A profile overrides the base agent config with alternate env vars and defaults.
+# Agent profiles allow running agents with different
+# accounts, API keys, or settings. A profile overrides the
+# base agent config with alternate env vars and args.
 agent_profiles:
   claude-personal:
     agent: claude
     runtime: native
     env:
       CLAUDE_CONFIG_DIR: ~/.claude-personal
-    defaults:
-      model: opus
+    args:
+      - --model
+      - opus
 
   codex-api:
     agent: codex

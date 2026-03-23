@@ -2,6 +2,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { shellEscape } from "./shell.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,6 +21,11 @@ export interface CreateTmuxWindowParams {
   session_name: string;
   window_name: string;
   start_directory: string;
+}
+
+export interface KillTmuxWindowParams {
+  session_name: string;
+  window_name: string;
 }
 
 export interface CreateTmuxLayoutParams {
@@ -190,10 +196,6 @@ function windowTarget(sessionName: string, windowName: string): string {
   return `${validateSessionName(sessionName)}:${validateWindowName(windowName)}`;
 }
 
-function shellEscape(path: string): string {
-  return `'${path.replaceAll("'", `'\"'\"'`)}'`;
-}
-
 async function getPaneIds(
   target: string,
   options: TmuxClientOptions = {},
@@ -342,6 +344,29 @@ export async function createTmuxWindow(
   };
 }
 
+export async function killTmuxWindow(
+  params: KillTmuxWindowParams,
+  options: TmuxClientOptions = {},
+): Promise<boolean> {
+  const target = windowTarget(params.session_name, params.window_name);
+
+  try {
+    await runTmux(["kill-window", "-t", target], options);
+    return true;
+  } catch (error: unknown) {
+    if (
+      error instanceof TmuxError &&
+      error.code === "COMMAND_FAILED" &&
+      (error.message.includes("can't find window") ||
+        error.message.includes("can't find session"))
+    ) {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
 export async function sendKeysToPane(
   params: SendKeysToPaneParams,
   options: TmuxClientOptions = {},
@@ -414,6 +439,8 @@ export async function createTmuxLayout(
       options,
     );
   }
+
+  await runTmux(["select-pane", "-t", agentPaneId], options);
 
   return {
     session_name: sessionName,
