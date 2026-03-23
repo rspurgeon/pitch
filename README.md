@@ -295,6 +295,10 @@ create_workspace \
   GitHub issue by provisioning the git worktree, tmux
   window layout, agent launch command, and workspace
   state record.
+- **list_workspaces** — Lists tracked workspaces with
+  status, issue, agent type, and tmux location.
+- **get_workspace** — Returns the full saved workspace
+  record for a specific workspace name.
 
 ## Development
 
