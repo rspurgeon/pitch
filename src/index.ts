@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { ConfigError, loadConfig, type PitchConfig } from "./config.js";
 import { registerCreateWorkspaceTool } from "./create-workspace.js";
+import { registerWorkspaceQueryTools } from "./workspace-query.js";
 
 let config: PitchConfig;
 try {
@@ -46,6 +47,7 @@ server.registerTool(
 );
 
 registerCreateWorkspaceTool(server, config);
+registerWorkspaceQueryTools(server);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
