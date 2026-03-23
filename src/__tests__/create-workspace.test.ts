@@ -391,6 +391,65 @@ describe("create workspace", () => {
     expect(workspace.agent_sessions).toEqual([]);
   });
 
+  it("errors when an existing agent pane is rooted at a different path", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      tmuxWindowExists: vi.fn(async () => true),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%9",
+            current_command: "claude",
+            current_path: "/tmp/other",
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    await expect(
+      createWorkspace(
+        {
+          issue: 42,
+          slug: "fix-bug",
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow(
+      "Existing tmux window kongctl:gh-42-fix-bug pane 0 is rooted at /tmp/other, expected /tmp/worktrees/gh-42-fix-bug",
+    );
+  });
+
+  it("refuses to adopt an existing docker wrapper pane as a running agent", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      buildAgentStartCommand: vi.fn(() => makeCodexCommand()),
+      tmuxWindowExists: vi.fn(async () => true),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%9",
+            current_command: "agent-en-place",
+            current_path: "/tmp/worktrees/gh-42-fix-bug",
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    await expect(
+      createWorkspace(
+        {
+          issue: 42,
+          slug: "fix-bug",
+          agent: "codex-api",
+          runtime: "docker",
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow(
+      "Existing tmux window kongctl:gh-42-fix-bug has unsupported pane 0 command: agent-en-place",
+    );
+  });
+
   it("errors when an existing tmux window pane is occupied by another process", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({

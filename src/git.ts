@@ -1,6 +1,6 @@
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { RepoConfig } from "./config.js";
@@ -115,6 +115,14 @@ async function pathExists(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function normalizePath(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    return resolve(path);
   }
 }
 
@@ -237,8 +245,13 @@ async function ensureAdoptableWorktree(
   worktreePath: string,
   branch: string,
 ): Promise<void> {
+  const normalizedWorktreePath = await normalizePath(worktreePath);
   const registeredWorktrees = await listRegisteredWorktrees(mainWorktree);
-  if (!registeredWorktrees.includes(worktreePath)) {
+  const normalizedRegisteredWorktrees = await Promise.all(
+    registeredWorktrees.map((path) => normalizePath(path)),
+  );
+
+  if (!normalizedRegisteredWorktrees.includes(normalizedWorktreePath)) {
     throw new GitWorktreeError(
       "WORKTREE_EXISTS",
       `Existing path is not a registered worktree at ${worktreePath}`,

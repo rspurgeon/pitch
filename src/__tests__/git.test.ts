@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -168,6 +168,37 @@ describe("git worktree management", () => {
     await expect(
       git(["rev-parse", "--abbrev-ref", "HEAD"], ensured.worktree_path),
     ).resolves.toBe("gh-126-adopt-branch");
+  });
+
+  it("normalizes configured and registered worktree paths before adoption", async () => {
+    const actualBase = join(tempRoot, "actual-worktrees");
+    const symlinkBase = join(tempRoot, "linked-worktrees");
+    await mkdir(actualBase, { recursive: true });
+    await symlink(actualBase, symlinkBase);
+
+    const configuredRepo = {
+      ...repo,
+      worktree_base: symlinkBase,
+    };
+
+    await mkdir(symlinkBase, { recursive: true });
+    const actualWorktreePath = join(actualBase, "gh-126-symlinked-worktree");
+    await git(
+      ["worktree", "add", "-b", "gh-126-symlinked-worktree", actualWorktreePath, "main"],
+      repo.main_worktree,
+    );
+
+    const ensured = await ensureWorkspaceWorktree({
+      repo: configuredRepo,
+      workspace_name: "gh-126-symlinked-worktree",
+      base_branch: "main",
+    });
+
+    expect(ensured).toEqual({
+      branch: "gh-126-symlinked-worktree",
+      worktree_path: join(symlinkBase, "gh-126-symlinked-worktree"),
+      adopted: true,
+    });
   });
 
   it("fails gracefully when the worktree path already exists", async () => {

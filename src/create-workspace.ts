@@ -242,13 +242,6 @@ function classifyExistingPane(
     return "agent";
   }
 
-  if (
-    currentCommand === "agent-en-place" &&
-    agentCommand.runtime === "docker"
-  ) {
-    return "agent";
-  }
-
   return "unsupported";
 }
 
@@ -371,6 +364,15 @@ export async function createWorkspace(
       if (paneKind === "unsupported") {
         throw new CreateWorkspaceError(
           `Existing tmux window ${repoConfig.tmux_session}:${workspaceName} has unsupported pane 0 command: ${paneInfo.current_command}`,
+        );
+      }
+
+      if (
+        paneKind === "agent" &&
+        paneInfo.current_path !== worktree.worktree_path
+      ) {
+        throw new CreateWorkspaceError(
+          `Existing tmux window ${repoConfig.tmux_session}:${workspaceName} pane 0 is rooted at ${paneInfo.current_path}, expected ${worktree.worktree_path}`,
         );
       }
 

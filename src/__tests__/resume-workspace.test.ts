@@ -6,6 +6,7 @@ import {
   ResumeWorkspaceError,
   type ResumeWorkspaceDependencies,
 } from "../resume-workspace.js";
+import type { TmuxPaneInfo } from "../tmux.js";
 import type { WorkspaceRecord } from "../workspace-state.js";
 
 function makeConfig(): PitchConfig {
@@ -143,6 +144,14 @@ function makeDependencies(
       created: false,
     })),
     findCodexSessionForWorkspace: vi.fn(async () => null),
+    getTmuxWindowPaneInfo: vi.fn(
+      async () =>
+        ({
+          pane_id: "%1",
+          current_command: "claude",
+          current_path: "/tmp/worktrees/gh-42-fix-bug",
+        }) satisfies TmuxPaneInfo,
+    ),
     getTmuxWindowPane: vi.fn(async () => "%1"),
     readWorkspaceRecord: vi.fn(async () => makeWorkspaceRecord()),
     restoreWorktree: vi.fn(async () => ({
@@ -245,6 +254,29 @@ describe("resume workspace", () => {
       started_at: "2026-03-23T04:00:00.000Z",
       status: "active",
     });
+  });
+
+  it("does not launch a second agent when the pane already has a compatible running agent", async () => {
+    const config = makeConfig();
+    const originalWorkspace = makeWorkspaceRecord({
+      agent_sessions: [],
+    });
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () => originalWorkspace),
+    });
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.buildAgentResumeCommand).not.toHaveBeenCalled();
+    expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
+    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
+    expect(workspace).toEqual(originalWorkspace);
   });
 
   it("backfills a pending Codex session from the local session store before resuming", async () => {
