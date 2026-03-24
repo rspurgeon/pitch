@@ -14,31 +14,36 @@ function makeConfig(): PitchConfig {
       repo: "kong/kongctl",
       agent: "codex",
       base_branch: "main",
+      worktree_root: "~/.local/share/worktrees",
     },
     repos: {
       "kong/kongctl": {
+        default_agent: "claude-enterprise",
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
-        agent_overrides: {
-          claude: {
-            runtime: undefined,
-            args: ["--add-dir", "/home/rspurgeon/go"],
-            env: {
-              GO_SRC: "/home/rspurgeon/go",
-            },
+        agent_defaults: {
+          runtime: undefined,
+          args: ["--add-dir", "/home/rspurgeon/go"],
+          env: {
+            GO_SRC: "/home/rspurgeon/go",
           },
+        },
+        agent_overrides: {
           codex: {
             runtime: undefined,
             args: [
               "--add-dir",
               "/home/rspurgeon/.config/kongctl",
-              "--add-dir",
-              "/home/rspurgeon/go",
             ],
             env: {
               KONGCTL_CONFIG_DIR: "/home/rspurgeon/.config/kongctl",
             },
+          },
+          "claude-personal": {
+            runtime: undefined,
+            args: [],
+            env: {},
           },
           "codex-api": {
             runtime: undefined,
@@ -51,7 +56,8 @@ function makeConfig(): PitchConfig {
       },
     },
     agents: {
-      claude: {
+      "claude-enterprise": {
+        type: "claude",
         runtime: "native",
         args: [
           "--model",
@@ -63,7 +69,16 @@ function makeConfig(): PitchConfig {
           CLAUDE_CONFIG_DIR: "~/.claude",
         },
       },
+      "claude-personal": {
+        type: "claude",
+        runtime: "docker",
+        args: ["--model", "opus"],
+        env: {
+          CLAUDE_CONFIG_DIR: "~/.claude-personal",
+        },
+      },
       codex: {
+        type: "codex",
         runtime: "native",
         args: [
           "--model",
@@ -77,19 +92,9 @@ function makeConfig(): PitchConfig {
           CODEX_HOME: "~/.codex",
         },
       },
-    },
-    agent_profiles: {
-      "claude-personal": {
-        agent: "claude",
-        runtime: "docker",
-        args: ["--model", "opus"],
-        env: {
-          CLAUDE_CONFIG_DIR: "~/.claude-personal",
-        },
-      },
       "codex-api": {
-        agent: "codex",
-        runtime: undefined,
+        type: "codex",
+        runtime: "native",
         args: [],
         env: {
           CODEX_HOME: "~/.codex-api",
@@ -106,11 +111,12 @@ describe("agent launcher", () => {
 
     const command = buildAgentStartCommand({
       config,
-      agent: "claude",
+      agent: "claude-enterprise",
       workspace_name: "gh-565-fix-validation",
       worktree_path: "/tmp/worktree",
     });
 
+    expect(command.agent_name).toBe("claude-enterprise");
     expect(command.agent_type).toBe("claude");
     expect(command.runtime).toBe("native");
     expect(command.command).toEqual([
@@ -159,9 +165,9 @@ describe("agent launcher", () => {
       "--ask-for-approval",
       "on-request",
       "--add-dir",
-      "/home/rspurgeon/.config/kongctl",
-      "--add-dir",
       "/home/rspurgeon/go",
+      "--add-dir",
+      "/home/rspurgeon/.config/kongctl",
       "--model",
       "gpt-5.5",
       "--ask-for-approval",
@@ -172,6 +178,7 @@ describe("agent launcher", () => {
     expect(command.session_id).toBeUndefined();
     expect(command.env).toEqual({
       CODEX_HOME: "~/.codex",
+      GO_SRC: "/home/rspurgeon/go",
       KONGCTL_CONFIG_DIR: "/home/rspurgeon/.config/kongctl",
     });
   });
@@ -181,7 +188,7 @@ describe("agent launcher", () => {
 
     const command = buildAgentResumeCommand({
       config,
-      agent: "claude",
+      agent: "claude-enterprise",
       session_id: "session-123",
     });
 
@@ -202,7 +209,7 @@ describe("agent launcher", () => {
     expect(command.session_id).toBe("session-456");
   });
 
-  it("resolves profiles over the base agent config", () => {
+  it("builds a selected named Claude agent with repo overrides", () => {
     const config = makeConfig();
 
     const command = buildAgentStartCommand({
@@ -214,16 +221,12 @@ describe("agent launcher", () => {
       session_id: "claude-session",
     });
 
+    expect(command.agent_name).toBe("claude-personal");
     expect(command.agent_type).toBe("claude");
     expect(command.runtime).toBe("docker");
-    expect(command.profile_name).toBe("claude-personal");
     expect(command.command).toEqual([
       "agent-en-place",
       "claude",
-      "--model",
-      "sonnet",
-      "--permission-mode",
-      "bypassPermissions",
       "--model",
       "opus",
       "--add-dir",
@@ -239,7 +242,7 @@ describe("agent launcher", () => {
     });
   });
 
-  it("forwards profile env into docker-wrapped Codex commands", () => {
+  it("forwards selected agent env into docker-wrapped Codex commands", () => {
     const config = makeConfig();
 
     const command = buildAgentStartCommand({
@@ -256,14 +259,6 @@ describe("agent launcher", () => {
     expect(command.command).toEqual([
       "agent-en-place",
       "codex",
-      "--model",
-      "gpt-5.4",
-      "--sandbox",
-      "workspace-write",
-      "--ask-for-approval",
-      "on-request",
-      "--add-dir",
-      "/home/rspurgeon/.config/kongctl",
       "--add-dir",
       "/home/rspurgeon/go",
       "--search",
@@ -272,8 +267,8 @@ describe("agent launcher", () => {
     ]);
     expect(command.env).toEqual({
       CODEX_HOME: "~/.codex-api",
+      GO_SRC: "/home/rspurgeon/go",
       OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
-      KONGCTL_CONFIG_DIR: "/home/rspurgeon/.config/kongctl",
       OPENAI_BASE_URL: "https://api.example.invalid",
     });
   });
@@ -283,7 +278,7 @@ describe("agent launcher", () => {
 
     const command = buildAgentResumeCommand({
       config,
-      agent: "claude",
+      agent: "claude-enterprise",
       session_id: "resume-123",
       runtime: "docker",
     });
@@ -302,7 +297,7 @@ describe("agent launcher", () => {
 
     const command = buildAgentStartCommand({
       config,
-      agent: "claude",
+      agent: "claude-enterprise",
       workspace_name: "gh-565-fix-validation",
       worktree_path: "/tmp/worktree",
       session_id: "pitch-session",
@@ -335,7 +330,7 @@ describe("agent launcher", () => {
     ]);
   });
 
-  it("throws for unsupported agent names", () => {
+  it("throws for unknown agent names", () => {
     const config = makeConfig();
 
     expect(() =>
@@ -348,24 +343,18 @@ describe("agent launcher", () => {
     ).toThrow(AgentLauncherError);
   });
 
-  it("throws when a profile references an unconfigured base agent", () => {
+  it("throws when the selected named agent is not configured", () => {
     const config = makeConfig();
-    config.agent_profiles.broken = {
-      agent: "claude",
-      runtime: undefined,
-      args: [],
-      env: {},
-    };
-    delete config.agents["claude"];
+    delete config.agents["claude-enterprise"];
 
     expect(() =>
       buildAgentStartCommand({
         config,
-        agent: "broken",
+        agent: "claude-enterprise",
         workspace_name: "gh-565-fix-validation",
         worktree_path: "/tmp/worktree",
       }),
-    ).toThrow("references unconfigured agent: claude");
+    ).toThrow("Agent is not configured: claude-enterprise");
   });
 
   it("exposes concrete launchers for direct use", () => {
@@ -373,7 +362,7 @@ describe("agent launcher", () => {
 
     const claude = claudeLauncher.buildResumeCommand({
       config,
-      agent: "claude",
+      agent: "claude-enterprise",
       session_id: "claude-session",
     });
     const codex = codexLauncher.buildResumeCommand({

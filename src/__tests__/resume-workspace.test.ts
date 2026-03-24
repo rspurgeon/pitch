@@ -15,38 +15,45 @@ function makeConfig(): PitchConfig {
       repo: "kong/kongctl",
       agent: "codex",
       base_branch: "main",
+      worktree_root: "~/.local/share/worktrees",
     },
     repos: {
       "kong/kongctl": {
+        default_agent: "claude-enterprise",
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
+        agent_defaults: {
+          runtime: undefined,
+          args: [],
+          env: {},
+        },
         agent_overrides: {},
       },
     },
     agents: {
-      claude: {
+      "claude-enterprise": {
+        type: "claude",
         runtime: "native",
         args: ["--model", "sonnet"],
         env: {
           CLAUDE_CONFIG_DIR: "~/.claude",
         },
       },
-      codex: {
-        runtime: "native",
-        args: ["--model", "gpt-5.4"],
-        env: {
-          CODEX_HOME: "~/.codex",
-        },
-      },
-    },
-    agent_profiles: {
       "claude-personal": {
-        agent: "claude",
+        type: "claude",
         runtime: "native",
         args: [],
         env: {
           CLAUDE_CONFIG_DIR: "~/.claude-personal",
+        },
+      },
+      codex: {
+        type: "codex",
+        runtime: "native",
+        args: ["--model", "gpt-5.4"],
+        env: {
+          CODEX_HOME: "~/.codex",
         },
       },
     },
@@ -65,8 +72,8 @@ function makeWorkspaceRecord(
     base_branch: "main",
     tmux_session: "kongctl",
     tmux_window: "gh-42-fix-bug",
+    agent_name: "claude-enterprise",
     agent_type: "claude",
-    agent_profile: null,
     agent_runtime: "native",
     agent_env: {
       CLAUDE_CONFIG_DIR: "~/.claude",
@@ -87,6 +94,7 @@ function makeWorkspaceRecord(
 
 function makeClaudeResumeCommand(): BuiltAgentCommand {
   return {
+    agent_name: "claude-enterprise",
     agent_type: "claude",
     runtime: "native",
     command: ["claude", "--resume", "claude-session-1"],
@@ -99,6 +107,7 @@ function makeClaudeResumeCommand(): BuiltAgentCommand {
 
 function makeClaudeStartCommand(): BuiltAgentCommand {
   return {
+    agent_name: "claude-enterprise",
     agent_type: "claude",
     runtime: "native",
     command: [
@@ -181,7 +190,7 @@ describe("resume workspace", () => {
 
     expect(dependencies.buildAgentResumeCommand).toHaveBeenCalledWith({
       config,
-      agent: "claude",
+      agent: "claude-enterprise",
       repo: "kong/kongctl",
       session_id: "claude-session-1",
     });
@@ -244,7 +253,7 @@ describe("resume workspace", () => {
     expect(dependencies.buildAgentResumeCommand).not.toHaveBeenCalled();
     expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith({
       config,
-      agent: "claude",
+      agent: "claude-enterprise",
       repo: "kong/kongctl",
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
@@ -284,6 +293,7 @@ describe("resume workspace", () => {
     const dependencies = makeDependencies({
       readWorkspaceRecord: vi.fn(async () =>
         makeWorkspaceRecord({
+          agent_name: "codex",
           agent_type: "codex",
           agent_env: {
             CODEX_HOME: "~/.codex",
@@ -298,6 +308,7 @@ describe("resume workspace", () => {
         }),
       ),
       buildAgentResumeCommand: vi.fn(() => ({
+        agent_name: "codex",
         agent_type: "codex",
         runtime: "native",
         command: ["codex", "resume", "codex-session-1"],
@@ -354,6 +365,7 @@ describe("resume workspace", () => {
     const dependencies = makeDependencies({
       readWorkspaceRecord: vi.fn(async () =>
         makeWorkspaceRecord({
+          agent_name: "codex",
           agent_type: "codex",
           agent_env: {
             CODEX_HOME: "~/.codex",
@@ -373,6 +385,7 @@ describe("resume workspace", () => {
         }),
       ),
       buildAgentResumeCommand: vi.fn(() => ({
+        agent_name: "codex",
         agent_type: "codex",
         runtime: "native",
         command: ["codex", "resume", "codex-session-new"],
@@ -428,6 +441,7 @@ describe("resume workspace", () => {
     const dependencies = makeDependencies({
       readWorkspaceRecord: vi.fn(async () =>
         makeWorkspaceRecord({
+          agent_name: "codex",
           agent_type: "codex",
           agent_env: {
             CODEX_HOME: "~/.codex",
@@ -442,6 +456,7 @@ describe("resume workspace", () => {
         }),
       ),
       buildAgentStartCommand: vi.fn(() => ({
+        agent_name: "codex",
         agent_type: "codex",
         runtime: "native",
         command: ["codex", "--cd", "/tmp/worktrees/gh-42-fix-bug"],
@@ -489,6 +504,7 @@ describe("resume workspace", () => {
     const dependencies = makeDependencies({
       readWorkspaceRecord: vi.fn(async () =>
         makeWorkspaceRecord({
+          agent_name: "codex",
           agent_type: "codex",
           agent_runtime: "docker",
           agent_env: {
@@ -504,6 +520,7 @@ describe("resume workspace", () => {
         }),
       ),
       buildAgentStartCommand: vi.fn(() => ({
+        agent_name: "codex",
         agent_type: "codex",
         runtime: "docker",
         command: ["agent-en-place", "codex"],

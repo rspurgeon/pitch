@@ -183,18 +183,16 @@ Docker provides a sandbox: the agent can run with maximum permissions (`--danger
 
 ### 3. Configuration Layering
 
-Command args and env are assembled from five sources, in
+Command args and env are assembled from four sources, in
 priority order:
 
-1. **Base agent config** — global args/env for `claude`
-   or `codex`
-2. **Agent profile config** — account-specific args/env
-   layered over the base agent
-3. **Repo agent overrides** — repo-specific args/env for
-   the base agent and optionally the selected profile
-4. **Workspace overrides** — per-workspace settings from
+1. **Selected agent config** — args/env/runtime from the
+   named entry under `agents`
+2. **Repo agent overrides** — repo-specific args/env for
+   that same named agent
+3. **Workspace overrides** — per-workspace settings from
    `create_workspace` params
-5. **Hardcoded requirements** — args Pitch always sets
+4. **Hardcoded requirements** — args Pitch always sets
    (for example Claude `--session-id` and `--name`, or
    Codex `--cd`)
 
@@ -238,27 +236,26 @@ When runtime is `docker`, Pitch delegates container management to `agent-en-plac
 
 Pitch passes the agent type to `agent-en-place` and appends its own flags. Pitch does not need to understand Docker internals.
 
-### Multi-Account / Profile Support
+### Multi-Account Agent Support
 
 Coding agents don't natively support multiple accounts, but their behavior can be changed through environment variables:
 
 - **Claude Code:** `CLAUDE_CONFIG_DIR` changes where Claude reads its config, credentials, and session data. Pointing to a different directory effectively switches accounts.
 - **Codex:** `CODEX_HOME` changes the config/session root. `OPENAI_API_KEY` can be overridden per invocation.
 
-Pitch supports this through **agent profiles**. A profile
-extends a base agent type with alternate environment
-variables and ordered CLI args. When creating a workspace,
-you can specify a profile instead of (or in addition to)
-an agent type:
+Pitch supports this through named entries under `agents`.
+Multiple entries can share the same underlying `type`
+while using different `env`, `args`, or `runtime`
+settings. When creating a workspace, you select one of
+those named entries directly:
 
 ```
 create_workspace --issue 565 --slug fix-bug --agent claude-personal
 ```
 
-Pitch resolves `claude-personal` as a profile, looks up
-the base agent (`claude`), merges the profile's `env`
-and `args` over the base, then applies any repo-specific
-agent overrides. This means the agent process starts with
+Pitch resolves `claude-personal` as the selected agent
+entry, then applies any repo-specific overrides for that
+same key. This means the agent process starts with
 `CLAUDE_CONFIG_DIR=~/.claude-personal`, using a
 completely separate set of credentials, settings, and
 session history.
@@ -276,22 +273,27 @@ defaults:
   repo: kong/kongctl
   agent: codex
   base_branch: main
+  worktree_root: ~/.local/share/worktrees
 
 repos:
   kong/kongctl:
+    default_agent: claude-enterprise
     main_worktree: ~/dev/kong/kongctl
-    worktree_base: ~/.local/share/worktrees/kong/kongctl
-    tmux_session: kongctl
+    agent_defaults:
+      args:
+        - --add-dir
+        - /home/rspurgeon/go
     agent_overrides:
+      claude-enterprise:
+        runtime: docker
       codex:
         args:
           - --add-dir
           - /home/rspurgeon/.config/kongctl
-          - --add-dir
-          - /home/rspurgeon/go
 
 agents:
   codex:
+    type: codex
     runtime: native
     args:
       - --model
@@ -303,8 +305,9 @@ agents:
     env:
       CODEX_HOME: ~/.codex
 
-  claude:
-    runtime: docker
+  claude-enterprise:
+    type: claude
+    runtime: native
     args:
       - --model
       - sonnet
@@ -313,12 +316,8 @@ agents:
     env:
       CLAUDE_CONFIG_DIR: ~/.claude
 
-# Agent profiles allow running agents with different
-# accounts, API keys, or settings. A profile overrides the
-# base agent config with alternate env vars and args.
-agent_profiles:
   claude-personal:
-    agent: claude
+    type: claude
     runtime: native
     env:
       CLAUDE_CONFIG_DIR: ~/.claude-personal
@@ -327,11 +326,17 @@ agent_profiles:
       - opus
 
   codex-api:
-    agent: codex
+    type: codex
+    runtime: native
     env:
       CODEX_HOME: ~/.codex-api
       OPENAI_API_KEY: ${OPENAI_API_KEY_SECONDARY}
 ```
+
+If a repo omits `worktree_base`, Pitch derives it as
+`{defaults.worktree_root}/{owner}/{repo}`. If a repo omits
+`tmux_session`, Pitch uses the repo name segment
+(`kongctl` for `kong/kongctl`).
 
 ---
 
@@ -348,8 +353,8 @@ worktree_path: ~/.local/share/worktrees/kong/kongctl/gh-565-fix-validation
 base_branch: main
 tmux_session: kongctl
 tmux_window: gh-565-fix-validation
+agent_name: codex
 agent_type: codex
-agent_profile: null
 agent_runtime: native
 agent_env:
   CODEX_HOME: ~/.codex
@@ -384,7 +389,8 @@ workspaces are still rejected.
 - `issue` (number, required) — GitHub issue number
 - `slug` (string, required) — descriptive text for naming
 - `base_branch` (string, optional) — branch to create from, defaults to `main`
-- `agent` (string, optional) — `claude` or `codex`, or a profile name like `claude-personal`, defaults from config
+- `agent` (string, optional) — configured agent name like `codex`,
+  `claude-enterprise`, or `claude-personal`, defaults from config
 - `runtime` (string, optional) — `native` or `docker`, defaults from agent config
 - `model` (string, optional) — override default model for this workspace
 

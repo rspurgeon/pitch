@@ -25,8 +25,8 @@ function makeWorkspace(
     base_branch: "main",
     tmux_session: "kongctl",
     tmux_window: "gh-565-fix-validation",
+    agent_name: "codex",
     agent_type: "codex",
-    agent_profile: null,
     agent_runtime: "native",
     agent_env: { CODEX_HOME: "~/.codex" },
     agent_sessions: [

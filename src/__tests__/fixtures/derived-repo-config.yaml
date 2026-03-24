@@ -1,0 +1,18 @@
+defaults:
+  repo: kong/kongctl
+  agent: codex
+  worktree_root: ~/.local/share/worktrees
+
+repos:
+  kong/kongctl:
+    default_agent: claude-enterprise
+    main_worktree: ~/dev/kong/kongctl
+
+agents:
+  codex:
+    type: codex
+    runtime: native
+
+  claude-enterprise:
+    type: claude
+    runtime: native

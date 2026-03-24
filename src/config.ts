@@ -6,10 +6,13 @@ import { z } from "zod";
 
 // --- Zod Schemas ---
 
+export const DEFAULT_WORKTREE_ROOT = "~/.local/share/worktrees";
+
 const DefaultsSchema = z.object({
   repo: z.string().optional(),
   agent: z.string().optional(),
   base_branch: z.string().default("main"),
+  worktree_root: z.string().default(DEFAULT_WORKTREE_ROOT),
 });
 
 const nullToUndefined = (v: unknown) => (v === null ? undefined : v);
@@ -24,18 +27,13 @@ const AgentEnvSchema = z.preprocess(
   z.record(z.string(), z.string()).default({}),
 );
 
+const AgentTypeSchema = z.enum(["claude", "codex"]);
+const AgentRuntimeSchema = z.enum(["native", "docker"]);
+
 const AgentConfigSchema = z
   .object({
-    runtime: z.enum(["native", "docker"]),
-    args: AgentArgListSchema,
-    env: AgentEnvSchema,
-  })
-  .strict();
-
-const AgentProfileSchema = z
-  .object({
-    agent: z.string(),
-    runtime: z.enum(["native", "docker"]).optional(),
+    type: AgentTypeSchema,
+    runtime: AgentRuntimeSchema,
     args: AgentArgListSchema,
     env: AgentEnvSchema,
   })
@@ -43,7 +41,7 @@ const AgentProfileSchema = z
 
 const AgentOverrideSchema = z
   .object({
-    runtime: z.enum(["native", "docker"]).optional(),
+    runtime: AgentRuntimeSchema.optional(),
     args: AgentArgListSchema,
     env: AgentEnvSchema,
   })
@@ -51,9 +49,14 @@ const AgentOverrideSchema = z
 
 const RepoConfigSchema = z
   .object({
+    default_agent: z.preprocess(nullToUndefined, z.string().optional()),
     main_worktree: z.string(),
-    worktree_base: z.string(),
-    tmux_session: z.string(),
+    worktree_base: z.preprocess(nullToUndefined, z.string().optional()),
+    tmux_session: z.preprocess(nullToUndefined, z.string().optional()),
+    agent_defaults: z.preprocess(
+      nullToUndefined,
+      AgentOverrideSchema.default({}),
+    ),
     agent_overrides: z.preprocess(
       nullToUndefined,
       z.record(z.string(), AgentOverrideSchema).default({}),
@@ -71,20 +74,89 @@ export const PitchConfigSchema = z.object({
     nullToUndefined,
     z.record(z.string(), AgentConfigSchema).default({}),
   ),
-  agent_profiles: z.preprocess(
-    nullToUndefined,
-    z.record(z.string(), AgentProfileSchema).default({}),
-  ),
+}).superRefine((config, ctx) => {
+  const configuredAgents = new Set(Object.keys(config.agents));
+
+  function addUnknownAgentIssue(path: (string | number)[], agentName: string): void {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path,
+      message: `Unknown agent reference: ${agentName}`,
+    });
+  }
+
+  if (
+    config.defaults.agent !== undefined &&
+    !configuredAgents.has(config.defaults.agent)
+  ) {
+    addUnknownAgentIssue(["defaults", "agent"], config.defaults.agent);
+  }
+
+  for (const [repoName, repoConfig] of Object.entries(config.repos)) {
+    if (
+      repoConfig.default_agent !== undefined &&
+      !configuredAgents.has(repoConfig.default_agent)
+    ) {
+      addUnknownAgentIssue(
+        ["repos", repoName, "default_agent"],
+        repoConfig.default_agent,
+      );
+    }
+
+    for (const agentName of Object.keys(repoConfig.agent_overrides)) {
+      if (!configuredAgents.has(agentName)) {
+        addUnknownAgentIssue(
+          ["repos", repoName, "agent_overrides", agentName],
+          agentName,
+        );
+      }
+    }
+  }
 });
 
-// --- Types (inferred from Zod) ---
+type RawPitchConfig = z.infer<typeof PitchConfigSchema>;
+type RawDefaults = z.infer<typeof DefaultsSchema>;
+type RawRepoConfig = z.infer<typeof RepoConfigSchema>;
 
-export type PitchConfig = z.infer<typeof PitchConfigSchema>;
-export type Defaults = z.infer<typeof DefaultsSchema>;
-export type RepoConfig = z.infer<typeof RepoConfigSchema>;
-export type AgentConfig = z.infer<typeof AgentConfigSchema>;
-export type AgentProfile = z.infer<typeof AgentProfileSchema>;
-export type AgentOverride = z.infer<typeof AgentOverrideSchema>;
+// --- Types ---
+
+export interface Defaults {
+  repo?: string;
+  agent?: string;
+  base_branch: string;
+  worktree_root: string;
+}
+
+export interface RepoConfig {
+  default_agent?: string;
+  main_worktree: string;
+  worktree_base: string;
+  tmux_session: string;
+  agent_defaults: AgentOverride;
+  agent_overrides: Record<string, AgentOverride>;
+}
+
+export interface AgentConfig {
+  type: AgentType;
+  runtime: AgentRuntime;
+  args: string[];
+  env: Record<string, string>;
+}
+
+export interface AgentOverride {
+  runtime?: AgentRuntime;
+  args: string[];
+  env: Record<string, string>;
+}
+
+export interface PitchConfig {
+  defaults: Defaults;
+  repos: Record<string, RepoConfig>;
+  agents: Record<string, AgentConfig>;
+}
+
+export type AgentType = z.infer<typeof AgentTypeSchema>;
+export type AgentRuntime = z.infer<typeof AgentRuntimeSchema>;
 
 // --- Error class ---
 
@@ -103,6 +175,45 @@ function isNodeError(err: unknown): err is NodeJS.ErrnoException {
   return err instanceof Error && "code" in err;
 }
 
+function deriveTmuxSession(repoName: string): string {
+  const parts = repoName.split("/").filter((part) => part.length > 0);
+  return parts.at(-1) ?? repoName;
+}
+
+function normalizeRepoConfig(
+  repoName: string,
+  repoConfig: RawRepoConfig,
+  defaults: RawDefaults,
+): RepoConfig {
+  return {
+    default_agent: repoConfig.default_agent,
+    main_worktree: repoConfig.main_worktree,
+    worktree_base:
+      repoConfig.worktree_base ?? join(defaults.worktree_root, repoName),
+    tmux_session: repoConfig.tmux_session ?? deriveTmuxSession(repoName),
+    agent_defaults: repoConfig.agent_defaults,
+    agent_overrides: repoConfig.agent_overrides,
+  };
+}
+
+function normalizeConfig(raw: RawPitchConfig): PitchConfig {
+  return {
+    defaults: {
+      repo: raw.defaults.repo,
+      agent: raw.defaults.agent,
+      base_branch: raw.defaults.base_branch,
+      worktree_root: raw.defaults.worktree_root,
+    },
+    repos: Object.fromEntries(
+      Object.entries(raw.repos).map(([repoName, repoConfig]) => [
+        repoName,
+        normalizeRepoConfig(repoName, repoConfig, raw.defaults),
+      ]),
+    ),
+    agents: raw.agents,
+  };
+}
+
 export async function loadConfig(
   configPath: string = DEFAULT_CONFIG_PATH,
 ): Promise<PitchConfig> {
@@ -112,7 +223,7 @@ export async function loadConfig(
     rawContent = await readFile(configPath, "utf-8");
   } catch (err: unknown) {
     if (isNodeError(err) && err.code === "ENOENT") {
-      return PitchConfigSchema.parse({});
+      return normalizeConfig(PitchConfigSchema.parse({}));
     }
     throw new ConfigError(
       `Failed to read config file at ${configPath}: ${String(err)}`,
@@ -129,7 +240,7 @@ export async function loadConfig(
   }
 
   if (parsed === null || parsed === undefined) {
-    return PitchConfigSchema.parse({});
+    return normalizeConfig(PitchConfigSchema.parse({}));
   }
 
   const result = PitchConfigSchema.safeParse(parsed);
@@ -140,5 +251,5 @@ export async function loadConfig(
     throw new ConfigError(`Invalid config in ${configPath}:\n${issues}`);
   }
 
-  return result.data;
+  return normalizeConfig(result.data);
 }

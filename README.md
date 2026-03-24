@@ -125,24 +125,26 @@ A basic config to get started with one repo and one agent:
 ```yaml
 defaults:
   repo: myorg/myrepo
-  agent: claude
+  agent: codex
+  worktree_root: ~/.local/share/worktrees
 
 repos:
   myorg/myrepo:
     main_worktree: ~/dev/myorg/myrepo
-    worktree_base: ~/.local/share/worktrees/myorg/myrepo
-    tmux_session: myrepo
 
 agents:
-  claude:
+  codex:
+    type: codex
     runtime: native
 ```
 
-This is enough to start creating workspaces. The `claude`
-agent will run with all of its built-in defaults — no
-`args` or `env` overrides are needed unless you want to
-change the agent's default behavior (e.g., pin a model or
-set a permission mode).
+This is enough to start creating workspaces. `defaults.agent`
+selects the `codex` entry under `agents`, and that agent
+will run with all of its built-in defaults unless you add
+custom `args` or `env`. For `myorg/myrepo`, Pitch will
+derive `worktree_base` as
+`~/.local/share/worktrees/myorg/myrepo` and `tmux_session`
+as `myrepo`.
 
 ### Configuration Reference
 
@@ -154,8 +156,9 @@ these values.
 | Field | Description | Default |
 |---|---|---|
 | `repo` | Default GitHub org/repo | none |
-| `agent` | Default agent type or profile name | none |
+| `agent` | Default configured agent name | none |
 | `base_branch` | Branch to create workspaces from | `main` |
+| `worktree_root` | Root used to derive repo `worktree_base` values | `~/.local/share/worktrees` |
 
 #### `repos`
 
@@ -164,87 +167,90 @@ Each repo requires:
 
 | Field | Description |
 |---|---|
+| `default_agent` | Optional repo-specific default agent name |
 | `main_worktree` | Path to the repo's primary checkout |
-| `worktree_base` | Directory where Pitch creates worktrees |
-| `tmux_session` | tmux session name for this repo |
-| `agent_overrides` | Optional per-repo agent/profile overrides |
+| `worktree_base` | Optional explicit worktree directory for this repo |
+| `tmux_session` | Optional explicit tmux session name for this repo |
+| `agent_defaults` | Optional repo-wide agent args/env/runtime applied to every agent |
+| `agent_overrides` | Optional per-repo overrides keyed by configured agent name |
+
+If `worktree_base` is omitted, Pitch derives it as
+`{defaults.worktree_root}/{owner}/{repo}`. If `tmux_session`
+is omitted, Pitch defaults it to the repo name segment
+(`kongctl` for `kong/kongctl`).
 
 #### `agents`
 
-Map of agent names to their configuration. Pitch supports
-Claude Code and Codex. Only `runtime` is required — the
-`args` and `env` fields are optional and only needed
-when you want to override the agent's built-in behavior.
+Map of selectable agent names to their configuration.
+These keys are used everywhere Pitch asks for an agent:
+`defaults.agent`, `repos.<repo>.default_agent`,
+`create_workspace --agent`, and
+`repos.<repo>.agent_overrides`.
+
+Multiple entries can use the same underlying agent type.
+For example, `claude-enterprise` and `claude-personal`
+can both have `type: claude` with different `env`,
+`args`, or `runtime` settings.
 
 | Field | Description |
 |---|---|
+| `type` | `claude` or `codex` |
 | `runtime` | `native` (run directly) or `docker` (via `agent-en-place`) |
 | `args` | Ordered CLI arguments appended exactly as written |
 | `env` | Environment variables set when launching the agent |
 
-Example with both agents and optional overrides:
+Example with multiple named agents:
 
 ```yaml
 agents:
-  claude:
-    runtime: native
-    args:
-      - --model
-      - sonnet
-      - --permission-mode
-      - bypassPermissions
-    env:
-      CLAUDE_CONFIG_DIR: ~/.claude
-
   codex:
+    type: codex
     runtime: native
     args:
-      - --model
-      - gpt-5.4
+      - --sandbox
+      - workspace-write
       - --ask-for-approval
       - on-request
     env:
       CODEX_HOME: ~/.codex
+
+  claude-enterprise:
+    type: claude
+    runtime: native
+    env:
+      CLAUDE_CONFIG_DIR: ~/.claude
+
+  claude-personal:
+    type: claude
+    runtime: native
+    args:
+      - --model
+      - opus
+    env:
+      CLAUDE_CONFIG_DIR: ~/.claude-personal
 ```
 
 Use `args` whenever you need repeatable flags such as
 `--add-dir`, bare flags such as `--search`, or precise
 argument ordering.
 
-#### `agent_profiles`
+#### `repos.<repo>.agent_defaults`
 
-Profiles are optional. They extend a base agent with
-alternate environment variables or args. This is how
-you run the same agent with different accounts or API keys.
+`agent_defaults` lets you attach repo-wide launch behavior
+that should apply regardless of which configured agent is
+selected for that repo.
 
 | Field | Description |
 |---|---|
-| `agent` | **(required)** Base agent name to extend |
-| `runtime` | Override the base agent's runtime |
-| `args` | Additional CLI arguments appended over base |
-| `env` | Env var overrides merged over base |
-
-Example — a personal Claude account using a separate
-config directory:
-
-```yaml
-agent_profiles:
-  claude-personal:
-    agent: claude
-    runtime: native
-    env:
-      CLAUDE_CONFIG_DIR: ~/.claude-personal
-    args:
-      - --model
-      - opus
-```
+| `runtime` | Optional repo-wide runtime override |
+| `args` | Additional ordered CLI args for every agent in this repo |
+| `env` | Additional env vars for every agent in this repo |
 
 #### `repos.<repo>.agent_overrides`
 
 `agent_overrides` lets you attach project-specific launch
-behavior to a repo without encoding that repo into the
-profile name. Override keys can be base agents like
-`claude`/`codex` or profile names like `codex-api`.
+behavior to a repo. Override keys must match names under
+`agents`, and layer on top of `agent_defaults`.
 
 | Field | Description |
 |---|---|
@@ -258,20 +264,19 @@ Go and `kongctl` config:
 ```yaml
 repos:
   kong/kongctl:
+    default_agent: claude-enterprise
     main_worktree: ~/dev/kong/kongctl
-    worktree_base: ~/.local/share/worktrees/kong/kongctl
-    tmux_session: kongctl
+    agent_defaults:
+      args:
+        - --add-dir
+        - /home/rspurgeon/go
     agent_overrides:
+      claude-enterprise:
+        runtime: docker
       codex:
         args:
           - --add-dir
           - /home/rspurgeon/.config/kongctl
-          - --add-dir
-          - /home/rspurgeon/go
-      claude:
-        args:
-          - --add-dir
-          - /home/rspurgeon/go
 ```
 
 Set up the alternate config directory independently:
@@ -280,7 +285,7 @@ Set up the alternate config directory independently:
 CLAUDE_CONFIG_DIR=~/.claude-personal claude auth login
 ```
 
-Then create workspaces with the profile:
+Then create workspaces with the named agent entry:
 
 ```
 create_workspace \
@@ -297,7 +302,7 @@ create_workspace \
   launching the agent when needed, and writing the
   workspace state record.
 - **list_workspaces** — Lists tracked workspaces with
-  status, issue, agent type, and tmux location.
+  status, issue, selected agent, and tmux location.
 - **get_workspace** — Returns the full saved workspace
   record for a specific workspace name.
 - **resume_workspace** — Relaunches or resumes the

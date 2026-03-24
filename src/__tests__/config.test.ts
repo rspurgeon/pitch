@@ -15,19 +15,19 @@ describe("loadConfig", () => {
     it("returns defaults when file does not exist", async () => {
       const config = await loadConfig("/nonexistent/path/config.yaml");
       expect(config.defaults.base_branch).toBe("main");
+      expect(config.defaults.worktree_root).toBe("~/.local/share/worktrees");
       expect(config.defaults.repo).toBeUndefined();
       expect(config.defaults.agent).toBeUndefined();
       expect(config.repos).toEqual({});
       expect(config.agents).toEqual({});
-      expect(config.agent_profiles).toEqual({});
     });
 
     it("returns defaults for an empty file", async () => {
       const config = await loadConfig(fixture("empty-config.yaml"));
       expect(config.defaults.base_branch).toBe("main");
+      expect(config.defaults.worktree_root).toBe("~/.local/share/worktrees");
       expect(config.repos).toEqual({});
       expect(config.agents).toEqual({});
-      expect(config.agent_profiles).toEqual({});
     });
 
     it("throws ConfigError for malformed YAML", async () => {
@@ -44,9 +44,9 @@ describe("loadConfig", () => {
     it("treats null-valued keys as defaults", async () => {
       const config = await loadConfig(fixture("null-keys-config.yaml"));
       expect(config.defaults.base_branch).toBe("main");
+      expect(config.defaults.worktree_root).toBe("~/.local/share/worktrees");
       expect(config.repos).toEqual({});
       expect(config.agents).toEqual({});
-      expect(config.agent_profiles).toEqual({});
     });
   });
 
@@ -57,20 +57,22 @@ describe("loadConfig", () => {
       expect(config.defaults.repo).toBe("kong/kongctl");
       expect(config.defaults.agent).toBe("codex");
       expect(config.defaults.base_branch).toBe("main");
+      expect(config.defaults.worktree_root).toBe("~/.local/share/worktrees");
 
       expect(config.repos["kong/kongctl"]).toEqual({
+        default_agent: "claude-enterprise",
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
+        agent_defaults: {
+          runtime: undefined,
+          args: ["--add-dir", "/home/rspurgeon/go"],
+          env: {},
+        },
         agent_overrides: {
           codex: {
             runtime: undefined,
-            args: [
-              "--add-dir",
-              "/home/rspurgeon/.config/kongctl",
-              "--add-dir",
-              "/home/rspurgeon/go",
-            ],
+            args: ["--add-dir", "/home/rspurgeon/.config/kongctl"],
             env: {},
           },
           "claude-personal": {
@@ -84,6 +86,7 @@ describe("loadConfig", () => {
       });
 
       expect(config.agents["codex"]).toEqual({
+        type: "codex",
         runtime: "native",
         args: [
           "--model",
@@ -96,7 +99,8 @@ describe("loadConfig", () => {
         env: { CODEX_HOME: "~/.codex" },
       });
 
-      expect(config.agents["claude"]).toEqual({
+      expect(config.agents["claude-enterprise"]).toEqual({
+        type: "claude",
         runtime: "docker",
         args: [
           "--model",
@@ -107,21 +111,38 @@ describe("loadConfig", () => {
         env: { CLAUDE_CONFIG_DIR: "~/.claude" },
       });
 
-      expect(config.agent_profiles["claude-personal"]).toEqual({
-        agent: "claude",
+      expect(config.agents["claude-personal"]).toEqual({
+        type: "claude",
         runtime: "native",
         env: { CLAUDE_CONFIG_DIR: "~/.claude-personal" },
         args: ["--model", "opus"],
       });
 
-      expect(config.agent_profiles["codex-api"]).toEqual({
-        agent: "codex",
-        runtime: undefined,
+      expect(config.agents["codex-api"]).toEqual({
+        type: "codex",
+        runtime: "native",
         env: {
           CODEX_HOME: "~/.codex-api",
           OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
         },
         args: [],
+      });
+    });
+
+    it("derives repo worktree_base and tmux_session when omitted", async () => {
+      const config = await loadConfig(fixture("derived-repo-config.yaml"));
+
+      expect(config.repos["kong/kongctl"]).toEqual({
+        default_agent: "claude-enterprise",
+        main_worktree: "~/dev/kong/kongctl",
+        worktree_base: "~/.local/share/worktrees/kong/kongctl",
+        tmux_session: "kongctl",
+        agent_defaults: {
+          runtime: undefined,
+          args: [],
+          env: {},
+        },
+        agent_overrides: {},
       });
     });
 
@@ -134,7 +155,7 @@ describe("loadConfig", () => {
 
     it("preserves env var references as literal strings", async () => {
       const config = await loadConfig(fixture("full-config.yaml"));
-      expect(config.agent_profiles["codex-api"].env["OPENAI_API_KEY"]).toBe(
+      expect(config.agents["codex-api"].env["OPENAI_API_KEY"]).toBe(
         "${OPENAI_API_KEY_SECONDARY}",
       );
     });
@@ -145,10 +166,10 @@ describe("loadConfig", () => {
       const config = await loadConfig(fixture("minimal-config.yaml"));
       expect(config.defaults.repo).toBe("kong/kongctl");
       expect(config.defaults.base_branch).toBe("main");
+      expect(config.defaults.worktree_root).toBe("~/.local/share/worktrees");
       expect(config.defaults.agent).toBeUndefined();
       expect(config.repos).toEqual({});
       expect(config.agents).toEqual({});
-      expect(config.agent_profiles).toEqual({});
     });
   });
 
@@ -161,6 +182,15 @@ describe("loadConfig", () => {
   });
 
   describe("validation errors", () => {
+    it("rejects unknown agent references in defaults and repos", async () => {
+      await expect(
+        loadConfig(fixture("unknown-agent-reference-config.yaml")),
+      ).rejects.toThrow(ConfigError);
+      await expect(
+        loadConfig(fixture("unknown-agent-reference-config.yaml")),
+      ).rejects.toThrow(/Unknown agent reference: missing-agent/);
+    });
+
     it("throws ConfigError for invalid field types", async () => {
       await expect(loadConfig(fixture("invalid-config.yaml"))).rejects.toThrow(
         ConfigError,

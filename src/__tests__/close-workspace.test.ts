@@ -13,23 +13,30 @@ function makeConfig(): PitchConfig {
       repo: "kong/kongctl",
       agent: "codex",
       base_branch: "main",
+      worktree_root: "~/.local/share/worktrees",
     },
     repos: {
       "kong/kongctl": {
+        default_agent: "codex",
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
+        agent_defaults: {
+          runtime: undefined,
+          args: [],
+          env: {},
+        },
         agent_overrides: {},
       },
     },
     agents: {
       codex: {
+        type: "codex",
         runtime: "native",
         args: [],
         env: {},
       },
     },
-    agent_profiles: {},
   };
 }
 
@@ -45,8 +52,8 @@ function makeWorkspaceRecord(
     base_branch: "main",
     tmux_session: "kongctl",
     tmux_window: "gh-42-fix-bug",
+    agent_name: "codex",
     agent_type: "codex",
-    agent_profile: null,
     agent_runtime: "native",
     agent_env: {},
     agent_sessions: [

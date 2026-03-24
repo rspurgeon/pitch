@@ -208,6 +208,10 @@ function windowTarget(sessionName: string, windowName: string): string {
   return `${validateSessionName(sessionName)}:${validateWindowName(windowName)}`;
 }
 
+function sessionWindowTarget(sessionName: string): string {
+  return `${validateSessionName(sessionName)}:`;
+}
+
 async function getPaneIds(
   target: string,
   options: TmuxClientOptions = {},
@@ -336,7 +340,7 @@ export async function createTmuxWindow(
       "new-window",
       "-d",
       "-t",
-      sessionName,
+      sessionWindowTarget(sessionName),
       "-n",
       windowName,
       "-c",

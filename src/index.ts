@@ -32,7 +32,6 @@ server.registerTool(
   async () => {
     const repos = Object.keys(config.repos);
     const agents = Object.keys(config.agents);
-    const profiles = Object.keys(config.agent_profiles);
     const status = {
       status: "ok",
       version: "0.1.0",
@@ -40,7 +39,6 @@ server.registerTool(
       default_agent: config.defaults.agent ?? null,
       repos: repos.length,
       agents: agents.length,
-      profiles: profiles.length,
     };
     return {
       content: [{ type: "text", text: JSON.stringify(status) }],
