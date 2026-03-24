@@ -27,7 +27,7 @@ const AgentEnvSchema = z.preprocess(
   z.record(z.string(), z.string()).default({}),
 );
 
-const AgentTypeSchema = z.enum(["claude", "codex"]);
+const AgentTypeSchema = z.enum(["claude", "codex", "opencode"]);
 const AgentRuntimeSchema = z.enum(["native", "docker"]);
 
 const AgentConfigSchema = z

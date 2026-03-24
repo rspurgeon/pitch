@@ -127,6 +127,15 @@ describe("loadConfig", () => {
         },
         args: [],
       });
+
+      expect(config.agents["opencode"]).toEqual({
+        type: "opencode",
+        runtime: "native",
+        env: {
+          OPENCODE_CONFIG_DIR: "~/.config/opencode",
+        },
+        args: ["--agent", "build"],
+      });
     });
 
     it("derives repo worktree_base and tmux_session when omitted", async () => {

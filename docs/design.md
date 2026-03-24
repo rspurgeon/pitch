@@ -76,7 +76,8 @@ Inputs:
 - **issue** (required) — GitHub issue number
 - **slug** (required) — human-provided descriptive text
 - **base_branch** (optional, defaults to `main`)
-- **agent** (optional, defaults from config) — `claude` or `codex`
+- **agent** (optional, defaults from config) — configured agent name such as
+  `claude-enterprise`, `codex`, or `opencode`
 
 Steps:
 1. Resolve repo config (main worktree, worktree base, tmux session name)
@@ -87,7 +88,8 @@ Steps:
 6. Split into three-pane layout (agent left, empty top-right, shell bottom-right)
 7. `cd` all panes to the worktree path
 8. Launch the coding agent in the left pane via the agent launcher
-9. Capture agent session ID (pre-generated for Claude, discovered for Codex)
+9. Persist agent session state (pre-generated for Claude, pending for Codex and
+   OpenCode until a later backfill)
 10. Write workspace record to `~/.pitch/workspaces/{workspace_name}.yaml`
 
 ### List
@@ -224,6 +226,23 @@ codex resume {session_id}
 
 Session ID is discovered after launch from `~/.codex/sessions/` or captured from exit output (`To continue this session, run codex resume {id}`).
 
+**OpenCode:**
+
+```
+# Start
+opencode [user flags] {worktree_path}
+
+# Resume
+opencode --session {session_id}
+```
+
+OpenCode sessions are persisted under
+`~/.local/share/opencode/storage/session/`. Pitch starts new OpenCode
+workspaces with a pending session ID and backfills the real ID later when it can
+match the stored session metadata to the workspace path.
+If OpenCode is configured in attach mode, Pitch supplies the
+workspace path to `--dir` for both create and resume.
+
 ### Docker via agent-en-place
 
 When runtime is `docker`, Pitch delegates container management to `agent-en-place`:
@@ -234,7 +253,9 @@ When runtime is `docker`, Pitch delegates container management to `agent-en-plac
 - Forwards credentials (API keys, git config, SSH keys)
 - Runs the agent with full permissions inside the container
 
-Pitch passes the agent type to `agent-en-place` and appends its own flags. Pitch does not need to understand Docker internals.
+Pitch passes the agent type to `agent-en-place` and appends its own flags. Pitch
+does not need to understand Docker internals. OpenCode support is native-only
+for now.
 
 ### Multi-Account Agent Support
 

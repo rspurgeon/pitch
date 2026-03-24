@@ -246,6 +246,14 @@ function classifyExistingPane(
     return "agent";
   }
 
+  if (
+    currentCommand === "opencode" &&
+    agentCommand.agent_type === "opencode" &&
+    agentCommand.runtime === "native"
+  ) {
+    return "agent";
+  }
+
   return "unsupported";
 }
 

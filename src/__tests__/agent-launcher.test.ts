@@ -6,6 +6,7 @@ import {
   buildAgentStartCommand,
   claudeLauncher,
   codexLauncher,
+  opencodeLauncher,
 } from "../agent-launcher.js";
 
 function makeConfig(): PitchConfig {
@@ -99,6 +100,27 @@ function makeConfig(): PitchConfig {
         env: {
           CODEX_HOME: "~/.codex-api",
           OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
+        },
+      },
+      opencode: {
+        type: "opencode",
+        runtime: "native",
+        args: ["--agent", "build"],
+        env: {
+          OPENCODE_CONFIG_DIR: "~/.config/opencode",
+        },
+      },
+      "opencode-attach": {
+        type: "opencode",
+        runtime: "native",
+        args: [
+          "attach",
+          "http://localhost:4096",
+          "--dir",
+          ".",
+        ],
+        env: {
+          OPENCODE_SERVER_PASSWORD: "secret",
         },
       },
     },
@@ -207,6 +229,104 @@ describe("agent launcher", () => {
 
     expect(command.command).toEqual(["codex", "resume", "session-456"]);
     expect(command.session_id).toBe("session-456");
+  });
+
+  it("builds an OpenCode start command in the target worktree", () => {
+    const config = makeConfig();
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "opencode",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+      override_args: [
+        "--model",
+        "openrouter/anthropic/claude-sonnet-4",
+        "--session",
+        "ignored",
+      ],
+    });
+
+    expect(command.agent_type).toBe("opencode");
+    expect(command.runtime).toBe("native");
+    expect(command.command).toEqual([
+      "opencode",
+      "--agent",
+      "build",
+      "--model",
+      "openrouter/anthropic/claude-sonnet-4",
+      "/tmp/worktree",
+    ]);
+    expect(command.session_id).toBeUndefined();
+    expect(command.env).toEqual({
+      OPENCODE_CONFIG_DIR: "~/.config/opencode",
+    });
+  });
+
+  it("builds an OpenCode resume command", () => {
+    const config = makeConfig();
+
+    const command = buildAgentResumeCommand({
+      config,
+      agent: "opencode",
+      session_id: "ses_123",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.command).toEqual([
+      "opencode",
+      "--agent",
+      "build",
+      "--session",
+      "ses_123",
+    ]);
+    expect(command.session_id).toBe("ses_123");
+  });
+
+  it("builds OpenCode attach-mode start and injects the worktree dir", () => {
+    const config = makeConfig();
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "opencode-attach",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.command).toEqual([
+      "opencode",
+      "attach",
+      "http://localhost:4096",
+      "--dir",
+      "/tmp/worktree",
+    ]);
+    expect(command.env).toEqual({
+      OPENCODE_SERVER_PASSWORD: "secret",
+    });
+  });
+
+  it("builds OpenCode attach-mode resume and preserves the attach target", () => {
+    const config = makeConfig();
+
+    const command = buildAgentResumeCommand({
+      config,
+      agent: "opencode-attach",
+      session_id: "ses_123",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.command).toEqual([
+      "opencode",
+      "attach",
+      "http://localhost:4096",
+      "--dir",
+      "/tmp/worktree",
+      "--session",
+      "ses_123",
+    ]);
+    expect(command.env).toEqual({
+      OPENCODE_SERVER_PASSWORD: "secret",
+    });
   });
 
   it("builds a selected named Claude agent with repo overrides", () => {
@@ -330,6 +450,20 @@ describe("agent launcher", () => {
     ]);
   });
 
+  it("throws when OpenCode is configured with the docker runtime", () => {
+    const config = makeConfig();
+
+    expect(() =>
+      buildAgentStartCommand({
+        config,
+        agent: "opencode",
+        workspace_name: "gh-565-fix-validation",
+        worktree_path: "/tmp/worktree",
+        runtime: "docker",
+      }),
+    ).toThrow("OpenCode does not support the docker runtime yet");
+  });
+
   it("throws for unknown agent names", () => {
     const config = makeConfig();
 
@@ -370,8 +504,21 @@ describe("agent launcher", () => {
       agent: "codex",
       session_id: "codex-session",
     });
+    const opencode = opencodeLauncher.buildResumeCommand({
+      config,
+      agent: "opencode",
+      session_id: "ses_123",
+      worktree_path: "/tmp/worktree",
+    });
 
     expect(claude.command).toEqual(["claude", "--resume", "claude-session"]);
     expect(codex.command).toEqual(["codex", "resume", "codex-session"]);
+    expect(opencode.command).toEqual([
+      "opencode",
+      "--agent",
+      "build",
+      "--session",
+      "ses_123",
+    ]);
   });
 });
