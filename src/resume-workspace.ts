@@ -7,6 +7,7 @@ import {
 } from "./agent-launcher.js";
 import type { PitchConfig } from "./config.js";
 import { findCodexSessionForWorkspace } from "./codex-session-store.js";
+import { findOpencodeSessionForWorkspace } from "./opencode-session-store.js";
 import { restoreWorktree } from "./git.js";
 import {
   createTmuxLayout,
@@ -40,6 +41,7 @@ export interface ResumeWorkspaceDependencies {
   createTmuxWindow: typeof createTmuxWindow;
   ensureTmuxSession: typeof ensureTmuxSession;
   findCodexSessionForWorkspace: typeof findCodexSessionForWorkspace;
+  findOpencodeSessionForWorkspace: typeof findOpencodeSessionForWorkspace;
   getTmuxWindowPaneInfo: typeof getTmuxWindowPaneInfo;
   getTmuxWindowPane: typeof getTmuxWindowPane;
   readWorkspaceRecord: typeof readWorkspaceRecord;
@@ -57,6 +59,7 @@ const defaultDependencies: ResumeWorkspaceDependencies = {
   createTmuxWindow,
   ensureTmuxSession,
   findCodexSessionForWorkspace,
+  findOpencodeSessionForWorkspace,
   getTmuxWindowPaneInfo,
   getTmuxWindowPane,
   readWorkspaceRecord,
@@ -366,6 +369,41 @@ export async function resumeWorkspace(
 
   if (
     !isAgentContextChanged &&
+    trailingPendingSession &&
+    latestSessionId === null &&
+    workspace.agent_type === "opencode" &&
+    workspace.agent_runtime === "native"
+  ) {
+    const pendingSessionIndex = findLatestPendingSessionIndex(workspace);
+
+    if (pendingSessionIndex !== null) {
+      const pendingSession = workspace.agent_sessions[pendingSessionIndex];
+      let discoveredSession: Awaited<
+        ReturnType<ResumeWorkspaceDependencies["findOpencodeSessionForWorkspace"]>
+      > = null;
+      try {
+        discoveredSession = await dependencies.findOpencodeSessionForWorkspace({
+          worktree_path: workspace.worktree_path,
+          started_at: pendingSession.started_at,
+          agent_env: workspace.agent_env,
+        });
+      } catch {
+        discoveredSession = null;
+      }
+
+      if (discoveredSession !== null) {
+        workspace = backfillPendingSessionId(
+          workspace,
+          pendingSessionIndex,
+          discoveredSession.id,
+        );
+        latestSessionId = discoveredSession.id;
+      }
+    }
+  }
+
+  if (
+    !isAgentContextChanged &&
     latestSessionId === null &&
     findLatestPendingSessionIndex(workspace) === null &&
     isCompatibleRunningAgentPane(workspace, existingPaneInfo)
@@ -390,6 +428,7 @@ export async function resumeWorkspace(
         agent: agentName,
         repo: workspace.repo,
         session_id: latestSessionId,
+        worktree_path: workspace.worktree_path,
       });
     }
   } catch (error: unknown) {

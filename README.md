@@ -194,8 +194,8 @@ can both have `type: claude` with different `env`,
 
 | Field | Description |
 |---|---|
-| `type` | `claude` or `codex` |
-| `runtime` | `native` (run directly) or `docker` (via `agent-en-place`) |
+| `type` | `claude`, `codex`, or `opencode` |
+| `runtime` | `native` (run directly) or `docker` (via `agent-en-place` for Claude/Codex) |
 | `args` | Ordered CLI arguments appended exactly as written |
 | `env` | Environment variables set when launching the agent |
 
@@ -228,11 +228,25 @@ agents:
       - opus
     env:
       CLAUDE_CONFIG_DIR: ~/.claude-personal
+
+  opencode:
+    type: opencode
+    runtime: native
+    args:
+      - --agent
+      - build
+    env:
+      OPENCODE_CONFIG_DIR: ~/.config/opencode
 ```
 
 Use `args` whenever you need repeatable flags such as
 `--add-dir`, bare flags such as `--search`, or precise
 argument ordering.
+
+OpenCode currently supports the `native` runtime only.
+For attach-mode OpenCode setups, configure `args` with
+`attach <url> --dir` and Pitch will supply the workspace
+path for `--dir` on both create and resume.
 
 #### `repos.<repo>.agent_defaults`
 

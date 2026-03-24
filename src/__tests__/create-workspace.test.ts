@@ -57,6 +57,14 @@ function makeConfig(): PitchConfig {
           OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
         },
       },
+      opencode: {
+        type: "opencode",
+        runtime: "native",
+        args: ["--agent", "build"],
+        env: {
+          OPENCODE_CONFIG_DIR: "~/.config/opencode",
+        },
+      },
     },
   };
 }
@@ -130,6 +138,23 @@ function makeCodexCommand(): BuiltAgentCommand {
     env: {
       CODEX_HOME: "~/.codex-api",
       OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
+    },
+  };
+}
+
+function makeOpencodeCommand(): BuiltAgentCommand {
+  return {
+    agent_name: "opencode",
+    agent_type: "opencode",
+    runtime: "native",
+    command: [
+      "opencode",
+      "--agent",
+      "build",
+      "/tmp/worktrees/gh-42-fix-bug",
+    ],
+    env: {
+      OPENCODE_CONFIG_DIR: "~/.config/opencode",
     },
   };
 }
@@ -269,6 +294,47 @@ describe("create workspace", () => {
         "CODEX_HOME=~/.codex-api OPENAI_API_KEY=${OPENAI_API_KEY_SECONDARY} " +
         "command -- 'agent-en-place' 'codex' '--model' 'gpt-5.4' '--cd' " +
         "'/tmp/worktrees/gh-42-fix-bug'",
+    });
+  });
+
+  it("stores a pending OpenCode session and launches the TUI", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      buildAgentStartCommand: vi.fn(() => makeOpencodeCommand()),
+    });
+
+    const workspace = await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+        agent: "opencode",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(workspace).toEqual(
+      makeWorkspaceRecord({
+        agent_name: "opencode",
+        agent_type: "opencode",
+        agent_runtime: "native",
+        agent_env: {
+          OPENCODE_CONFIG_DIR: "~/.config/opencode",
+        },
+        agent_sessions: [
+          {
+            id: "pending",
+            started_at: "2026-03-22T20:30:00.000Z",
+            status: "pending",
+          },
+        ],
+      }),
+    );
+    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
+      pane_id: "%1",
+      command:
+        "OPENCODE_CONFIG_DIR=~/.config/opencode command -- 'opencode' " +
+        "'--agent' 'build' '/tmp/worktrees/gh-42-fix-bug'",
     });
   });
 

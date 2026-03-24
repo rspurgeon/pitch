@@ -56,6 +56,14 @@ function makeConfig(): PitchConfig {
           CODEX_HOME: "~/.codex",
         },
       },
+      opencode: {
+        type: "opencode",
+        runtime: "native",
+        args: ["--agent", "build"],
+        env: {
+          OPENCODE_CONFIG_DIR: "~/.config/opencode",
+        },
+      },
     },
   };
 }
@@ -126,6 +134,31 @@ function makeClaudeStartCommand(): BuiltAgentCommand {
   };
 }
 
+function makeOpencodeResumeCommand(): BuiltAgentCommand {
+  return {
+    agent_name: "opencode",
+    agent_type: "opencode",
+    runtime: "native",
+    command: ["opencode", "--session", "ses_123"],
+    env: {
+      OPENCODE_CONFIG_DIR: "~/.config/opencode",
+    },
+    session_id: "ses_123",
+  };
+}
+
+function makeOpencodeStartCommand(): BuiltAgentCommand {
+  return {
+    agent_name: "opencode",
+    agent_type: "opencode",
+    runtime: "native",
+    command: ["opencode", "--agent", "build", "/tmp/worktrees/gh-42-fix-bug"],
+    env: {
+      OPENCODE_CONFIG_DIR: "~/.config/opencode",
+    },
+  };
+}
+
 function makeDependencies(
   overrides: Partial<ResumeWorkspaceDependencies> = {},
 ): ResumeWorkspaceDependencies {
@@ -153,6 +186,7 @@ function makeDependencies(
       created: false,
     })),
     findCodexSessionForWorkspace: vi.fn(async () => null),
+    findOpencodeSessionForWorkspace: vi.fn(async () => null),
     getTmuxWindowPaneInfo: vi.fn(
       async () =>
         ({
@@ -193,6 +227,7 @@ describe("resume workspace", () => {
       agent: "claude-enterprise",
       repo: "kong/kongctl",
       session_id: "claude-session-1",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     });
     expect(dependencies.restoreWorktree).toHaveBeenCalledWith({
       repo: config.repos["kong/kongctl"],
@@ -345,6 +380,7 @@ describe("resume workspace", () => {
       agent: "codex",
       repo: "kong/kongctl",
       session_id: "codex-session-1",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     });
     expect(workspace.agent_sessions).toEqual([
       {
@@ -416,6 +452,7 @@ describe("resume workspace", () => {
       agent: "codex",
       repo: "kong/kongctl",
       session_id: "codex-session-new",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     });
     expect(workspace.agent_sessions).toEqual([
       {
@@ -724,6 +761,79 @@ describe("resume workspace", () => {
     ).rejects.toThrow(
       "Failed to restore tmux window for gh-42-fix-bug: window create failed",
     );
+  });
+
+  it("backfills a pending OpenCode session and resumes it", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          agent_name: "opencode",
+          agent_type: "opencode",
+          agent_env: {
+            OPENCODE_CONFIG_DIR: "~/.config/opencode",
+          },
+          agent_sessions: [
+            {
+              id: "pending",
+              started_at: "2026-03-22T20:30:00.000Z",
+              status: "pending",
+            },
+          ],
+        }),
+      ),
+      buildAgentResumeCommand: vi.fn(() => makeOpencodeResumeCommand()),
+      buildAgentStartCommand: vi.fn(() => makeOpencodeStartCommand()),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%1",
+            current_command: "opencode",
+            current_path: "/tmp/worktrees/gh-42-fix-bug",
+          }) satisfies TmuxPaneInfo,
+      ),
+      findOpencodeSessionForWorkspace: vi.fn(async () => ({
+        id: "ses_123",
+        directory: "/tmp/worktrees/gh-42-fix-bug",
+        created_at: "2026-03-22T20:31:00.000Z",
+        file_path: "/tmp/opencode-session.json",
+      })),
+    });
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.findOpencodeSessionForWorkspace).toHaveBeenCalledWith({
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      started_at: "2026-03-22T20:30:00.000Z",
+      agent_env: {
+        OPENCODE_CONFIG_DIR: "~/.config/opencode",
+      },
+    });
+    expect(dependencies.buildAgentResumeCommand).toHaveBeenCalledWith({
+      config,
+      agent: "opencode",
+      repo: "kong/kongctl",
+      session_id: "ses_123",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+    });
+    expect(workspace.agent_sessions).toEqual([
+      {
+        id: "ses_123",
+        started_at: "2026-03-22T20:30:00.000Z",
+        status: "active",
+      },
+      {
+        id: "ses_123",
+        started_at: "2026-03-23T04:00:00.000Z",
+        status: "active",
+      },
+    ]);
   });
 
   it("wraps tmux pane lookup failures", async () => {

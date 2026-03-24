@@ -28,6 +28,7 @@ export interface BuildResumeCommandInput {
   agent: string;
   repo?: string;
   session_id: string;
+  worktree_path?: string;
   runtime?: SupportedRuntime;
 }
 
@@ -63,6 +64,7 @@ export class AgentLauncherError extends Error {
 const AGENT_BINARIES: Record<SupportedAgentType, string> = {
   claude: "claude",
   codex: "codex",
+  opencode: "opencode",
 };
 
 function withoutReservedArgs(
@@ -89,6 +91,14 @@ function withoutReservedArgs(
   }
 
   return filtered;
+}
+
+function withoutStandaloneFlags(
+  args: string[],
+  reservedFlags: string[],
+): string[] {
+  const reservedFlagSet = new Set(reservedFlags);
+  return args.filter((arg) => !reservedFlagSet.has(arg));
 }
 
 function resolveRepoConfig(
@@ -124,6 +134,17 @@ function wrapRuntimeCommand(
     command: ["agent-en-place", agentType, ...command.slice(1)],
     env,
   };
+}
+
+function assertSupportedRuntime(
+  agentType: SupportedAgentType,
+  runtime: SupportedRuntime,
+): void {
+  if (agentType === "opencode" && runtime === "docker") {
+    throw new AgentLauncherError(
+      "OpenCode does not support the docker runtime yet",
+    );
+  }
 }
 
 function resolveAgentTarget(
@@ -274,6 +295,94 @@ function buildCodexResumeCommand(
   };
 }
 
+function buildOpencodeStartCommand(
+  input: BuildStartCommandInput,
+  resolved: ResolvedAgentTarget,
+): BuiltAgentCommand {
+  assertSupportedRuntime("opencode", resolved.runtime);
+
+  const argsWithoutBooleanFlags = withoutStandaloneFlags(
+    [...resolved.args, ...(input.override_args ?? [])],
+    ["--continue", "-c"],
+  );
+
+  const layeredArgs = withoutReservedArgs(
+    argsWithoutBooleanFlags,
+    ["--session", "-s"],
+  );
+
+  const attachMode = layeredArgs[0] === "attach";
+
+  const sanitizedArgs = withoutReservedArgs(layeredArgs, ["--dir"]);
+
+  const command = [
+    AGENT_BINARIES.opencode,
+    ...sanitizedArgs,
+    ...(attachMode ? ["--dir", input.worktree_path] : [input.worktree_path]),
+  ];
+
+  const runtimeCommand = wrapRuntimeCommand(
+    "opencode",
+    resolved.runtime,
+    command,
+    resolved.env,
+  );
+
+  return {
+    agent_name: resolved.agent_name,
+    agent_type: "opencode",
+    runtime: resolved.runtime,
+    command: runtimeCommand.command,
+    env: runtimeCommand.env,
+  };
+}
+
+function buildOpencodeResumeCommand(
+  input: BuildResumeCommandInput,
+  resolved: ResolvedAgentTarget,
+): BuiltAgentCommand {
+  assertSupportedRuntime("opencode", resolved.runtime);
+
+  const attachMode = resolved.args[0] === "attach";
+  const argsWithoutBooleanFlags = withoutStandaloneFlags(
+    resolved.args,
+    ["--continue", "-c"],
+  );
+  const sanitizedArgs = withoutReservedArgs(
+    argsWithoutBooleanFlags,
+    ["--session", "-s", "--dir"],
+  );
+
+  if (attachMode && input.worktree_path === undefined) {
+    throw new AgentLauncherError(
+      "OpenCode attach-mode resume requires a worktree path",
+    );
+  }
+
+  const command = [
+    AGENT_BINARIES.opencode,
+    ...sanitizedArgs,
+    ...(attachMode ? ["--dir", input.worktree_path!] : []),
+    "--session",
+    input.session_id,
+  ];
+  const runtimeCommand = wrapRuntimeCommand(
+    "opencode",
+    resolved.runtime,
+    command,
+    resolved.env,
+  );
+
+  return {
+    agent_name: resolved.agent_name,
+    agent_type: "opencode",
+    runtime: resolved.runtime,
+    command: runtimeCommand.command,
+    env: runtimeCommand.env,
+    session_id: input.session_id,
+  };
+}
+
 class ClaudeLauncher implements AgentLauncher {
   buildStartCommand(input: BuildStartCommandInput): BuiltAgentCommand {
     const resolved = resolveAgentTarget(
@@ -342,15 +451,54 @@ class CodexLauncher implements AgentLauncher {
   }
 }
 
+class OpencodeLauncher implements AgentLauncher {
+  buildStartCommand(input: BuildStartCommandInput): BuiltAgentCommand {
+    const resolved = resolveAgentTarget(
+      input.config,
+      input.agent,
+      input.repo,
+      input.runtime,
+    );
+    if (resolved.agent_type !== "opencode") {
+      throw new AgentLauncherError(
+        `OpenCode launcher cannot build commands for ${resolved.agent_type}`,
+      );
+    }
+
+    return buildOpencodeStartCommand(input, resolved);
+  }
+
+  buildResumeCommand(input: BuildResumeCommandInput): BuiltAgentCommand {
+    const resolved = resolveAgentTarget(
+      input.config,
+      input.agent,
+      input.repo,
+      input.runtime,
+    );
+    if (resolved.agent_type !== "opencode") {
+      throw new AgentLauncherError(
+        `OpenCode launcher cannot build commands for ${resolved.agent_type}`,
+      );
+    }
+
+    return buildOpencodeResumeCommand(input, resolved);
+  }
+}
+
 export const claudeLauncher = new ClaudeLauncher();
 export const codexLauncher = new CodexLauncher();
+export const opencodeLauncher = new OpencodeLauncher();
 
 export function getAgentLauncher(agentType: SupportedAgentType): AgentLauncher {
   if (agentType === "claude") {
     return claudeLauncher;
   }
 
-  return codexLauncher;
+  if (agentType === "codex") {
+    return codexLauncher;
+  }
+
+  return opencodeLauncher;
 }
 
 export function buildAgentStartCommand(

@@ -61,3 +61,12 @@ agents:
     env:
       CODEX_HOME: ~/.codex-api
       OPENAI_API_KEY: ${OPENAI_API_KEY_SECONDARY}
+
+  opencode:
+    type: opencode
+    runtime: native
+    args:
+      - --agent
+      - build
+    env:
+      OPENCODE_CONFIG_DIR: ~/.config/opencode
