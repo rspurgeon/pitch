@@ -123,6 +123,22 @@ function makeConfig(): PitchConfig {
           OPENCODE_SERVER_PASSWORD: "secret",
         },
       },
+      "opencode-attach-continue": {
+        type: "opencode",
+        runtime: "native",
+        args: [
+          "attach",
+          "http://localhost:4096",
+          "--continue",
+          "--agent",
+          "build",
+          "--dir",
+          ".",
+        ],
+        env: {
+          OPENCODE_SERVER_PASSWORD: "secret",
+        },
+      },
     },
   };
 }
@@ -327,6 +343,46 @@ describe("agent launcher", () => {
     expect(command.env).toEqual({
       OPENCODE_SERVER_PASSWORD: "secret",
     });
+  });
+
+  it("strips valueless OpenCode continue flags without dropping following args", () => {
+    const config = makeConfig();
+
+    const startCommand = buildAgentStartCommand({
+      config,
+      agent: "opencode-attach-continue",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(startCommand.command).toEqual([
+      "opencode",
+      "attach",
+      "http://localhost:4096",
+      "--agent",
+      "build",
+      "--dir",
+      "/tmp/worktree",
+    ]);
+
+    const resumeCommand = buildAgentResumeCommand({
+      config,
+      agent: "opencode-attach-continue",
+      session_id: "ses_123",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(resumeCommand.command).toEqual([
+      "opencode",
+      "attach",
+      "http://localhost:4096",
+      "--agent",
+      "build",
+      "--dir",
+      "/tmp/worktree",
+      "--session",
+      "ses_123",
+    ]);
   });
 
   it("builds a selected named Claude agent with repo overrides", () => {

@@ -93,6 +93,14 @@ function withoutReservedArgs(
   return filtered;
 }
 
+function withoutStandaloneFlags(
+  args: string[],
+  reservedFlags: string[],
+): string[] {
+  const reservedFlagSet = new Set(reservedFlags);
+  return args.filter((arg) => !reservedFlagSet.has(arg));
+}
+
 function resolveRepoConfig(
   config: PitchConfig,
   repo: string | undefined,
@@ -293,9 +301,14 @@ function buildOpencodeStartCommand(
 ): BuiltAgentCommand {
   assertSupportedRuntime("opencode", resolved.runtime);
 
-  const layeredArgs = withoutReservedArgs(
+  const argsWithoutBooleanFlags = withoutStandaloneFlags(
     [...resolved.args, ...(input.override_args ?? [])],
-    ["--continue", "-c", "--session", "-s"],
+    ["--continue", "-c"],
+  );
+
+  const layeredArgs = withoutReservedArgs(
+    argsWithoutBooleanFlags,
+    ["--session", "-s"],
   );
 
   const attachMode = layeredArgs[0] === "attach";
@@ -331,9 +344,13 @@ function buildOpencodeResumeCommand(
   assertSupportedRuntime("opencode", resolved.runtime);
 
   const attachMode = resolved.args[0] === "attach";
-  const sanitizedArgs = withoutReservedArgs(
+  const argsWithoutBooleanFlags = withoutStandaloneFlags(
     resolved.args,
-    ["--continue", "-c", "--session", "-s", "--dir"],
+    ["--continue", "-c"],
+  );
+  const sanitizedArgs = withoutReservedArgs(
+    argsWithoutBooleanFlags,
+    ["--session", "-s", "--dir"],
   );
 
   if (attachMode && input.worktree_path === undefined) {
