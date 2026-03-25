@@ -53,6 +53,10 @@ const RepoConfigSchema = z
     main_worktree: z.string(),
     worktree_base: z.preprocess(nullToUndefined, z.string().optional()),
     tmux_session: z.preprocess(nullToUndefined, z.string().optional()),
+    additional_paths: z.preprocess(
+      nullToUndefined,
+      z.array(z.string()).default([]),
+    ),
     agent_defaults: z.preprocess(
       nullToUndefined,
       AgentOverrideSchema.default({}),
@@ -132,6 +136,7 @@ export interface RepoConfig {
   main_worktree: string;
   worktree_base: string;
   tmux_session: string;
+  additional_paths: string[];
   agent_defaults: AgentOverride;
   agent_overrides: Record<string, AgentOverride>;
 }
@@ -191,6 +196,7 @@ function normalizeRepoConfig(
     worktree_base:
       repoConfig.worktree_base ?? join(defaults.worktree_root, repoName),
     tmux_session: repoConfig.tmux_session ?? deriveTmuxSession(repoName),
+    additional_paths: repoConfig.additional_paths,
     agent_defaults: repoConfig.agent_defaults,
     agent_overrides: repoConfig.agent_overrides,
   };

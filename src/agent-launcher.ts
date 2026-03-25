@@ -39,6 +39,7 @@ export interface BuiltAgentCommand {
   command: string[];
   env: Record<string, string>;
   session_id?: string;
+  warnings?: string[];
 }
 
 interface ResolvedAgentTarget {
@@ -47,6 +48,7 @@ interface ResolvedAgentTarget {
   runtime: SupportedRuntime;
   args: string[];
   env: Record<string, string>;
+  warnings: string[];
 }
 
 interface AgentRuntimeCommand {
@@ -117,6 +119,29 @@ function resolveRepoConfig(
   return repoConfig;
 }
 
+function buildAdditionalPathArgs(
+  agentType: SupportedAgentType,
+  additionalPaths: string[],
+): { args: string[]; warnings: string[] } {
+  if (additionalPaths.length === 0) {
+    return { args: [], warnings: [] };
+  }
+
+  if (agentType === "claude" || agentType === "codex") {
+    return {
+      args: additionalPaths.flatMap((path) => ["--add-dir", path]),
+      warnings: [],
+    };
+  }
+
+  return {
+    args: [],
+    warnings: [
+      "Repo additional_paths are ignored for OpenCode because the CLI does not support them yet",
+    ],
+  };
+}
+
 function wrapRuntimeCommand(
   agentType: SupportedAgentType,
   runtime: SupportedRuntime,
@@ -161,6 +186,10 @@ function resolveAgentTarget(
 
   const repoDefaults = repoConfig?.agent_defaults;
   const repoOverride = repoConfig?.agent_overrides[agentName];
+  const additionalPathResult = buildAdditionalPathArgs(
+    agentConfig.type,
+    repoConfig?.additional_paths ?? [],
+  );
 
   return {
     agent_name: agentName,
@@ -172,6 +201,7 @@ function resolveAgentTarget(
       agentConfig.runtime,
     args: [
       ...agentConfig.args,
+      ...additionalPathResult.args,
       ...(repoDefaults?.args ?? []),
       ...(repoOverride?.args ?? []),
     ],
@@ -180,6 +210,7 @@ function resolveAgentTarget(
       ...(repoDefaults?.env ?? {}),
       ...(repoOverride?.env ?? {}),
     },
+    warnings: additionalPathResult.warnings,
   };
 }
 
@@ -216,6 +247,7 @@ function buildClaudeStartCommand(
     command: runtimeCommand.command,
     env: runtimeCommand.env,
     session_id: sessionId,
+    warnings: resolved.warnings,
   };
 }
 
@@ -238,6 +270,7 @@ function buildClaudeResumeCommand(
     command: runtimeCommand.command,
     env: runtimeCommand.env,
     session_id: input.session_id,
+    warnings: resolved.warnings,
   };
 }
 
@@ -270,6 +303,7 @@ function buildCodexStartCommand(
     runtime: resolved.runtime,
     command: runtimeCommand.command,
     env: runtimeCommand.env,
+    warnings: resolved.warnings,
   };
 }
 
@@ -292,6 +326,7 @@ function buildCodexResumeCommand(
     command: runtimeCommand.command,
     env: runtimeCommand.env,
     session_id: input.session_id,
+    warnings: resolved.warnings,
   };
 }
 
@@ -334,6 +369,7 @@ function buildOpencodeStartCommand(
     runtime: resolved.runtime,
     command: runtimeCommand.command,
     env: runtimeCommand.env,
+    warnings: resolved.warnings,
   };
 }
 
@@ -380,6 +416,7 @@ function buildOpencodeResumeCommand(
     command: runtimeCommand.command,
     env: runtimeCommand.env,
     session_id: input.session_id,
+    warnings: resolved.warnings,
   };
 }
 

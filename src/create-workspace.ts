@@ -650,8 +650,17 @@ export function registerCreateWorkspaceTool(
     },
     async (args: CreateWorkspaceInput) => {
       const workspace = await createWorkspace(args, config, dependencies);
+      const warningText = workspace.agent_type === "opencode" &&
+        config.repos[workspace.repo]?.additional_paths.length > 0
+        ? "Warning: repo additional_paths are ignored for OpenCode because the CLI does not support them yet"
+        : null;
       return {
-        content: [{ type: "text", text: JSON.stringify(workspace) }],
+        content: [
+          ...(warningText === null
+            ? []
+            : [{ type: "text" as const, text: warningText }]),
+          { type: "text", text: JSON.stringify(workspace) },
+        ],
         structuredContent: workspace,
       };
     },
