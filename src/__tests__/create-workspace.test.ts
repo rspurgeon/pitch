@@ -121,6 +121,7 @@ function makeClaudeCommand(): BuiltAgentCommand {
       CLAUDE_CONFIG_DIR: "~/.claude",
     },
     session_id: "claude-session",
+    warnings: [],
   };
 }
 
@@ -141,6 +142,7 @@ function makeCodexCommand(): BuiltAgentCommand {
       CODEX_HOME: "~/.codex-api",
       OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
     },
+    warnings: [],
   };
 }
 
@@ -158,6 +160,7 @@ function makeOpencodeCommand(): BuiltAgentCommand {
     env: {
       OPENCODE_CONFIG_DIR: "~/.config/opencode",
     },
+    warnings: [],
   };
 }
 
@@ -299,6 +302,7 @@ describe("create workspace", () => {
             CLAUDE_CONFIG_DIR: "~/.claude",
           },
           session_id: "claude-session",
+          warnings: [],
         }),
       ),
     });

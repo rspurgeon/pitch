@@ -39,7 +39,7 @@ export interface BuiltAgentCommand {
   command: string[];
   env: Record<string, string>;
   session_id?: string;
-  warnings?: string[];
+  warnings: string[];
 }
 
 interface ResolvedAgentTarget {
@@ -62,6 +62,9 @@ export class AgentLauncherError extends Error {
     this.name = "AgentLauncherError";
   }
 }
+
+export const OPENCODE_ADDITIONAL_PATHS_WARNING =
+  "Repo additional_paths are ignored for OpenCode because the CLI does not support them yet";
 
 const AGENT_BINARIES: Record<SupportedAgentType, string> = {
   claude: "claude",
@@ -119,27 +122,34 @@ function resolveRepoConfig(
   return repoConfig;
 }
 
-function buildAdditionalPathArgs(
+export function getAdditionalPathWarnings(
   agentType: SupportedAgentType,
   additionalPaths: string[],
-): { args: string[]; warnings: string[] } {
+): string[] {
   if (additionalPaths.length === 0) {
-    return { args: [], warnings: [] };
+    return [];
   }
 
   if (agentType === "claude" || agentType === "codex") {
-    return {
-      args: additionalPaths.flatMap((path) => ["--add-dir", path]),
-      warnings: [],
-    };
+    return [];
   }
 
-  return {
-    args: [],
-    warnings: [
-      "Repo additional_paths are ignored for OpenCode because the CLI does not support them yet",
-    ],
-  };
+  return [OPENCODE_ADDITIONAL_PATHS_WARNING];
+}
+
+function buildAdditionalPathArgs(
+  agentType: SupportedAgentType,
+  additionalPaths: string[],
+): string[] {
+  if (additionalPaths.length === 0) {
+    return [];
+  }
+
+  if (agentType === "claude" || agentType === "codex") {
+    return additionalPaths.flatMap((path) => ["--add-dir", path]);
+  }
+
+  return [];
 }
 
 function wrapRuntimeCommand(
@@ -186,7 +196,11 @@ function resolveAgentTarget(
 
   const repoDefaults = repoConfig?.agent_defaults;
   const repoOverride = repoConfig?.agent_overrides[agentName];
-  const additionalPathResult = buildAdditionalPathArgs(
+  const additionalPathArgs = buildAdditionalPathArgs(
+    agentConfig.type,
+    repoConfig?.additional_paths ?? [],
+  );
+  const warnings = getAdditionalPathWarnings(
     agentConfig.type,
     repoConfig?.additional_paths ?? [],
   );
@@ -201,7 +215,7 @@ function resolveAgentTarget(
       agentConfig.runtime,
     args: [
       ...agentConfig.args,
-      ...additionalPathResult.args,
+      ...additionalPathArgs,
       ...(repoDefaults?.args ?? []),
       ...(repoOverride?.args ?? []),
     ],
@@ -210,7 +224,7 @@ function resolveAgentTarget(
       ...(repoDefaults?.env ?? {}),
       ...(repoOverride?.env ?? {}),
     },
-    warnings: additionalPathResult.warnings,
+    warnings,
   };
 }
 

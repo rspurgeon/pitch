@@ -2,6 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
   buildAgentStartCommand,
+  getAdditionalPathWarnings,
+  type SupportedAgentType,
   type BuiltAgentCommand,
 } from "./agent-launcher.js";
 import type { PitchConfig, RepoConfig } from "./config.js";
@@ -650,16 +652,17 @@ export function registerCreateWorkspaceTool(
     },
     async (args: CreateWorkspaceInput) => {
       const workspace = await createWorkspace(args, config, dependencies);
-      const warningText = workspace.agent_type === "opencode" &&
-        config.repos[workspace.repo]?.additional_paths.length > 0
-        ? "Warning: repo additional_paths are ignored for OpenCode because the CLI does not support them yet"
-        : null;
+      const repoConfig = config.repos[workspace.repo];
+      const warningText = getAdditionalPathWarnings(
+        workspace.agent_type as SupportedAgentType,
+        repoConfig.additional_paths,
+      ).at(0) ?? null;
       return {
         content: [
+          { type: "text", text: JSON.stringify(workspace) },
           ...(warningText === null
             ? []
-            : [{ type: "text" as const, text: warningText }]),
-          { type: "text", text: JSON.stringify(workspace) },
+            : [{ type: "text" as const, text: `Warning: ${warningText}` }]),
         ],
         structuredContent: workspace,
       };
