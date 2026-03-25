@@ -5,6 +5,7 @@ import {
   CloseWorkspaceError,
   type CloseWorkspaceDependencies,
 } from "../close-workspace.js";
+import type { TmuxPaneInfo } from "../tmux.js";
 import type { WorkspaceRecord } from "../workspace-state.js";
 
 function makeConfig(): PitchConfig {
@@ -46,7 +47,8 @@ function makeWorkspaceRecord(
   return {
     name: "gh-42-fix-bug",
     repo: "kong/kongctl",
-    issue: 42,
+    source_kind: "issue",
+    source_number: 42,
     branch: "gh-42-fix-bug",
     worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     base_branch: "main",
@@ -75,13 +77,23 @@ function makeDependencies(
 ): CloseWorkspaceDependencies {
   return {
     deleteWorkspaceRecord: vi.fn(async () => true),
+    getTmuxWindowPaneInfo: vi.fn(
+      async () =>
+        ({
+          pane_id: "%1",
+          current_command: "codex",
+          current_path: "/tmp/worktrees/gh-42-fix-bug",
+        }) satisfies TmuxPaneInfo,
+    ),
     killTmuxWindow: vi.fn(async () => true),
     readWorkspaceRecord: vi.fn(async () => makeWorkspaceRecord()),
+    sendKeysToPane: vi.fn(async () => undefined),
     writeWorkspaceRecord: vi.fn(async (workspace: WorkspaceRecord) => workspace),
     removeWorktree: vi.fn(async () => ({
       branch: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     })),
+    sleep: vi.fn(async () => undefined),
     now: vi.fn(() => new Date("2026-03-23T03:00:00.000Z")),
     ...overrides,
   };
@@ -109,6 +121,11 @@ describe("close workspace", () => {
     expect(dependencies.killTmuxWindow).toHaveBeenCalledWith({
       session_name: "kongctl",
       window_name: "gh-42-fix-bug",
+    });
+    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
+      pane_id: "%1",
+      command: "C-c",
+      enter: false,
     });
     expect(dependencies.removeWorktree).toHaveBeenCalledWith({
       repo: config.repos["kong/kongctl"],
@@ -143,6 +160,11 @@ describe("close workspace", () => {
       session_name: "kongctl",
       window_name: "gh-42-fix-bug",
     });
+    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
+      pane_id: "%1",
+      command: "C-c",
+      enter: false,
+    });
     expect(dependencies.writeWorkspaceRecord).toHaveBeenCalledWith(
       makeWorkspaceRecord({
         status: "closed",
@@ -173,6 +195,51 @@ describe("close workspace", () => {
         updated_at: "2026-03-23T03:00:00.000Z",
       }),
     );
+  });
+
+  it("skips graceful shutdown when pane 0 is already a shell", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%1",
+            current_command: "zsh",
+            current_path: "/tmp/worktrees/gh-42-fix-bug",
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    await closeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
+    expect(dependencies.killTmuxWindow).toHaveBeenCalled();
+  });
+
+  it("still closes the workspace when graceful shutdown inspection fails", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      getTmuxWindowPaneInfo: vi.fn(async () => {
+        throw new Error("pane inspection failed");
+      }),
+    });
+
+    await closeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
+    expect(dependencies.killTmuxWindow).toHaveBeenCalled();
   });
 
   it("errors when closing the tmux window fails", async () => {

@@ -13,7 +13,8 @@ function makeWorkspaceRecord(
   return {
     name: "gh-42-fix-bug",
     repo: "kong/kongctl",
-    issue: 42,
+    source_kind: "issue",
+    source_number: 42,
     branch: "gh-42-fix-bug",
     worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     base_branch: "main",
@@ -56,7 +57,7 @@ describe("workspace query tools", () => {
         makeWorkspaceRecord(),
         makeWorkspaceRecord({
           name: "gh-43-follow-up",
-          issue: 43,
+          source_number: 43,
           agent_name: "codex",
           agent_type: "codex",
           status: "closed",
@@ -77,7 +78,8 @@ describe("workspace query tools", () => {
       {
         name: "gh-42-fix-bug",
         repo: "kong/kongctl",
-        issue: 42,
+        source_kind: "issue",
+        source_number: 42,
         status: "active",
         agent_name: "claude-enterprise",
         agent_type: "claude",
@@ -87,7 +89,8 @@ describe("workspace query tools", () => {
       {
         name: "gh-43-follow-up",
         repo: "kong/kongctl",
-        issue: 43,
+        source_kind: "issue",
+        source_number: 43,
         status: "closed",
         agent_name: "codex",
         agent_type: "codex",

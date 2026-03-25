@@ -19,7 +19,8 @@ function makeWorkspace(
   return {
     name: "gh-565-fix-validation",
     repo: "kong/kongctl",
-    issue: 565,
+    source_kind: "issue",
+    source_number: 565,
     branch: "gh-565-fix-validation",
     worktree_path: "~/.local/share/worktrees/kong/kongctl/gh-565-fix-validation",
     base_branch: "main",
@@ -121,7 +122,7 @@ describe("workspace state", () => {
     const active = makeWorkspace();
     const closed = makeWorkspace({
       name: "gh-566-close-workspace",
-      issue: 566,
+      source_number: 566,
       branch: "gh-566-close-workspace",
       tmux_window: "gh-566-close-workspace",
       status: "closed",
@@ -130,7 +131,7 @@ describe("workspace state", () => {
     const otherRepo = makeWorkspace({
       name: "gh-567-other-repo",
       repo: "rspurgeon/pitch",
-      issue: 567,
+      source_number: 567,
       branch: "gh-567-other-repo",
       worktree_path: "~/.local/share/worktrees/rspurgeon/pitch/gh-567-other-repo",
       tmux_session: "pitch",

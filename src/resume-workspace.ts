@@ -253,6 +253,7 @@ export async function resumeWorkspace(
     const restoredWorktree = await dependencies.restoreWorktree({
       repo: repoConfig,
       workspace_name: workspace.name,
+      branch: workspace.branch,
     });
     workspace = {
       ...workspace,

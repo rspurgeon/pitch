@@ -11,7 +11,8 @@ import {
 export const WorkspaceSummarySchema = z.object({
   name: z.string(),
   repo: z.string(),
-  issue: z.number().int().positive(),
+  source_kind: z.enum(["issue", "pr"]),
+  source_number: z.number().int().positive(),
   status: z.enum(["active", "closed"]),
   agent_name: z.string(),
   agent_type: z.string(),
@@ -91,7 +92,8 @@ function toWorkspaceSummary(workspace: WorkspaceRecord): WorkspaceSummary {
   return {
     name: workspace.name,
     repo: workspace.repo,
-    issue: workspace.issue,
+    source_kind: workspace.source_kind,
+    source_number: workspace.source_number,
     status: workspace.status,
     agent_name: workspace.agent_name,
     agent_type: workspace.agent_type,

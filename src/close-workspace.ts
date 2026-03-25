@@ -1,8 +1,13 @@
+import { setTimeout as delay } from "node:timers/promises";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { PitchConfig, RepoConfig } from "./config.js";
 import { removeWorktree } from "./git.js";
-import { killTmuxWindow } from "./tmux.js";
+import {
+  getTmuxWindowPaneInfo,
+  killTmuxWindow,
+  sendKeysToPane,
+} from "./tmux.js";
 import {
   deleteWorkspaceRecord,
   readWorkspaceRecord,
@@ -20,19 +25,27 @@ export type CloseWorkspaceInput = z.infer<typeof CloseWorkspaceInputSchema>;
 
 export interface CloseWorkspaceDependencies {
   deleteWorkspaceRecord: typeof deleteWorkspaceRecord;
+  getTmuxWindowPaneInfo: typeof getTmuxWindowPaneInfo;
   killTmuxWindow: typeof killTmuxWindow;
   readWorkspaceRecord: typeof readWorkspaceRecord;
+  sendKeysToPane: typeof sendKeysToPane;
   writeWorkspaceRecord: typeof writeWorkspaceRecord;
   removeWorktree: typeof removeWorktree;
+  sleep: (milliseconds: number) => Promise<void>;
   now: () => Date;
 }
 
 const defaultDependencies: CloseWorkspaceDependencies = {
   deleteWorkspaceRecord,
+  getTmuxWindowPaneInfo,
   killTmuxWindow,
   readWorkspaceRecord,
+  sendKeysToPane,
   writeWorkspaceRecord,
   removeWorktree,
+  sleep: async (milliseconds: number) => {
+    await delay(milliseconds);
+  },
   now: () => new Date(),
 };
 
@@ -88,6 +101,73 @@ function buildClosedWorkspaceRecord(
   };
 }
 
+const AGENT_COMMANDS = new Set([
+  "agent-en-place",
+  "claude",
+  "codex",
+  "opencode",
+]);
+
+const SHELL_COMMANDS = new Set([
+  "ash",
+  "bash",
+  "dash",
+  "fish",
+  "ksh",
+  "nu",
+  "sh",
+  "zsh",
+]);
+
+async function tryGracefulAgentShutdown(
+  workspace: WorkspaceRecord,
+  dependencies: CloseWorkspaceDependencies,
+): Promise<void> {
+  let paneInfo;
+
+  try {
+    paneInfo = await dependencies.getTmuxWindowPaneInfo({
+      session_name: workspace.tmux_session,
+      window_name: workspace.tmux_window,
+      pane_index: 0,
+    });
+  } catch {
+    return;
+  }
+
+  if (!AGENT_COMMANDS.has(paneInfo.current_command)) {
+    return;
+  }
+
+  try {
+    await dependencies.sendKeysToPane({
+      pane_id: paneInfo.pane_id,
+      command: "C-c",
+      enter: false,
+    });
+  } catch {
+    return;
+  }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await dependencies.sleep(100);
+
+    try {
+      const updatedPaneInfo = await dependencies.getTmuxWindowPaneInfo({
+        session_name: workspace.tmux_session,
+        window_name: workspace.tmux_window,
+        pane_index: 0,
+      });
+
+      if (SHELL_COMMANDS.has(updatedPaneInfo.current_command)) {
+        return;
+      }
+    } catch {
+      return;
+    }
+  }
+}
+
 export async function closeWorkspace(
   params: CloseWorkspaceInput,
   config: PitchConfig,
@@ -122,6 +202,8 @@ export async function closeWorkspace(
   const repoConfig: RepoConfig | undefined = shouldCleanupWorktree
     ? resolveRepoConfig(config, existingWorkspace.repo)
     : undefined;
+
+  await tryGracefulAgentShutdown(existingWorkspace, dependencies);
 
   try {
     await dependencies.killTmuxWindow({

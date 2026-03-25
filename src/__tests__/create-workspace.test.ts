@@ -75,7 +75,8 @@ function makeWorkspaceRecord(
   return {
     name: "gh-42-fix-bug",
     repo: "kong/kongctl",
-    issue: 42,
+    source_kind: "issue",
+    source_number: 42,
     branch: "gh-42-fix-bug",
     worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     base_branch: "main",
@@ -171,9 +172,20 @@ function makeDependencies(
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       adopted: false,
     })),
+    fetchGitRef: vi.fn(async () => "refs/pitch/pr/123/head"),
     removeWorktree: vi.fn(async () => ({
       branch: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+    })),
+    readPullRequest: vi.fn(async () => ({
+      number: 123,
+      title: "Example PR",
+      state: "OPEN",
+      base_ref_name: "main",
+      head_ref_name: "feature/example",
+      head_ref_oid: "abc123",
+      is_cross_repository: false,
+      url: "https://github.com/example/repo/pull/123",
     })),
     ensureTmuxSession: vi.fn(async () => ({
       session_name: "kongctl",
@@ -237,6 +249,12 @@ describe("create workspace", () => {
       override_args: ["--model", "opus"],
       runtime: undefined,
     });
+    expect(dependencies.ensureWorkspaceWorktree).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      workspace_name: "gh-42-fix-bug",
+      branch: "gh-42-fix-bug",
+      start_point: "main",
+    });
     expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
       pane_id: "%1",
       command:
@@ -251,6 +269,73 @@ describe("create workspace", () => {
       dependencies.sendKeysToPane,
     ).mock.invocationCallOrder[0];
     expect(writeCallOrder).toBeLessThan(sendCallOrder);
+  });
+
+  it("creates a PR-backed workspace from the PR head branch", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      ensureWorkspaceWorktree: vi.fn(async () => ({
+        branch: "feature/example",
+        worktree_path: "/tmp/worktrees/pr-123-sync-pr",
+        adopted: false,
+      })),
+      buildAgentStartCommand: vi.fn(
+        (): BuiltAgentCommand => ({
+          agent_name: "claude-enterprise",
+          agent_type: "claude",
+          runtime: "native",
+          command: [
+            "claude",
+            "--model",
+            "sonnet",
+            "--session-id",
+            "claude-session",
+            "--name",
+            "pr-123-sync-pr",
+          ],
+          env: {
+            CLAUDE_CONFIG_DIR: "~/.claude",
+          },
+          session_id: "claude-session",
+        }),
+      ),
+    });
+
+    const workspace = await createWorkspace(
+      {
+        pr: 123,
+        slug: "sync-pr",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.readPullRequest).toHaveBeenCalledWith({
+      repo: "kong/kongctl",
+      pr_number: 123,
+    });
+    expect(dependencies.fetchGitRef).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      remote: "origin",
+      source_ref: "refs/pull/123/head",
+      destination_ref: "refs/pitch/pr/123/head",
+    });
+    expect(dependencies.ensureWorkspaceWorktree).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      workspace_name: "pr-123-sync-pr",
+      branch: "feature/example",
+      start_point: "refs/pitch/pr/123/head",
+    });
+    expect(workspace).toEqual(
+      makeWorkspaceRecord({
+        name: "pr-123-sync-pr",
+        source_kind: "pr",
+        source_number: 123,
+        branch: "feature/example",
+        worktree_path: "/tmp/worktrees/pr-123-sync-pr",
+        tmux_window: "pr-123-sync-pr",
+      }),
+    );
   });
 
   it("stores a pending Codex session and preserves shell-expanded env vars", async () => {
@@ -428,7 +513,7 @@ describe("create workspace", () => {
     expect(dependencies.createTmuxLayout).not.toHaveBeenCalled();
     expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(1, {
       pane_id: "%9",
-      command: "cd -- '/tmp/worktrees/gh-42-fix-bug'",
+      command: "cd -- '/tmp/worktrees/gh-42-fix-bug' && clear",
     });
     expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(2, {
       pane_id: "%9",
