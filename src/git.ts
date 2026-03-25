@@ -12,13 +12,15 @@ export type GitRepoConfig = Pick<RepoConfig, "main_worktree" | "worktree_base">;
 export interface CreateWorktreeParams {
   repo: GitRepoConfig;
   workspace_name: string;
-  base_branch: string;
+  branch: string;
+  start_point: string;
 }
 
 export interface EnsureWorkspaceWorktreeParams {
   repo: GitRepoConfig;
   workspace_name: string;
-  base_branch: string;
+  branch: string;
+  start_point: string;
 }
 
 export interface RemoveWorktreeParams {
@@ -29,6 +31,14 @@ export interface RemoveWorktreeParams {
 export interface RestoreWorktreeParams {
   repo: GitRepoConfig;
   workspace_name: string;
+  branch: string;
+}
+
+export interface FetchGitRefParams {
+  repo: Pick<GitRepoConfig, "main_worktree">;
+  remote: string;
+  source_ref: string;
+  destination_ref: string;
 }
 
 export interface WorktreeResult {
@@ -44,6 +54,7 @@ type GitWorktreeErrorCode =
   | "MAIN_WORKTREE_MISSING"
   | "INVALID_MAIN_WORKTREE"
   | "INVALID_WORKSPACE_NAME"
+  | "INVALID_BRANCH_NAME"
   | "BRANCH_MISSING"
   | "BRANCH_EXISTS"
   | "WORKTREE_EXISTS"
@@ -141,6 +152,31 @@ function validateWorkspaceName(workspaceName: string): string {
   }
 
   return workspaceName;
+}
+
+async function ensureValidBranchName(
+  mainWorktree: string,
+  branch: string,
+): Promise<string> {
+  if (branch.trim().length === 0) {
+    throw new GitWorktreeError(
+      "INVALID_BRANCH_NAME",
+      `Invalid branch name: ${branch}`,
+    );
+  }
+
+  try {
+    await execFileAsync("git", ["check-ref-format", "--branch", branch], {
+      cwd: mainWorktree,
+    });
+  } catch {
+    throw new GitWorktreeError(
+      "INVALID_BRANCH_NAME",
+      `Invalid branch name: ${branch}`,
+    );
+  }
+
+  return branch;
 }
 
 async function ensureMainWorktree(mainWorktree: string): Promise<void> {
@@ -277,11 +313,12 @@ export function buildWorktreePath(
 export async function createWorktree(
   params: CreateWorktreeParams,
 ): Promise<WorktreeResult> {
-  const branch = validateWorkspaceName(params.workspace_name);
+  const workspaceName = validateWorkspaceName(params.workspace_name);
   const mainWorktree = expandHomePath(params.repo.main_worktree);
-  const worktreePath = buildWorktreePath(params.repo, branch);
+  const worktreePath = buildWorktreePath(params.repo, workspaceName);
 
   await ensureMainWorktree(mainWorktree);
+  const branch = await ensureValidBranchName(mainWorktree, params.branch);
 
   if (await branchExists(mainWorktree, branch)) {
     throw new GitWorktreeError(
@@ -303,7 +340,7 @@ export async function createWorktree(
 
   await mkdir(expandHomePath(params.repo.worktree_base), { recursive: true });
   await runGit(
-    ["worktree", "add", "-b", branch, worktreePath, params.base_branch],
+    ["worktree", "add", "-b", branch, worktreePath, params.start_point],
     mainWorktree,
   );
 
@@ -316,11 +353,12 @@ export async function createWorktree(
 export async function ensureWorkspaceWorktree(
   params: EnsureWorkspaceWorktreeParams,
 ): Promise<EnsuredWorktreeResult> {
-  const branch = validateWorkspaceName(params.workspace_name);
+  const workspaceName = validateWorkspaceName(params.workspace_name);
   const mainWorktree = expandHomePath(params.repo.main_worktree);
-  const worktreePath = buildWorktreePath(params.repo, branch);
+  const worktreePath = buildWorktreePath(params.repo, workspaceName);
 
   await ensureMainWorktree(mainWorktree);
+  const branch = await ensureValidBranchName(mainWorktree, params.branch);
 
   if (await pathExists(worktreePath)) {
     await ensureAdoptableWorktree(mainWorktree, worktreePath, branch);
@@ -334,7 +372,8 @@ export async function ensureWorkspaceWorktree(
   if (await branchExists(mainWorktree, branch)) {
     const restored = await restoreWorktree({
       repo: params.repo,
-      workspace_name: branch,
+      workspace_name: workspaceName,
+      branch,
     });
     return {
       ...restored,
@@ -352,9 +391,9 @@ export async function ensureWorkspaceWorktree(
 export async function removeWorktree(
   params: RemoveWorktreeParams,
 ): Promise<WorktreeResult> {
-  const branch = validateWorkspaceName(params.workspace_name);
+  const workspaceName = validateWorkspaceName(params.workspace_name);
   const mainWorktree = expandHomePath(params.repo.main_worktree);
-  const worktreePath = buildWorktreePath(params.repo, branch);
+  const worktreePath = buildWorktreePath(params.repo, workspaceName);
 
   await ensureMainWorktree(mainWorktree);
 
@@ -366,6 +405,14 @@ export async function removeWorktree(
     );
   }
 
+  let branch = workspaceName;
+  if (await pathExists(worktreePath)) {
+    try {
+      branch = await currentBranch(worktreePath);
+    } catch {
+      branch = workspaceName;
+    }
+  }
   await runGit(["worktree", "remove", worktreePath], mainWorktree);
 
   return {
@@ -374,14 +421,34 @@ export async function removeWorktree(
   };
 }
 
+export async function fetchGitRef(
+  params: FetchGitRefParams,
+): Promise<string> {
+  const mainWorktree = expandHomePath(params.repo.main_worktree);
+  await ensureMainWorktree(mainWorktree);
+
+  await runGit(
+    [
+      "fetch",
+      "--no-tags",
+      params.remote,
+      `${params.source_ref}:${params.destination_ref}`,
+    ],
+    mainWorktree,
+  );
+
+  return params.destination_ref;
+}
+
 export async function restoreWorktree(
   params: RestoreWorktreeParams,
 ): Promise<WorktreeResult> {
-  const branch = validateWorkspaceName(params.workspace_name);
+  const workspaceName = validateWorkspaceName(params.workspace_name);
   const mainWorktree = expandHomePath(params.repo.main_worktree);
-  const worktreePath = buildWorktreePath(params.repo, branch);
+  const worktreePath = buildWorktreePath(params.repo, workspaceName);
 
   await ensureMainWorktree(mainWorktree);
+  const branch = await ensureValidBranchName(mainWorktree, params.branch);
 
   if (await pathExists(worktreePath)) {
     await ensureAdoptableWorktree(mainWorktree, worktreePath, branch);

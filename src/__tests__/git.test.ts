@@ -69,7 +69,8 @@ describe("git worktree management", () => {
     const result = await createWorktree({
       repo,
       workspace_name: "gh-123-test-worktree",
-      base_branch: "main",
+      branch: "gh-123-test-worktree",
+      start_point: "main",
     });
 
     expect(result).toEqual({
@@ -83,11 +84,32 @@ describe("git worktree management", () => {
       .resolves.toContain("gh-123-test-worktree");
   });
 
+  it("creates a worktree path from the workspace name while checking out a different branch", async () => {
+    const result = await createWorktree({
+      repo,
+      workspace_name: "pr-543-debug-ci",
+      branch: "feature/token-refresh",
+      start_point: "main",
+    });
+
+    expect(result).toEqual({
+      branch: "feature/token-refresh",
+      worktree_path: join(repo.worktree_base, "pr-543-debug-ci"),
+    });
+    await expect(
+      git(["rev-parse", "--abbrev-ref", "HEAD"], result.worktree_path),
+    ).resolves.toBe("feature/token-refresh");
+    await expect(
+      git(["branch", "--list", "feature/token-refresh"], repo.main_worktree),
+    ).resolves.toContain("feature/token-refresh");
+  });
+
   it("removes an existing worktree", async () => {
     const created = await createWorktree({
       repo,
       workspace_name: "gh-124-remove-worktree",
-      base_branch: "main",
+      branch: "gh-124-remove-worktree",
+      start_point: "main",
     });
 
     const removed = await removeWorktree({
@@ -109,7 +131,8 @@ describe("git worktree management", () => {
           main_worktree: join(tempRoot, "missing-repo"),
         },
         workspace_name: "gh-125-missing-main",
-        base_branch: "main",
+        branch: "gh-125-missing-main",
+        start_point: "main",
       }),
     ).rejects.toMatchObject({
       name: "GitWorktreeError",
@@ -124,7 +147,8 @@ describe("git worktree management", () => {
       createWorktree({
         repo,
         workspace_name: "gh-126-existing-branch",
-        base_branch: "main",
+        branch: "gh-126-existing-branch",
+        start_point: "main",
       }),
     ).rejects.toMatchObject({
       name: "GitWorktreeError",
@@ -136,13 +160,15 @@ describe("git worktree management", () => {
     const created = await createWorktree({
       repo,
       workspace_name: "gh-126-adopt-worktree",
-      base_branch: "main",
+      branch: "gh-126-adopt-worktree",
+      start_point: "main",
     });
 
     const ensured = await ensureWorkspaceWorktree({
       repo,
       workspace_name: "gh-126-adopt-worktree",
-      base_branch: "main",
+      branch: "gh-126-adopt-worktree",
+      start_point: "main",
     });
 
     expect(ensured).toEqual({
@@ -157,7 +183,8 @@ describe("git worktree management", () => {
     const ensured = await ensureWorkspaceWorktree({
       repo,
       workspace_name: "gh-126-adopt-branch",
-      base_branch: "main",
+      branch: "gh-126-adopt-branch",
+      start_point: "main",
     });
 
     expect(ensured).toEqual({
@@ -168,6 +195,26 @@ describe("git worktree management", () => {
     await expect(
       git(["rev-parse", "--abbrev-ref", "HEAD"], ensured.worktree_path),
     ).resolves.toBe("gh-126-adopt-branch");
+  });
+
+  it("restores an existing branch into a different workspace path", async () => {
+    await git(["branch", "feature/token-refresh"], repo.main_worktree);
+
+    const ensured = await ensureWorkspaceWorktree({
+      repo,
+      workspace_name: "pr-543-debug-ci",
+      branch: "feature/token-refresh",
+      start_point: "main",
+    });
+
+    expect(ensured).toEqual({
+      branch: "feature/token-refresh",
+      worktree_path: join(repo.worktree_base, "pr-543-debug-ci"),
+      adopted: true,
+    });
+    await expect(
+      git(["rev-parse", "--abbrev-ref", "HEAD"], ensured.worktree_path),
+    ).resolves.toBe("feature/token-refresh");
   });
 
   it("normalizes configured and registered worktree paths before adoption", async () => {
@@ -191,7 +238,8 @@ describe("git worktree management", () => {
     const ensured = await ensureWorkspaceWorktree({
       repo: configuredRepo,
       workspace_name: "gh-126-symlinked-worktree",
-      base_branch: "main",
+      branch: "gh-126-symlinked-worktree",
+      start_point: "main",
     });
 
     expect(ensured).toEqual({
@@ -209,7 +257,8 @@ describe("git worktree management", () => {
       createWorktree({
         repo,
         workspace_name: "gh-127-existing-worktree",
-        base_branch: "main",
+        branch: "gh-127-existing-worktree",
+        start_point: "main",
       }),
     ).rejects.toMatchObject({
       name: "GitWorktreeError",
@@ -228,7 +277,8 @@ describe("git worktree management", () => {
       ensureWorkspaceWorktree({
         repo,
         workspace_name: "gh-127-unrelated-repo",
-        base_branch: "main",
+        branch: "gh-127-unrelated-repo",
+        start_point: "main",
       }),
     ).rejects.toMatchObject({
       name: "GitWorktreeError",
@@ -246,7 +296,8 @@ describe("git worktree management", () => {
       createWorktree({
         repo,
         workspace_name: "gh-127-registered-worktree",
-        base_branch: "main",
+        branch: "gh-127-registered-worktree",
+        start_point: "main",
       }),
     ).rejects.toMatchObject({
       name: "GitWorktreeError",
@@ -281,7 +332,8 @@ describe("git worktree management", () => {
           main_worktree: notRepo,
         },
         workspace_name: "gh-129-invalid-main-worktree",
-        base_branch: "main",
+        branch: "gh-129-invalid-main-worktree",
+        start_point: "main",
       }),
     ).rejects.toMatchObject({
       name: "GitWorktreeError",
@@ -297,7 +349,8 @@ describe("git worktree management", () => {
           main_worktree: join(repo.main_worktree, ".git"),
         },
         workspace_name: "gh-130-git-dir",
-        base_branch: "main",
+        branch: "gh-130-git-dir",
+        start_point: "main",
       }),
     ).rejects.toMatchObject({
       name: "GitWorktreeError",
@@ -310,7 +363,8 @@ describe("git worktree management", () => {
       createWorktree({
         repo,
         workspace_name: "../bad-name",
-        base_branch: "main",
+        branch: "gh-130-bad-name",
+        start_point: "main",
       }),
     ).rejects.toMatchObject({
       name: "GitWorktreeError",
@@ -322,7 +376,8 @@ describe("git worktree management", () => {
     const created = await createWorktree({
       repo,
       workspace_name: "gh-131-restore-worktree",
-      base_branch: "main",
+      branch: "gh-131-restore-worktree",
+      start_point: "main",
     });
 
     await rm(created.worktree_path, { recursive: true, force: true });
@@ -330,6 +385,7 @@ describe("git worktree management", () => {
     const restored = await restoreWorktree({
       repo,
       workspace_name: "gh-131-restore-worktree",
+      branch: "gh-131-restore-worktree",
     });
 
     expect(restored).toEqual(created);
@@ -343,6 +399,7 @@ describe("git worktree management", () => {
       restoreWorktree({
         repo,
         workspace_name: "gh-132-missing-branch",
+        branch: "gh-132-missing-branch",
       }),
     ).rejects.toMatchObject({
       name: "GitWorktreeError",

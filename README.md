@@ -1,10 +1,10 @@
 # Pitch
 
 Pitch is a local-first workspace orchestration tool for
-coding agent sessions. It takes a GitHub issue and sets up
-everything a coding agent needs to work: git branch,
-worktree, tmux window, and agent process — all tracked and
-managed through an MCP server.
+coding agent sessions. It takes a GitHub issue or pull
+request and sets up everything a coding agent needs to
+work: git branch, worktree, tmux window, and agent process
+— all tracked and managed through an MCP server.
 
 See [docs/design.md](docs/design.md) for the full design
 document.
@@ -306,17 +306,25 @@ create_workspace \
   --issue 42 --slug fix-bug --agent claude-personal
 ```
 
+PR-backed workspaces use the same tool with `--pr` instead
+of `--issue`:
+
+```
+create_workspace \
+  --pr 543 --slug debug-ci --agent claude-enterprise
+```
+
 ## Available Tools
 
-- **ping** — Returns "pong". Verifies the server is
-  running.
+- **ping** — Returns a server status/config summary.
 - **create_workspace** — Creates a workspace from a
-  GitHub issue by provisioning or adopting the git
-  worktree, reusing a matching tmux window when safe,
-  launching the agent when needed, and writing the
-  workspace state record.
+  GitHub issue or pull request by provisioning or
+  adopting the git worktree, reusing a matching tmux
+  window when safe, launching the agent when needed,
+  and writing the workspace state record.
 - **list_workspaces** — Lists tracked workspaces with
-  status, issue, selected agent, and tmux location.
+  status, source kind/number, selected agent, and tmux
+  location.
 - **get_workspace** — Returns the full saved workspace
   record for a specific workspace name.
 - **resume_workspace** — Relaunches or resumes the

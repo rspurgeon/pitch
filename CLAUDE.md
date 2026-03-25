@@ -10,7 +10,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Pitch is a TypeScript MCP server (stdio transport) that orchestrates local coding agent workspaces. It automates the setup of git worktrees, tmux windows/panes, and coding agent processes (Claude Code, Codex) from a GitHub issue number.
+Pitch is a TypeScript MCP server (stdio transport) that
+orchestrates local coding agent workspaces. It automates
+the setup of git worktrees, tmux windows/panes, and coding
+agent processes (Claude Code, Codex, OpenCode) from a
+GitHub issue or pull request.
 
 The project is being built according to the MVP issue sequence tracked in [GitHub Issues](https://github.com/rspurgeon/pitch/issues). `docs/design.md` is the authoritative source for architecture decisions, data schemas, and acceptance criteria.
 
@@ -64,7 +68,12 @@ The codebase is organized around independent subsystems wired together by MCP to
 
 ### Key Concepts
 
-**Workspace identity:** A workspace is identified by its branch name, formatted as `gh-{issue}-{slug}` (e.g. `gh-565-fix-validation`). This same string is used as the git branch name, worktree directory name, and tmux window name.
+**Workspace identity:** A workspace has a safe Pitch name
+used for the worktree directory, tmux window, and state
+file. Issue workspaces use `gh-{issue}-{slug}` and PR
+workspaces use `pr-{pr}-{slug}`. For PR workspaces, the
+checked-out git branch may differ from the workspace name
+so normal pushes can target the real PR branch.
 
 **Agent launcher layering:** Agent commands are assembled from four
 sources in priority order: (1) the selected named agent entry from
@@ -72,9 +81,11 @@ config, (2) repo-specific overrides for that agent, (3) per-workspace
 overrides from `create_workspace` params, (4) hardcoded Pitch
 requirements (e.g. `--cd` for worktree path).
 
-**Named agents:** The keys under `agents` are the user-facing launch
-targets. Multiple named entries can share the same underlying agent type
-(`claude` or `codex`) while using different env vars, args, or runtimes.
+**Named agents:** The keys under `agents` are the
+user-facing launch targets. Multiple named entries can
+share the same underlying agent type (`claude`, `codex`,
+or `opencode`) while using different env vars, args, or
+runtimes.
 
 **tmux layout:** Each workspace window has a fixed three-pane layout — left tall pane for the coding agent, top-right and bottom-right empty shells for the user.
 

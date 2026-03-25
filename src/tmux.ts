@@ -520,7 +520,7 @@ export async function createTmuxLayout(
   );
   const bottomRightPaneId = bottomRightPaneStdout.trim();
 
-  const cdCommand = `cd -- ${shellEscape(worktreePath)}`;
+  const cdCommand = `cd -- ${shellEscape(worktreePath)} && clear`;
   for (const paneId of [agentPaneId, topRightPaneId, bottomRightPaneId]) {
     await sendKeysToPane(
       {

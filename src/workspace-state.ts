@@ -32,6 +32,7 @@ const TimestampSchema = z.preprocess(
 
 export const AgentRuntimeSchema = z.enum(["native", "docker"]);
 export const WorkspaceStatusSchema = z.enum(["active", "closed"]);
+export const WorkspaceSourceKindSchema = z.enum(["issue", "pr"]);
 
 export const AgentSessionSchema = z.object({
   id: z.string(),
@@ -42,7 +43,8 @@ export const AgentSessionSchema = z.object({
 export const WorkspaceRecordSchema = z.object({
   name: WorkspaceNameSchema,
   repo: z.string(),
-  issue: z.number().int().positive(),
+  source_kind: WorkspaceSourceKindSchema,
+  source_number: z.number().int().positive(),
   branch: z.string(),
   worktree_path: z.string(),
   base_branch: z.string(),
@@ -66,6 +68,7 @@ const ListWorkspacesOptionsSchema = z.object({
 export type AgentSession = z.infer<typeof AgentSessionSchema>;
 export type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
 export type WorkspaceStatus = z.infer<typeof WorkspaceStatusSchema>;
+export type WorkspaceSourceKind = z.infer<typeof WorkspaceSourceKindSchema>;
 export type ListWorkspacesOptions = z.infer<typeof ListWorkspacesOptionsSchema>;
 
 export class WorkspaceStateError extends Error {

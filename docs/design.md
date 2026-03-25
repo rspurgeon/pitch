@@ -2,17 +2,33 @@
 
 ## Overview
 
-Pitch is a local-first, terminal-native workspace orchestration tool for managing coding sessions. It automates the manual routine of going from a GitHub issue to a fully configured development workspace: git worktree, tmux window, coding agent — all wired up and tracked.
+Pitch is a local-first, terminal-native workspace
+orchestration tool for managing coding sessions. It
+automates the manual routine of going from a GitHub issue
+or pull request to a fully configured development
+workspace: git worktree, tmux window, coding agent — all
+wired up and tracked.
 
-Pitch exposes an MCP server over stdio. A user interacts with Pitch through any MCP-capable agent (Claude Code, Codex, etc.) acting as a "Pilot" — issuing natural language commands that translate into MCP tool calls. Pitch itself is not an agent; it is a deterministic automation layer.
+Pitch exposes an MCP server over stdio. A user interacts
+with Pitch through any MCP-capable agent (Claude Code,
+Codex, etc.) acting as a "Pilot" — issuing natural
+language commands that translate into MCP tool calls.
+Pitch itself is not an agent; it is a deterministic
+automation layer.
 
 ### What Pitch Does
 
-When a user says "create workspace for issue 565 with slug fix-validation", Pitch:
+When a user says "create workspace for issue 565 with slug
+fix-validation" or "create workspace for PR 543 with slug
+debug-ci", Pitch:
 
-1. Creates a git branch `gh-565-fix-validation` from the base branch
-2. Creates a git worktree at the configured path
-3. Finds or creates the project's tmux session
+1. Resolves the source work item (issue or PR)
+2. Creates or adopts the git worktree at the configured
+   path
+3. Creates or adopts the appropriate local branch
+   (`gh-565-fix-validation` for an issue workspace, or the
+   actual PR head branch for a PR workspace)
+4. Finds or creates the project's tmux session
 4. Creates a new tmux window named `gh-565-fix-validation`
 5. Splits the window into a three-pane layout
 6. Launches the configured coding agent in the left pane
@@ -22,7 +38,8 @@ When a user says "create workspace for issue 565 with slug fix-validation", Pitc
 
 - **Language:** TypeScript
 - **MCP SDK:** `@modelcontextprotocol/sdk`
-- **Transport:** stdio (spawned by MCP client as child process)
+- **Transport:** stdio (spawned by MCP client as child
+  process)
 - **State storage:** YAML files in `~/.pitch/`
 - **External dependencies:** `git`, `tmux`, optionally `agent-en-place` for Docker
 
@@ -32,38 +49,52 @@ When a user says "create workspace for issue 565 with slug fix-validation", Pitc
 
 ### Workspace
 
-A workspace is Pitch's primary entity. It represents a single unit of code work — one branch, one worktree, one tmux window, one or more sequential coding agent sessions.
+A workspace is Pitch's primary entity. It represents a
+single unit of code work — one checked-out branch, one
+worktree, one tmux window, one or more sequential coding
+agent sessions.
 
-A workspace is identified by its **branch name** (e.g. `gh-565-fix-validation`). Everything else is derived or looked up.
+A workspace is identified by its **workspace name** (for
+example `gh-565-fix-validation` or `pr-543-debug-ci`).
+This name is distinct from the git branch when Pitch is
+working on a PR.
 
-### Issue
+### Source Work Item
 
-A GitHub issue is the external identity of work. One issue can have multiple workspaces (multiple PRs solving different aspects of the issue). The issue number is embedded in the branch naming convention. Pitch uses the issue for grouping and lifecycle signals (issue closed → workspace eligible for cleanup).
+A GitHub issue or pull request is the external identity of
+work. Pitch stores the source as:
+- `source_kind: issue | pr`
+- `source_number: <number>`
 
 ### Relationships
 
 | Relationship | Cardinality | Notes |
 |---|---|---|
-| Issue → Workspace | 1:many | Usually 1:1, but multi-PR issues create multiple workspaces |
-| Workspace → Branch | 1:1 | Branch name IS the workspace identity |
+| Issue → Workspace | 1:many | Separate slugs can produce multiple workspaces |
+| PR → Workspace | 1:1 | Current implementation reuses the PR head branch, so Pitch tracks one workspace per PR |
+| Workspace → Branch | 1:1 | PR workspaces may use a branch name different from the workspace name |
 | Branch → Worktree | 1:1 | Git enforces this |
 | Workspace → tmux window | 1:1 | Window named after workspace |
 | tmux session → Repo | 1:1 | User convention, configured in Pitch |
 | Workspace → Agent sessions | 1:many | Serial — one active at a time, history tracked |
-| Workspace → PR | 1:1 | One PR per branch (standard GitHub flow) |
 
 ### Naming Convention
 
-All layers use the same identifier string:
+Pitch uses safe workspace names:
 
-- Format: `gh-{issue_number}-{slug}`
-- Example: `gh-565-fix-validation`
+- Issue workspace: `gh-{issue_number}-{slug}`
+- PR workspace: `pr-{pr_number}-{slug}`
 
 This string is used as:
-- Git branch name
 - Worktree directory name
 - tmux window name
 - Workspace identifier in Pitch's state
+
+For issue workspaces, the git branch usually matches the
+workspace name. For PR workspaces, the git branch uses the
+actual PR head branch name so it matches the PR, but users
+may still need to set upstream or add a remote before a
+plain `git push` will update that PR branch.
 
 ---
 
@@ -73,28 +104,37 @@ This string is used as:
 
 Inputs:
 - **repo** (optional, defaults from config) — e.g. `kong/kongctl`
-- **issue** (required) — GitHub issue number
+- **issue** or **pr** (exactly one required) — GitHub issue or PR number
 - **slug** (required) — human-provided descriptive text
-- **base_branch** (optional, defaults to `main`)
+- **base_branch** (optional, issue workspaces only, defaults to `main`)
 - **agent** (optional, defaults from config) — configured agent name such as
   `claude-enterprise`, `codex`, or `opencode`
 
 Steps:
 1. Resolve repo config (main worktree, worktree base, tmux session name)
-2. Construct workspace name: `gh-{issue}-{slug}`
-3. Run `git worktree add` from the main worktree, creating the branch and worktree
-4. Check if the tmux session exists; create if not
-5. Create a tmux window named after the workspace
-6. Split into three-pane layout (agent left, empty top-right, shell bottom-right)
-7. `cd` all panes to the worktree path
-8. Launch the coding agent in the left pane via the agent launcher
-9. Persist agent session state (pre-generated for Claude, pending for Codex and
-   OpenCode until a later backfill)
-10. Write workspace record to `~/.pitch/workspaces/{workspace_name}.yaml`
+2. Construct workspace name:
+   `gh-{issue}-{slug}` or `pr-{pr}-{slug}`
+3. Resolve the git start point:
+   issue workspace from `base_branch`, or PR workspace by
+   fetching `refs/pull/{pr}/head`
+4. Run `git worktree add` from the main worktree,
+   creating or adopting the branch and worktree
+5. Check if the tmux session exists; create if not
+6. Create a tmux window named after the workspace
+7. Split into three-pane layout (agent left, empty
+   top-right, shell bottom-right)
+8. `cd` all panes to the worktree path
+9. Launch the coding agent in the left pane via the agent
+   launcher
+10. Persist agent session state (pre-generated for Claude,
+    pending for Codex and OpenCode until a later backfill)
+11. Write workspace record to
+    `~/.pitch/workspaces/{workspace_name}.yaml`
 
 ### List
 
-Returns all tracked workspaces with status, issue, agent, and tmux location.
+Returns all tracked workspaces with status, source
+kind/number, agent, and tmux location.
 
 ### Get
 
@@ -102,11 +142,14 @@ Returns full detail for a specific workspace.
 
 ### Resume
 
-Relaunches the coding agent in an existing workspace's tmux pane, using the most recent stored session ID for the agent's resume command.
+Relaunches the coding agent in an existing workspace's
+tmux pane, using the most recent stored session ID for the
+agent's resume command.
 
 ### Close
 
-Marks workspace as inactive. Optionally removes the git worktree. Does not delete the tmux window (user may want to review output).
+Closes the tmux window and, by default, removes the git
+worktree and deletes the workspace state file.
 
 ---
 
@@ -114,7 +157,10 @@ Marks workspace as inactive. Optionally removes the git worktree. Does not delet
 
 ### Session Management
 
-Pitch does not own tmux sessions. They are typically long-lived and created by the user (often restored via tmux-resurrect on boot). Pitch creates a session only if one doesn't exist for the repo.
+Pitch does not own tmux sessions. They are typically
+long-lived and created by the user (often restored via
+tmux-resurrect on boot). Pitch creates a session only if
+one doesn't exist for the repo.
 
 Pitch never modifies existing windows or panes it didn't create. It only adds new windows.
 
@@ -158,7 +204,9 @@ Example:
 ~/.local/share/worktrees/kong/kongctl/gh-565-fix-validation
 ```
 
-The `worktree_base` is configured per repo.
+The `worktree_base` is configured or derived per repo. The
+worktree path is always based on the workspace name, not
+the checked-out branch name.
 
 ---
 
@@ -368,7 +416,8 @@ Stored at `~/.pitch/workspaces/{workspace_name}.yaml`:
 ```yaml
 name: gh-565-fix-validation
 repo: kong/kongctl
-issue: 565
+source_kind: issue
+source_number: 565
 branch: gh-565-fix-validation
 worktree_path: ~/.local/share/worktrees/kong/kongctl/gh-565-fix-validation
 base_branch: main
@@ -407,9 +456,12 @@ workspaces are still rejected.
 
 **Parameters:**
 - `repo` (string, optional) — GitHub org/repo, defaults from config
-- `issue` (number, required) — GitHub issue number
+- exactly one of:
+  - `issue` (number)
+  - `pr` (number)
 - `slug` (string, required) — descriptive text for naming
-- `base_branch` (string, optional) — branch to create from, defaults to `main`
+- `base_branch` (string, optional) — branch to create
+  from for issue workspaces, defaults to `main`
 - `agent` (string, optional) — configured agent name like `codex`,
   `claude-enterprise`, or `claude-personal`, defaults from config
 - `runtime` (string, optional) — `native` or `docker`, defaults from agent config
@@ -419,7 +471,8 @@ workspaces are still rejected.
 
 ### `list_workspaces`
 
-Lists all tracked workspaces with status, issue, agent, and tmux location.
+Lists all tracked workspaces with status, source
+kind/number, agent, and tmux location.
 
 **Parameters:**
 - `status` (string, optional) — filter by `active`, `closed`, or `all`

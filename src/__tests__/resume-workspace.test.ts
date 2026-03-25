@@ -74,7 +74,8 @@ function makeWorkspaceRecord(
   return {
     name: "gh-42-fix-bug",
     repo: "kong/kongctl",
-    issue: 42,
+    source_kind: "issue",
+    source_number: 42,
     branch: "gh-42-fix-bug",
     worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     base_branch: "main",
@@ -232,6 +233,7 @@ describe("resume workspace", () => {
     expect(dependencies.restoreWorktree).toHaveBeenCalledWith({
       repo: config.repos["kong/kongctl"],
       workspace_name: "gh-42-fix-bug",
+      branch: "gh-42-fix-bug",
     });
     expect(dependencies.ensureTmuxSession).toHaveBeenCalledWith({
       session_name: "kongctl",
