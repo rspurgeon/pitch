@@ -204,6 +204,8 @@ function findProjectStatusTargets(parsed: unknown): ProjectStatusTarget[] {
       if (
         typeof field !== "object" ||
         field === null ||
+        !("__typename" in field) ||
+        typeof field.__typename !== "string" ||
         field.__typename !== "ProjectV2SingleSelectField"
       ) {
         continue;
