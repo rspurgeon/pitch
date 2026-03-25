@@ -17,6 +17,7 @@ function makeConfig(): PitchConfig {
       base_branch: "main",
       worktree_root: "~/.local/share/worktrees",
     },
+    bootstrap_prompts: {},
     repos: {
       "kong/kongctl": {
         default_agent: "claude-enterprise",
@@ -24,6 +25,7 @@ function makeConfig(): PitchConfig {
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
         additional_paths: ["/home/rspurgeon/go"],
+        bootstrap_prompts: {},
         agent_defaults: {
           runtime: undefined,
           args: [],
@@ -172,6 +174,33 @@ describe("agent launcher", () => {
     expect(command.env).toEqual({
       CLAUDE_CONFIG_DIR: "~/.claude",
     });
+    expect(command.post_launch_prompt).toBeUndefined();
+  });
+
+  it("appends an initial prompt to interactive Claude start commands", () => {
+    const config = makeConfig();
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "claude-enterprise",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+      initial_prompt: "Read the issue and wait.",
+      session_id: "claude-session",
+    });
+
+    expect(command.command).toEqual([
+      "claude",
+      "--model",
+      "sonnet",
+      "--permission-mode",
+      "bypassPermissions",
+      "--session-id",
+      "claude-session",
+      "--name",
+      "gh-565-fix-validation",
+      "Read the issue and wait.",
+    ]);
   });
 
   it("builds a Codex start command with layered overrides", () => {
@@ -220,6 +249,32 @@ describe("agent launcher", () => {
       GO_SRC: "/home/rspurgeon/go",
       KONGCTL_CONFIG_DIR: "/home/rspurgeon/.config/kongctl",
     });
+    expect(command.post_launch_prompt).toBeUndefined();
+  });
+
+  it("appends an initial prompt to interactive Codex start commands", () => {
+    const config = makeConfig();
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "codex",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+      initial_prompt: "Read the issue and wait.",
+    });
+
+    expect(command.command).toEqual([
+      "codex",
+      "--model",
+      "gpt-5.4",
+      "--sandbox",
+      "workspace-write",
+      "--ask-for-approval",
+      "on-request",
+      "--cd",
+      "/tmp/worktree",
+      "Read the issue and wait.",
+    ]);
   });
 
   it("builds a Claude resume command", () => {
@@ -278,6 +333,29 @@ describe("agent launcher", () => {
     expect(command.env).toEqual({
       OPENCODE_CONFIG_DIR: "~/.config/opencode",
     });
+    expect(command.post_launch_prompt).toBeUndefined();
+  });
+
+  it("passes bootstrap prompts through normal OpenCode start commands", () => {
+    const config = makeConfig();
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "opencode",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+      initial_prompt: "Read the issue and wait.",
+    });
+
+    expect(command.command).toEqual([
+      "opencode",
+      "--agent",
+      "build",
+      "--prompt",
+      "Read the issue and wait.",
+      "/tmp/worktree",
+    ]);
+    expect(command.post_launch_prompt).toBeUndefined();
   });
 
   it("builds an OpenCode resume command", () => {
@@ -320,6 +398,27 @@ describe("agent launcher", () => {
     expect(command.env).toEqual({
       OPENCODE_SERVER_PASSWORD: "secret",
     });
+  });
+
+  it("defers bootstrap prompts for OpenCode attach mode until after launch", () => {
+    const config = makeConfig();
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "opencode-attach",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+      initial_prompt: "Read the issue and wait.",
+    });
+
+    expect(command.command).toEqual([
+      "opencode",
+      "attach",
+      "http://localhost:4096",
+      "--dir",
+      "/tmp/worktree",
+    ]);
+    expect(command.post_launch_prompt).toBe("Read the issue and wait.");
   });
 
   it("builds OpenCode attach-mode resume and preserves the attach target", () => {

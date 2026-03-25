@@ -38,12 +38,17 @@ export interface SendKeysToPaneParams {
   pane_id: string;
   command: string;
   enter?: boolean;
+  literal?: boolean;
 }
 
 export interface GetTmuxWindowPaneParams {
   session_name: string;
   window_name: string;
   pane_index?: number;
+}
+
+export interface GetTmuxPaneInfoParams {
+  pane_id: string;
 }
 
 export interface TmuxPaneInfo {
@@ -387,12 +392,67 @@ export async function sendKeysToPane(
   params: SendKeysToPaneParams,
   options: TmuxClientOptions = {},
 ): Promise<void> {
+  const enter = params.enter !== false;
+
+  if (params.literal === true) {
+    await runTmux(
+      ["send-keys", "-t", params.pane_id, "-l", params.command],
+      options,
+    );
+
+    if (enter) {
+      await runTmux(["send-keys", "-t", params.pane_id, "Enter"], options);
+    }
+
+    return;
+  }
+
   const args = ["send-keys", "-t", params.pane_id, params.command];
-  if (params.enter !== false) {
+  if (enter) {
     args.push("Enter");
   }
 
   await runTmux(args, options);
+}
+
+export async function getTmuxPaneInfo(
+  params: GetTmuxPaneInfoParams,
+  options: TmuxClientOptions = {},
+): Promise<TmuxPaneInfo> {
+  const { stdout } = await runTmux(
+    [
+      "display-message",
+      "-p",
+      "-t",
+      params.pane_id,
+      "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}",
+    ],
+    options,
+  );
+
+  const [paneId, currentCommand, currentPath] = stdout
+    .trimEnd()
+    .split("\t");
+
+  if (
+    paneId === undefined ||
+    currentCommand === undefined ||
+    currentPath === undefined ||
+    paneId.length === 0 ||
+    currentCommand.length === 0 ||
+    currentPath.length === 0
+  ) {
+    throw new TmuxError(
+      "COMMAND_FAILED",
+      `Unexpected tmux pane info output for ${params.pane_id}: ${stdout.trimEnd()}`,
+    );
+  }
+
+  return {
+    pane_id: paneId,
+    current_command: currentCommand,
+    current_path: currentPath,
+  };
 }
 
 export async function getTmuxWindowPane(

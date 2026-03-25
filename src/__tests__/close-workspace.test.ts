@@ -16,6 +16,7 @@ function makeConfig(): PitchConfig {
       base_branch: "main",
       worktree_root: "~/.local/share/worktrees",
     },
+    bootstrap_prompts: {},
     repos: {
       "kong/kongctl": {
         default_agent: "codex",
@@ -23,6 +24,7 @@ function makeConfig(): PitchConfig {
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
         additional_paths: [],
+        bootstrap_prompts: {},
         agent_defaults: {
           runtime: undefined,
           args: [],

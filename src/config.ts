@@ -47,6 +47,13 @@ const AgentOverrideSchema = z
   })
   .strict();
 
+const BootstrapPromptTemplatesSchema = z
+  .object({
+    issue: z.preprocess(nullToUndefined, z.string().optional()),
+    pr: z.preprocess(nullToUndefined, z.string().optional()),
+  })
+  .strict();
+
 const RepoConfigSchema = z
   .object({
     default_agent: z.preprocess(nullToUndefined, z.string().optional()),
@@ -56,6 +63,10 @@ const RepoConfigSchema = z
     additional_paths: z.preprocess(
       nullToUndefined,
       z.array(z.string()).default([]),
+    ),
+    bootstrap_prompts: z.preprocess(
+      nullToUndefined,
+      BootstrapPromptTemplatesSchema.default({}),
     ),
     agent_defaults: z.preprocess(
       nullToUndefined,
@@ -70,6 +81,10 @@ const RepoConfigSchema = z
 
 export const PitchConfigSchema = z.object({
   defaults: z.preprocess(nullToUndefined, DefaultsSchema.default({})),
+  bootstrap_prompts: z.preprocess(
+    nullToUndefined,
+    BootstrapPromptTemplatesSchema.default({}),
+  ),
   repos: z.preprocess(
     nullToUndefined,
     z.record(z.string(), RepoConfigSchema).default({}),
@@ -137,8 +152,14 @@ export interface RepoConfig {
   worktree_base: string;
   tmux_session: string;
   additional_paths: string[];
+  bootstrap_prompts: BootstrapPromptTemplates;
   agent_defaults: AgentOverride;
   agent_overrides: Record<string, AgentOverride>;
+}
+
+export interface BootstrapPromptTemplates {
+  issue?: string;
+  pr?: string;
 }
 
 export interface AgentConfig {
@@ -156,6 +177,7 @@ export interface AgentOverride {
 
 export interface PitchConfig {
   defaults: Defaults;
+  bootstrap_prompts: BootstrapPromptTemplates;
   repos: Record<string, RepoConfig>;
   agents: Record<string, AgentConfig>;
 }
@@ -197,6 +219,7 @@ function normalizeRepoConfig(
       repoConfig.worktree_base ?? join(defaults.worktree_root, repoName),
     tmux_session: repoConfig.tmux_session ?? deriveTmuxSession(repoName),
     additional_paths: repoConfig.additional_paths,
+    bootstrap_prompts: repoConfig.bootstrap_prompts,
     agent_defaults: repoConfig.agent_defaults,
     agent_overrides: repoConfig.agent_overrides,
   };
@@ -210,6 +233,7 @@ function normalizeConfig(raw: RawPitchConfig): PitchConfig {
       base_branch: raw.defaults.base_branch,
       worktree_root: raw.defaults.worktree_root,
     },
+    bootstrap_prompts: raw.bootstrap_prompts,
     repos: Object.fromEntries(
       Object.entries(raw.repos).map(([repoName, repoConfig]) => [
         repoName,

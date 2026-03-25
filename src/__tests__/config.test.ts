@@ -20,6 +20,7 @@ describe("loadConfig", () => {
       expect(config.defaults.agent).toBeUndefined();
       expect(config.repos).toEqual({});
       expect(config.agents).toEqual({});
+      expect(config.bootstrap_prompts).toEqual({});
     });
 
     it("returns defaults for an empty file", async () => {
@@ -28,6 +29,7 @@ describe("loadConfig", () => {
       expect(config.defaults.worktree_root).toBe("~/.local/share/worktrees");
       expect(config.repos).toEqual({});
       expect(config.agents).toEqual({});
+      expect(config.bootstrap_prompts).toEqual({});
     });
 
     it("throws ConfigError for malformed YAML", async () => {
@@ -58,6 +60,7 @@ describe("loadConfig", () => {
       expect(config.defaults.agent).toBe("codex");
       expect(config.defaults.base_branch).toBe("main");
       expect(config.defaults.worktree_root).toBe("~/.local/share/worktrees");
+      expect(config.bootstrap_prompts).toEqual({});
 
       expect(config.repos["kong/kongctl"]).toEqual({
         default_agent: "claude-enterprise",
@@ -65,19 +68,17 @@ describe("loadConfig", () => {
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
         additional_paths: ["/home/rspurgeon/go"],
+        bootstrap_prompts: {},
         agent_defaults: {
-          runtime: undefined,
           args: [],
           env: {},
         },
         agent_overrides: {
           codex: {
-            runtime: undefined,
             args: ["--add-dir", "/home/rspurgeon/.config/kongctl"],
             env: {},
           },
           "claude-personal": {
-            runtime: undefined,
             args: [],
             env: {
               CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1",
@@ -148,8 +149,8 @@ describe("loadConfig", () => {
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
         additional_paths: [],
+        bootstrap_prompts: {},
         agent_defaults: {
-          runtime: undefined,
           args: [],
           env: {},
         },

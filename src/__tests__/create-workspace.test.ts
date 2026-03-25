@@ -17,6 +17,10 @@ function makeConfig(): PitchConfig {
       base_branch: "main",
       worktree_root: "~/.local/share/worktrees",
     },
+    bootstrap_prompts: {
+      issue: "Read issue #{issue_number} in {repo} on {branch} and wait.",
+      pr: "Read global PR #{pr_number} in {repo} and wait.",
+    },
     repos: {
       "kong/kongctl": {
         default_agent: "claude-enterprise",
@@ -24,6 +28,9 @@ function makeConfig(): PitchConfig {
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
         additional_paths: [],
+        bootstrap_prompts: {
+          pr: "Read repo PR #{pr_number} in {repo} on {branch} and wait.",
+        },
         agent_defaults: {
           runtime: undefined,
           args: [],
@@ -211,6 +218,14 @@ function makeDependencies(
           current_path: "/tmp/worktrees/gh-42-fix-bug",
         }) satisfies TmuxPaneInfo,
     ),
+    getTmuxPaneInfo: vi.fn(
+      async () =>
+        ({
+          pane_id: "%1",
+          current_command: "opencode",
+          current_path: "/tmp/worktrees/gh-42-fix-bug",
+        }) satisfies TmuxPaneInfo,
+    ),
     killTmuxWindow: vi.fn(async () => true),
     createTmuxLayout: vi.fn(async () => ({
       session_name: "kongctl",
@@ -224,6 +239,8 @@ function makeDependencies(
     })),
     sendKeysToPane: vi.fn(async () => undefined),
     buildAgentStartCommand: vi.fn(() => makeClaudeCommand()),
+    runGitHubLifecycle: vi.fn(async () => []),
+    sleep: vi.fn(async () => undefined),
     now: vi.fn(() => new Date("2026-03-22T20:30:00.000Z")),
     ...overrides,
   };
@@ -251,6 +268,7 @@ describe("create workspace", () => {
       repo: "kong/kongctl",
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
       override_args: ["--model", "opus"],
       runtime: undefined,
     });
@@ -265,6 +283,11 @@ describe("create workspace", () => {
       command:
         "CLAUDE_CONFIG_DIR=~/.claude command -- 'claude' '--model' 'opus' " +
         "'--session-id' 'claude-session' '--name' 'gh-42-fix-bug'",
+    });
+    expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
+      repo: "kong/kongctl",
+      source_kind: "issue",
+      source_number: 42,
     });
 
     const writeCallOrder = vi.mocked(
@@ -346,6 +369,21 @@ describe("create workspace", () => {
         tmux_window: "pr-123-sync-pr",
       }),
     );
+    expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith({
+      config,
+      agent: "claude-enterprise",
+      repo: "kong/kongctl",
+      workspace_name: "pr-123-sync-pr",
+      worktree_path: "/tmp/worktrees/pr-123-sync-pr",
+      initial_prompt: "Read repo PR #123 in kong/kongctl on feature/example and wait.",
+      override_args: undefined,
+      runtime: undefined,
+    });
+    expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
+      repo: "kong/kongctl",
+      source_kind: "pr",
+      source_number: 123,
+    });
   });
 
   it("rejects a second tracked workspace for the same PR", async () => {
@@ -461,6 +499,58 @@ describe("create workspace", () => {
       command:
         "OPENCODE_CONFIG_DIR=~/.config/opencode command -- 'opencode' " +
         "'--agent' 'build' '/tmp/worktrees/gh-42-fix-bug'",
+    });
+  });
+
+  it("sends a deferred bootstrap prompt for attach-mode OpenCode", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      buildAgentStartCommand: vi.fn(
+        (): BuiltAgentCommand => ({
+        agent_name: "opencode",
+        agent_type: "opencode",
+        runtime: "native",
+        command: [
+          "opencode",
+          "attach",
+          "http://localhost:4096",
+          "--dir",
+          "/tmp/worktrees/gh-42-fix-bug",
+        ],
+        env: {
+          OPENCODE_SERVER_PASSWORD: "secret",
+        },
+        post_launch_prompt:
+          "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
+        warnings: [],
+      }),
+      ),
+    });
+
+    await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+        agent: "opencode",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(1, {
+      pane_id: "%1",
+      command:
+        "OPENCODE_SERVER_PASSWORD='secret' command -- 'opencode' " +
+        "'attach' 'http://localhost:4096' '--dir' '/tmp/worktrees/gh-42-fix-bug'",
+    });
+    expect(dependencies.getTmuxPaneInfo).toHaveBeenCalledWith({
+      pane_id: "%1",
+    });
+    expect(dependencies.sleep).toHaveBeenCalledWith(10000);
+    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(2, {
+      pane_id: "%1",
+      command: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
+      literal: true,
     });
   });
 
@@ -589,6 +679,11 @@ describe("create workspace", () => {
 
     expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
     expect(workspace.agent_sessions).toEqual([]);
+    expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
+      repo: "kong/kongctl",
+      source_kind: "issue",
+      source_number: 42,
+    });
   });
 
   it("errors when an existing agent pane is rooted at a different path", async () => {
