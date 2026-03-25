@@ -70,7 +70,8 @@ work. Pitch stores the source as:
 
 | Relationship | Cardinality | Notes |
 |---|---|---|
-| Issue or PR → Workspace | 1:many | Separate slugs can produce multiple workspaces |
+| Issue → Workspace | 1:many | Separate slugs can produce multiple workspaces |
+| PR → Workspace | 1:1 | Current implementation reuses the PR head branch, so Pitch tracks one workspace per PR |
 | Workspace → Branch | 1:1 | PR workspaces may use a branch name different from the workspace name |
 | Branch → Worktree | 1:1 | Git enforces this |
 | Workspace → tmux window | 1:1 | Window named after workspace |
@@ -91,8 +92,9 @@ This string is used as:
 
 For issue workspaces, the git branch usually matches the
 workspace name. For PR workspaces, the git branch uses the
-actual PR head branch name so ordinary pushes still target
-the PR naturally.
+actual PR head branch name so it matches the PR, but users
+may still need to set upstream or add a remote before a
+plain `git push` will update that PR branch.
 
 ---
 

@@ -165,6 +165,7 @@ function makeDependencies(
 ): CreateWorkspaceDependencies {
   return {
     readWorkspaceRecord: vi.fn(async () => null),
+    listWorkspaceRecords: vi.fn(async () => []),
     writeWorkspaceRecord: vi.fn(async (workspace: WorkspaceRecord) => workspace),
     deleteWorkspaceRecord: vi.fn(async () => true),
     ensureWorkspaceWorktree: vi.fn(async () => ({
@@ -314,6 +315,10 @@ describe("create workspace", () => {
       repo: "kong/kongctl",
       pr_number: 123,
     });
+    expect(dependencies.listWorkspaceRecords).toHaveBeenCalledWith({
+      repo: "kong/kongctl",
+      status: "all",
+    });
     expect(dependencies.fetchGitRef).toHaveBeenCalledWith({
       repo: config.repos["kong/kongctl"],
       remote: "origin",
@@ -336,6 +341,37 @@ describe("create workspace", () => {
         tmux_window: "pr-123-sync-pr",
       }),
     );
+  });
+
+  it("rejects a second tracked workspace for the same PR", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      listWorkspaceRecords: vi.fn(async () => [
+        makeWorkspaceRecord({
+          name: "pr-123-existing",
+          source_kind: "pr",
+          source_number: 123,
+          branch: "feature/example",
+          worktree_path: "/tmp/worktrees/pr-123-existing",
+          tmux_window: "pr-123-existing",
+        }),
+      ]),
+    });
+
+    await expect(
+      createWorkspace(
+        {
+          pr: 123,
+          slug: "other-slug",
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow(
+      "PR #123 already has a tracked workspace: pr-123-existing",
+    );
+    expect(dependencies.fetchGitRef).not.toHaveBeenCalled();
+    expect(dependencies.ensureWorkspaceWorktree).not.toHaveBeenCalled();
   });
 
   it("stores a pending Codex session and preserves shell-expanded env vars", async () => {

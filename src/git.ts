@@ -405,9 +405,14 @@ export async function removeWorktree(
     );
   }
 
-  const branch = await (await pathExists(worktreePath)
-    ? currentBranch(worktreePath)
-    : Promise.resolve(workspaceName));
+  let branch = workspaceName;
+  if (await pathExists(worktreePath)) {
+    try {
+      branch = await currentBranch(worktreePath);
+    } catch {
+      branch = workspaceName;
+    }
+  }
   await runGit(["worktree", "remove", worktreePath], mainWorktree);
 
   return {

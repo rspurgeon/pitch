@@ -22,6 +22,7 @@ import {
 } from "./tmux.js";
 import {
   deleteWorkspaceRecord,
+  listWorkspaceRecords,
   readWorkspaceRecord,
   WorkspaceRecordSchema,
   writeWorkspaceRecord,
@@ -71,6 +72,7 @@ export type CreateWorkspaceInput = z.infer<typeof CreateWorkspaceInputSchema>;
 
 export interface CreateWorkspaceDependencies {
   readWorkspaceRecord: typeof readWorkspaceRecord;
+  listWorkspaceRecords: typeof listWorkspaceRecords;
   writeWorkspaceRecord: typeof writeWorkspaceRecord;
   deleteWorkspaceRecord: typeof deleteWorkspaceRecord;
   ensureWorkspaceWorktree: typeof ensureWorkspaceWorktree;
@@ -124,6 +126,7 @@ interface ResolvedWorkspaceSource {
 
 const defaultDependencies: CreateWorkspaceDependencies = {
   readWorkspaceRecord,
+  listWorkspaceRecords,
   writeWorkspaceRecord,
   deleteWorkspaceRecord,
   ensureWorkspaceWorktree,
@@ -219,6 +222,34 @@ function buildRequestedWorkspaceName(input: CreateWorkspaceInput): string {
   }
 
   throw new CreateWorkspaceError("Provide exactly one of issue or pr");
+}
+
+async function ensureNoTrackedPullRequestWorkspace(
+  input: CreateWorkspaceInput,
+  repoName: string,
+  workspaceName: string,
+  dependencies: CreateWorkspaceDependencies,
+): Promise<void> {
+  if (input.pr === undefined) {
+    return;
+  }
+
+  const existingWorkspaces = await dependencies.listWorkspaceRecords({
+    repo: repoName,
+    status: "all",
+  });
+  const existingPullRequestWorkspace = existingWorkspaces.find(
+    (workspace) =>
+      workspace.source_kind === "pr" &&
+      workspace.source_number === input.pr &&
+      workspace.name !== workspaceName,
+  );
+
+  if (existingPullRequestWorkspace !== undefined) {
+    throw new CreateWorkspaceError(
+      `PR #${input.pr} already has a tracked workspace: ${existingPullRequestWorkspace.name}`,
+    );
+  }
 }
 
 async function resolveWorkspaceSource(
@@ -452,6 +483,13 @@ export async function createWorkspace(
     if (existingWorkspace !== null) {
       throw new CreateWorkspaceError(`Workspace already exists: ${workspaceName}`);
     }
+
+    await ensureNoTrackedPullRequestWorkspace(
+      input,
+      repoName,
+      workspaceName,
+      dependencies,
+    );
 
     const source = await resolveWorkspaceSource(
       input,
