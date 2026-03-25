@@ -3,6 +3,8 @@ import { z } from "zod";
 import {
   buildAgentResumeCommand,
   buildAgentStartCommand,
+  getAdditionalPathWarnings,
+  type SupportedAgentType,
   type BuiltAgentCommand,
 } from "./agent-launcher.js";
 import type { PitchConfig } from "./config.js";
@@ -496,8 +498,18 @@ export function registerResumeWorkspaceTool(
     },
     async (args) => {
       const workspace = await resumeWorkspace(args, config, dependencies);
+      const repoConfig = config.repos[workspace.repo];
+      const warningText = getAdditionalPathWarnings(
+        workspace.agent_type as SupportedAgentType,
+        repoConfig.additional_paths,
+      ).at(0) ?? null;
       return {
-        content: [{ type: "text", text: JSON.stringify(workspace) }],
+        content: [
+          { type: "text", text: JSON.stringify(workspace) },
+          ...(warningText === null
+            ? []
+            : [{ type: "text" as const, text: `Warning: ${warningText}` }]),
+        ],
         structuredContent: workspace,
       };
     },

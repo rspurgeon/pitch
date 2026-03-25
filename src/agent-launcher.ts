@@ -39,6 +39,7 @@ export interface BuiltAgentCommand {
   command: string[];
   env: Record<string, string>;
   session_id?: string;
+  warnings: string[];
 }
 
 interface ResolvedAgentTarget {
@@ -47,6 +48,7 @@ interface ResolvedAgentTarget {
   runtime: SupportedRuntime;
   args: string[];
   env: Record<string, string>;
+  warnings: string[];
 }
 
 interface AgentRuntimeCommand {
@@ -60,6 +62,9 @@ export class AgentLauncherError extends Error {
     this.name = "AgentLauncherError";
   }
 }
+
+export const OPENCODE_ADDITIONAL_PATHS_WARNING =
+  "Repo additional_paths are ignored for OpenCode because the CLI does not support them yet";
 
 const AGENT_BINARIES: Record<SupportedAgentType, string> = {
   claude: "claude",
@@ -117,6 +122,36 @@ function resolveRepoConfig(
   return repoConfig;
 }
 
+export function getAdditionalPathWarnings(
+  agentType: SupportedAgentType,
+  additionalPaths: string[],
+): string[] {
+  if (additionalPaths.length === 0) {
+    return [];
+  }
+
+  if (agentType === "claude" || agentType === "codex") {
+    return [];
+  }
+
+  return [OPENCODE_ADDITIONAL_PATHS_WARNING];
+}
+
+function buildAdditionalPathArgs(
+  agentType: SupportedAgentType,
+  additionalPaths: string[],
+): string[] {
+  if (additionalPaths.length === 0) {
+    return [];
+  }
+
+  if (agentType === "claude" || agentType === "codex") {
+    return additionalPaths.flatMap((path) => ["--add-dir", path]);
+  }
+
+  return [];
+}
+
 function wrapRuntimeCommand(
   agentType: SupportedAgentType,
   runtime: SupportedRuntime,
@@ -161,6 +196,14 @@ function resolveAgentTarget(
 
   const repoDefaults = repoConfig?.agent_defaults;
   const repoOverride = repoConfig?.agent_overrides[agentName];
+  const additionalPathArgs = buildAdditionalPathArgs(
+    agentConfig.type,
+    repoConfig?.additional_paths ?? [],
+  );
+  const warnings = getAdditionalPathWarnings(
+    agentConfig.type,
+    repoConfig?.additional_paths ?? [],
+  );
 
   return {
     agent_name: agentName,
@@ -172,6 +215,7 @@ function resolveAgentTarget(
       agentConfig.runtime,
     args: [
       ...agentConfig.args,
+      ...additionalPathArgs,
       ...(repoDefaults?.args ?? []),
       ...(repoOverride?.args ?? []),
     ],
@@ -180,6 +224,7 @@ function resolveAgentTarget(
       ...(repoDefaults?.env ?? {}),
       ...(repoOverride?.env ?? {}),
     },
+    warnings,
   };
 }
 
@@ -216,6 +261,7 @@ function buildClaudeStartCommand(
     command: runtimeCommand.command,
     env: runtimeCommand.env,
     session_id: sessionId,
+    warnings: resolved.warnings,
   };
 }
 
@@ -238,6 +284,7 @@ function buildClaudeResumeCommand(
     command: runtimeCommand.command,
     env: runtimeCommand.env,
     session_id: input.session_id,
+    warnings: resolved.warnings,
   };
 }
 
@@ -270,6 +317,7 @@ function buildCodexStartCommand(
     runtime: resolved.runtime,
     command: runtimeCommand.command,
     env: runtimeCommand.env,
+    warnings: resolved.warnings,
   };
 }
 
@@ -292,6 +340,7 @@ function buildCodexResumeCommand(
     command: runtimeCommand.command,
     env: runtimeCommand.env,
     session_id: input.session_id,
+    warnings: resolved.warnings,
   };
 }
 
@@ -334,6 +383,7 @@ function buildOpencodeStartCommand(
     runtime: resolved.runtime,
     command: runtimeCommand.command,
     env: runtimeCommand.env,
+    warnings: resolved.warnings,
   };
 }
 
@@ -380,6 +430,7 @@ function buildOpencodeResumeCommand(
     command: runtimeCommand.command,
     env: runtimeCommand.env,
     session_id: input.session_id,
+    warnings: resolved.warnings,
   };
 }
 

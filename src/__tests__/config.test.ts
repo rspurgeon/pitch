@@ -64,9 +64,10 @@ describe("loadConfig", () => {
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
+        additional_paths: ["/home/rspurgeon/go"],
         agent_defaults: {
           runtime: undefined,
-          args: ["--add-dir", "/home/rspurgeon/go"],
+          args: [],
           env: {},
         },
         agent_overrides: {
@@ -146,6 +147,7 @@ describe("loadConfig", () => {
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
+        additional_paths: [],
         agent_defaults: {
           runtime: undefined,
           args: [],

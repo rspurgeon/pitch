@@ -171,6 +171,7 @@ Each repo requires:
 | `main_worktree` | Path to the repo's primary checkout |
 | `worktree_base` | Optional explicit worktree directory for this repo |
 | `tmux_session` | Optional explicit tmux session name for this repo |
+| `additional_paths` | Optional repo-wide extra directories Pitch translates per agent |
 | `agent_defaults` | Optional repo-wide agent args/env/runtime applied to every agent |
 | `agent_overrides` | Optional per-repo overrides keyed by configured agent name |
 
@@ -248,6 +249,20 @@ For attach-mode OpenCode setups, configure `args` with
 `attach <url> --dir` and Pitch will supply the workspace
 path for `--dir` on both create and resume.
 
+#### `repos.<repo>.additional_paths`
+
+`additional_paths` lets you express shared repo
+directories once, and Pitch will translate them into
+agent-specific launch flags where supported.
+
+Current support:
+
+| Agent type | Behavior |
+|---|---|
+| `claude` | Adds repeated `--add-dir <path>` flags |
+| `codex` | Adds repeated `--add-dir <path>` flags |
+| `opencode` | Ignores them and returns a warning; OpenCode does not support this yet |
+
 #### `repos.<repo>.agent_defaults`
 
 `agent_defaults` lets you attach repo-wide launch behavior
@@ -264,7 +279,8 @@ selected for that repo.
 
 `agent_overrides` lets you attach project-specific launch
 behavior to a repo. Override keys must match names under
-`agents`, and layer on top of `agent_defaults`.
+`agents`, and layer on top of translated
+`additional_paths` and `agent_defaults`.
 
 | Field | Description |
 |---|---|
@@ -280,10 +296,8 @@ repos:
   kong/kongctl:
     default_agent: claude-enterprise
     main_worktree: ~/dev/kong/kongctl
-    agent_defaults:
-      args:
-        - --add-dir
-        - /home/rspurgeon/go
+    additional_paths:
+      - /home/rspurgeon/go
     agent_overrides:
       claude-enterprise:
         runtime: docker

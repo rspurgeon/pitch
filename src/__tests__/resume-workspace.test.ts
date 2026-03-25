@@ -23,6 +23,7 @@ function makeConfig(): PitchConfig {
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
+        additional_paths: [],
         agent_defaults: {
           runtime: undefined,
           args: [],
@@ -111,6 +112,7 @@ function makeClaudeResumeCommand(): BuiltAgentCommand {
       CLAUDE_CONFIG_DIR: "~/.claude",
     },
     session_id: "claude-session-1",
+    warnings: [],
   };
 }
 
@@ -132,6 +134,7 @@ function makeClaudeStartCommand(): BuiltAgentCommand {
       CLAUDE_CONFIG_DIR: "~/.claude",
     },
     session_id: "claude-session-2",
+    warnings: [],
   };
 }
 
@@ -145,6 +148,7 @@ function makeOpencodeResumeCommand(): BuiltAgentCommand {
       OPENCODE_CONFIG_DIR: "~/.config/opencode",
     },
     session_id: "ses_123",
+    warnings: [],
   };
 }
 
@@ -157,6 +161,7 @@ function makeOpencodeStartCommand(): BuiltAgentCommand {
     env: {
       OPENCODE_CONFIG_DIR: "~/.config/opencode",
     },
+    warnings: [],
   };
 }
 
@@ -353,6 +358,7 @@ describe("resume workspace", () => {
           CODEX_HOME: "~/.codex",
         },
         session_id: "codex-session-1",
+        warnings: [],
       }) satisfies BuiltAgentCommand),
       findCodexSessionForWorkspace: vi.fn(async () => ({
         id: "codex-session-1",
@@ -431,6 +437,7 @@ describe("resume workspace", () => {
           CODEX_HOME: "~/.codex",
         },
         session_id: "codex-session-new",
+        warnings: [],
       }) satisfies BuiltAgentCommand),
       findCodexSessionForWorkspace: vi.fn(async () => ({
         id: "codex-session-new",
@@ -502,6 +509,7 @@ describe("resume workspace", () => {
         env: {
           CODEX_HOME: "~/.codex",
         },
+        warnings: [],
       }) satisfies BuiltAgentCommand),
       findCodexSessionForWorkspace: vi.fn(async () => {
         throw new Error("session store unavailable");
@@ -566,6 +574,7 @@ describe("resume workspace", () => {
         env: {
           CODEX_HOME: "~/.codex-docker",
         },
+        warnings: [],
       }) satisfies BuiltAgentCommand),
     });
 

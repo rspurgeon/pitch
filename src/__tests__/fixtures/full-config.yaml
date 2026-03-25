@@ -8,10 +8,8 @@ repos:
   kong/kongctl:
     default_agent: claude-enterprise
     main_worktree: ~/dev/kong/kongctl
-    agent_defaults:
-      args:
-        - --add-dir
-        - /home/rspurgeon/go
+    additional_paths:
+      - /home/rspurgeon/go
     agent_overrides:
       codex:
         args:

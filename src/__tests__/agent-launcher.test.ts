@@ -23,9 +23,10 @@ function makeConfig(): PitchConfig {
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
+        additional_paths: ["/home/rspurgeon/go"],
         agent_defaults: {
           runtime: undefined,
-          args: ["--add-dir", "/home/rspurgeon/go"],
+          args: [],
           env: {
             GO_SRC: "/home/rspurgeon/go",
           },
@@ -518,6 +519,28 @@ describe("agent launcher", () => {
         runtime: "docker",
       }),
     ).toThrow("OpenCode does not support the docker runtime yet");
+  });
+
+  it("ignores repo additional_paths for OpenCode and returns a warning", () => {
+    const config = makeConfig();
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "opencode",
+      repo: "kong/kongctl",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.command).toEqual([
+      "opencode",
+      "--agent",
+      "build",
+      "/tmp/worktree",
+    ]);
+    expect(command.warnings).toEqual([
+      "Repo additional_paths are ignored for OpenCode because the CLI does not support them yet",
+    ]);
   });
 
   it("throws for unknown agent names", () => {

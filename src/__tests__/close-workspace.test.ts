@@ -22,6 +22,7 @@ function makeConfig(): PitchConfig {
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
+        additional_paths: [],
         agent_defaults: {
           runtime: undefined,
           args: [],
