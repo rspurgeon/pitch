@@ -294,6 +294,16 @@ path to `--dir` for both create and resume. Attach mode
 does not expose a prompt flag, so Pitch best-effort sends
 the bootstrap prompt into the tmux pane after launch.
 
+When a repo config includes `additional_paths`, Pitch
+translates them into OpenCode
+`permission.external_directory` entries, writes a
+generated config file at
+`~/.pitch/opencode/{workspace_name}.json`, and launches
+OpenCode with `OPENCODE_CONFIG` pointing at that file.
+This keeps user-local paths out of the repo while still
+letting OpenCode merge the generated permissions with its
+global and project config layers.
+
 ### Docker via agent-en-place
 
 When runtime is `docker`, Pitch delegates container management to `agent-en-place`:
@@ -413,6 +423,14 @@ If a repo omits `worktree_base`, Pitch derives it as
 `{defaults.worktree_root}/{owner}/{repo}`. If a repo omits
 `tmux_session`, Pitch uses the repo name segment
 (`kongctl` for `kong/kongctl`).
+
+Repo `additional_paths` are translated per agent type:
+
+- Claude and Codex receive repeated `--add-dir` flags.
+- OpenCode receives generated
+  `permission.external_directory` config written under
+  `~/.pitch/opencode/` and referenced via
+  `OPENCODE_CONFIG` on both create and fresh relaunch.
 
 Bootstrap prompt templates resolve in this order:
 

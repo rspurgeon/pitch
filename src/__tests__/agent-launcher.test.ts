@@ -309,6 +309,7 @@ describe("agent launcher", () => {
     const command = buildAgentStartCommand({
       config,
       agent: "opencode",
+      opencode_config_path: "/tmp/pitch-opencode/gh-565-fix-validation.json",
       workspace_name: "gh-565-fix-validation",
       worktree_path: "/tmp/worktree",
       override_args: [
@@ -331,6 +332,7 @@ describe("agent launcher", () => {
     ]);
     expect(command.session_id).toBeUndefined();
     expect(command.env).toEqual({
+      OPENCODE_CONFIG: "/tmp/pitch-opencode/gh-565-fix-validation.json",
       OPENCODE_CONFIG_DIR: "~/.config/opencode",
     });
     expect(command.post_launch_prompt).toBeUndefined();
@@ -364,6 +366,7 @@ describe("agent launcher", () => {
     const command = buildAgentResumeCommand({
       config,
       agent: "opencode",
+      opencode_config_path: "/tmp/pitch-opencode/gh-565-fix-validation.json",
       session_id: "ses_123",
       worktree_path: "/tmp/worktree",
     });
@@ -376,6 +379,10 @@ describe("agent launcher", () => {
       "ses_123",
     ]);
     expect(command.session_id).toBe("ses_123");
+    expect(command.env).toEqual({
+      OPENCODE_CONFIG: "/tmp/pitch-opencode/gh-565-fix-validation.json",
+      OPENCODE_CONFIG_DIR: "~/.config/opencode",
+    });
   });
 
   it("builds OpenCode attach-mode start and injects the worktree dir", () => {
@@ -620,7 +627,7 @@ describe("agent launcher", () => {
     ).toThrow("OpenCode does not support the docker runtime yet");
   });
 
-  it("ignores repo additional_paths for OpenCode and returns a warning", () => {
+  it("does not warn for OpenCode repo additional_paths", () => {
     const config = makeConfig();
 
     const command = buildAgentStartCommand({
@@ -637,9 +644,7 @@ describe("agent launcher", () => {
       "build",
       "/tmp/worktree",
     ]);
-    expect(command.warnings).toEqual([
-      "Repo additional_paths are ignored for OpenCode because the CLI does not support them yet",
-    ]);
+    expect(command.warnings).toEqual([]);
   });
 
   it("throws for unknown agent names", () => {
