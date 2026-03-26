@@ -290,7 +290,10 @@ workspace outside the repo so checked-out worktrees stay
 clean. The generated config contains only the translated
 `permission.external_directory` entries, and OpenCode then
 merges that config with the normal global and project
-config layers.
+config layers. If the selected agent already sets
+`OPENCODE_CONFIG`, Pitch first merges that custom config
+into the generated workspace file so existing OpenCode
+settings are preserved.
 
 #### `repos.<repo>.agent_defaults`
 

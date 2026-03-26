@@ -302,7 +302,10 @@ generated config file at
 OpenCode with `OPENCODE_CONFIG` pointing at that file.
 This keeps user-local paths out of the repo while still
 letting OpenCode merge the generated permissions with its
-global and project config layers.
+global and project config layers. If the selected agent
+already defines `OPENCODE_CONFIG`, Pitch merges that base
+config into the generated workspace file before launch so
+existing custom settings are preserved.
 
 ### Docker via agent-en-place
 

@@ -209,6 +209,15 @@ describe("loadConfig", () => {
       );
     });
 
+    it("rejects blank additional_paths entries", async () => {
+      await expect(
+        loadConfig(fixture("invalid-additional-paths-config.yaml")),
+      ).rejects.toThrow(ConfigError);
+      await expect(
+        loadConfig(fixture("invalid-additional-paths-config.yaml")),
+      ).rejects.toThrow(/repos\.kong\/kongctl\.additional_paths\.0/);
+    });
+
     it("includes field path in validation error message", async () => {
       try {
         await loadConfig(fixture("invalid-config.yaml"));

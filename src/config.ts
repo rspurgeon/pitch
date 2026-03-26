@@ -22,6 +22,8 @@ const AgentArgListSchema = z.preprocess(
   z.array(z.string()).default([]),
 );
 
+const NonEmptyTrimmedStringSchema = z.string().trim().min(1);
+
 const AgentEnvSchema = z.preprocess(
   nullToUndefined,
   z.record(z.string(), z.string()).default({}),
@@ -62,7 +64,7 @@ const RepoConfigSchema = z
     tmux_session: z.preprocess(nullToUndefined, z.string().optional()),
     additional_paths: z.preprocess(
       nullToUndefined,
-      z.array(z.string()).default([]),
+      z.array(NonEmptyTrimmedStringSchema).default([]),
     ),
     bootstrap_prompts: z.preprocess(
       nullToUndefined,

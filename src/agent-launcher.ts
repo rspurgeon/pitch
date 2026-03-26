@@ -55,6 +55,14 @@ interface ResolvedAgentTarget {
   warnings: string[];
 }
 
+export function resolveAgentEnv(
+  config: PitchConfig,
+  agentName: string,
+  repo: string | undefined,
+): Record<string, string> {
+  return resolveAgentTarget(config, agentName, repo).env;
+}
+
 interface AgentRuntimeCommand {
   command: string[];
   env: Record<string, string>;

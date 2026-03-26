@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   buildAgentResumeCommand,
   buildAgentStartCommand,
+  resolveAgentEnv,
   type BuiltAgentCommand,
 } from "./agent-launcher.js";
 import { buildBootstrapPrompt } from "./bootstrap-prompt.js";
@@ -263,6 +264,7 @@ async function maybeEnsureOpencodeConfig(
     return await dependencies.ensureOpencodeConfig({
       workspace_name: workspaceName,
       additional_paths: repoConfig.additional_paths,
+      base_config_path: resolveAgentEnv(config, agentName, repoName).OPENCODE_CONFIG,
     });
   } catch (error: unknown) {
     throw new ResumeWorkspaceError(
