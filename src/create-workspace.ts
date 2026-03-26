@@ -2,21 +2,23 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
   buildAgentStartCommand,
-  getAdditionalPathWarnings,
-  type SupportedAgentType,
   type BuiltAgentCommand,
 } from "./agent-launcher.js";
+import { buildBootstrapPrompt } from "./bootstrap-prompt.js";
 import type { PitchConfig, RepoConfig } from "./config.js";
 import {
   ensureWorkspaceWorktree,
   fetchGitRef,
   removeWorktree,
 } from "./git.js";
+import { runGitHubLifecycle } from "./github-lifecycle.js";
 import { readPullRequest } from "./github-pr.js";
+import { sendPostLaunchPromptToPane } from "./post-launch-prompt.js";
 import {
   createTmuxLayout,
   createTmuxWindow,
   ensureTmuxSession,
+  getTmuxPaneInfo,
   getTmuxWindowPaneInfo,
   killTmuxWindow,
   sendKeysToPane,
@@ -30,6 +32,7 @@ import {
   writeWorkspaceRecord,
   type WorkspaceRecord,
 } from "./workspace-state.js";
+import { buildWorkspaceToolResponse } from "./workspace-tool-response.js";
 import { formatAgentPaneCommand } from "./agent-pane-command.js";
 import { shellEscape } from "./shell.js";
 
@@ -88,8 +91,12 @@ export interface CreateWorkspaceDependencies {
   killTmuxWindow: typeof killTmuxWindow;
   createTmuxLayout: typeof createTmuxLayout;
   sendKeysToPane: typeof sendKeysToPane;
+  getTmuxPaneInfo: typeof getTmuxPaneInfo;
   buildAgentStartCommand: typeof buildAgentStartCommand;
+  runGitHubLifecycle: typeof runGitHubLifecycle;
+  sleep: (ms: number) => Promise<void>;
   now: () => Date;
+  reportWarning?: (warning: string) => void;
 }
 
 export class CreateWorkspaceError extends Error {
@@ -142,7 +149,10 @@ const defaultDependencies: CreateWorkspaceDependencies = {
   killTmuxWindow,
   createTmuxLayout,
   sendKeysToPane,
+  getTmuxPaneInfo,
   buildAgentStartCommand,
+  runGitHubLifecycle,
+  sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
   now: () => new Date(),
 };
 
@@ -158,6 +168,19 @@ function formatError(error: unknown): string {
   }
 
   return String(error);
+}
+
+function reportWarnings(
+  reportWarning: ((warning: string) => void) | undefined,
+  warnings: string[],
+): void {
+  if (reportWarning === undefined) {
+    return;
+  }
+
+  for (const warning of warnings) {
+    reportWarning(warning);
+  }
 }
 
 function validateInput(params: CreateWorkspaceInput): CreateWorkspaceInput {
@@ -514,15 +537,25 @@ export async function createWorkspace(
       start_directory: worktree.worktree_path,
     });
 
+    const initialPrompt = buildBootstrapPrompt(config, {
+      repo: repoName,
+      source_kind: source.source_kind,
+      source_number: source.source_number,
+      workspace_name: workspaceName,
+      branch: worktree.branch,
+    });
+
     const agentCommand = dependencies.buildAgentStartCommand({
       config,
       agent: agentName,
       repo: repoName,
       workspace_name: workspaceName,
       worktree_path: worktree.worktree_path,
+      initial_prompt: initialPrompt,
       override_args: buildAgentOverrides(input),
       runtime: input.runtime,
     });
+    reportWarnings(dependencies.reportWarning, agentCommand.warnings);
 
     let existingPane: ExistingPaneState | null = null;
     let agentPaneId: string;
@@ -617,6 +650,37 @@ export async function createWorkspace(
         pane_id: agentPaneId,
         command: formatAgentPaneCommand(agentCommand),
       });
+
+      if (agentCommand.post_launch_prompt !== undefined) {
+        try {
+          await sendPostLaunchPromptToPane(
+            agentPaneId,
+            agentCommand.post_launch_prompt,
+            agentCommand,
+            workspaceName,
+            dependencies,
+          );
+        } catch (error: unknown) {
+          reportWarnings(dependencies.reportWarning, [
+            `Failed to send bootstrap prompt to ${workspaceName}: ${formatError(error)}`,
+          ]);
+        }
+      }
+    }
+
+    try {
+      reportWarnings(
+        dependencies.reportWarning,
+        await dependencies.runGitHubLifecycle({
+          repo: repoName,
+          source_kind: source.source_kind,
+          source_number: source.source_number,
+        }),
+      );
+    } catch (error: unknown) {
+      reportWarnings(dependencies.reportWarning, [
+        `Failed to apply GitHub lifecycle automation for ${workspaceName}: ${formatError(error)}`,
+      ]);
     }
 
     return persistedRecord;
@@ -651,21 +715,12 @@ export function registerCreateWorkspaceTool(
       outputSchema: WorkspaceRecordSchema,
     },
     async (args: CreateWorkspaceInput) => {
-      const workspace = await createWorkspace(args, config, dependencies);
-      const repoConfig = config.repos[workspace.repo];
-      const warningText = getAdditionalPathWarnings(
-        workspace.agent_type as SupportedAgentType,
-        repoConfig.additional_paths,
-      ).at(0) ?? null;
-      return {
-        content: [
-          { type: "text", text: JSON.stringify(workspace) },
-          ...(warningText === null
-            ? []
-            : [{ type: "text" as const, text: `Warning: ${warningText}` }]),
-        ],
-        structuredContent: workspace,
-      };
+      const warnings: string[] = [];
+      const workspace = await createWorkspace(args, config, {
+        ...dependencies,
+        reportWarning: (warning) => warnings.push(warning),
+      });
+      return buildWorkspaceToolResponse(workspace, warnings);
     },
   );
 }

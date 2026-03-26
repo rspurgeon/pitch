@@ -18,6 +18,7 @@ export interface BuildStartCommandInput {
   repo?: string;
   workspace_name: string;
   worktree_path: string;
+  initial_prompt?: string;
   override_args?: string[];
   runtime?: SupportedRuntime;
   session_id?: string;
@@ -39,6 +40,7 @@ export interface BuiltAgentCommand {
   command: string[];
   env: Record<string, string>;
   session_id?: string;
+  post_launch_prompt?: string;
   warnings: string[];
 }
 
@@ -245,6 +247,7 @@ function buildClaudeStartCommand(
     sessionId,
     "--name",
     input.workspace_name,
+    ...(input.initial_prompt === undefined ? [] : [input.initial_prompt]),
   ];
 
   const runtimeCommand = wrapRuntimeCommand(
@@ -302,6 +305,7 @@ function buildCodexStartCommand(
     ...layeredArgs,
     "--cd",
     input.worktree_path,
+    ...(input.initial_prompt === undefined ? [] : [input.initial_prompt]),
   ];
 
   const runtimeCommand = wrapRuntimeCommand(
@@ -367,6 +371,9 @@ function buildOpencodeStartCommand(
   const command = [
     AGENT_BINARIES.opencode,
     ...sanitizedArgs,
+    ...(attachMode || input.initial_prompt === undefined
+      ? []
+      : ["--prompt", input.initial_prompt]),
     ...(attachMode ? ["--dir", input.worktree_path] : [input.worktree_path]),
   ];
 
@@ -383,6 +390,7 @@ function buildOpencodeStartCommand(
     runtime: resolved.runtime,
     command: runtimeCommand.command,
     env: runtimeCommand.env,
+    post_launch_prompt: attachMode ? input.initial_prompt : undefined,
     warnings: resolved.warnings,
   };
 }

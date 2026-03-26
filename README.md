@@ -160,6 +160,23 @@ these values.
 | `base_branch` | Branch to create workspaces from | `main` |
 | `worktree_root` | Root used to derive repo `worktree_base` values | `~/.local/share/worktrees` |
 
+#### `bootstrap_prompts`
+
+Optional prompt templates Pitch sends only when it is
+launching a fresh agent process. These templates are not
+re-sent on a true session resume.
+
+Supported keys:
+
+| Field | Description |
+|---|---|
+| `issue` | Template for issue-backed workspaces |
+| `pr` | Template for PR-backed workspaces |
+
+Supported template variables:
+`{repo}`, `{issue_number}`, `{pr_number}`,
+`{workspace_name}`, and `{branch}`.
+
 #### `repos`
 
 Map of GitHub org/repo identifiers to their local paths.
@@ -172,6 +189,7 @@ Each repo requires:
 | `worktree_base` | Optional explicit worktree directory for this repo |
 | `tmux_session` | Optional explicit tmux session name for this repo |
 | `additional_paths` | Optional repo-wide extra directories Pitch translates per agent |
+| `bootstrap_prompts` | Optional repo-specific prompt template overrides for `issue` and `pr` |
 | `agent_defaults` | Optional repo-wide agent args/env/runtime applied to every agent |
 | `agent_overrides` | Optional per-repo overrides keyed by configured agent name |
 
@@ -275,6 +293,16 @@ selected for that repo.
 | `args` | Additional ordered CLI args for every agent in this repo |
 | `env` | Additional env vars for every agent in this repo |
 
+#### `repos.<repo>.bootstrap_prompts`
+
+Repo prompt templates override the top-level
+`bootstrap_prompts` block for that repo only. Pitch
+resolves templates in this order:
+
+1. `repos.<repo>.bootstrap_prompts.<issue|pr>`
+2. top-level `bootstrap_prompts.<issue|pr>`
+3. Pitch built-in default prompt
+
 #### `repos.<repo>.agent_overrides`
 
 `agent_overrides` lets you attach project-specific launch
@@ -335,14 +363,18 @@ create_workspace \
   GitHub issue or pull request by provisioning or
   adopting the git worktree, reusing a matching tmux
   window when safe, launching the agent when needed,
-  and writing the workspace state record.
+  assigning the source GitHub issue or PR to the current
+  `gh` user, best-effort setting issue project status to
+  `In Progress`, and writing the workspace state record.
 - **list_workspaces** — Lists tracked workspaces with
   status, source kind/number, selected agent, and tmux
   location.
 - **get_workspace** — Returns the full saved workspace
   record for a specific workspace name.
 - **resume_workspace** — Relaunches or resumes the
-  coding agent in an existing active workspace.
+  coding agent in an existing active workspace. True
+  resumes do not re-send bootstrap prompts or GitHub
+  lifecycle automation; fresh relaunches do.
 - **close_workspace** — Closes the tmux window and,
   by default, removes the git worktree and workspace
   state file.

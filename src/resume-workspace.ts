@@ -3,18 +3,20 @@ import { z } from "zod";
 import {
   buildAgentResumeCommand,
   buildAgentStartCommand,
-  getAdditionalPathWarnings,
-  type SupportedAgentType,
   type BuiltAgentCommand,
 } from "./agent-launcher.js";
+import { buildBootstrapPrompt } from "./bootstrap-prompt.js";
 import type { PitchConfig } from "./config.js";
 import { findCodexSessionForWorkspace } from "./codex-session-store.js";
+import { runGitHubLifecycle } from "./github-lifecycle.js";
 import { findOpencodeSessionForWorkspace } from "./opencode-session-store.js";
+import { sendPostLaunchPromptToPane } from "./post-launch-prompt.js";
 import { restoreWorktree } from "./git.js";
 import {
   createTmuxLayout,
   createTmuxWindow,
   ensureTmuxSession,
+  getTmuxPaneInfo,
   getTmuxWindowPaneInfo,
   getTmuxWindowPane,
   sendKeysToPane,
@@ -27,6 +29,7 @@ import {
   writeWorkspaceRecord,
   type WorkspaceRecord,
 } from "./workspace-state.js";
+import { buildWorkspaceToolResponse } from "./workspace-tool-response.js";
 import { formatAgentPaneCommand } from "./agent-pane-command.js";
 
 export const ResumeWorkspaceInputSchema = z.object({
@@ -46,12 +49,16 @@ export interface ResumeWorkspaceDependencies {
   findOpencodeSessionForWorkspace: typeof findOpencodeSessionForWorkspace;
   getTmuxWindowPaneInfo: typeof getTmuxWindowPaneInfo;
   getTmuxWindowPane: typeof getTmuxWindowPane;
+  getTmuxPaneInfo: typeof getTmuxPaneInfo;
   readWorkspaceRecord: typeof readWorkspaceRecord;
   restoreWorktree: typeof restoreWorktree;
+  runGitHubLifecycle: typeof runGitHubLifecycle;
   sendKeysToPane: typeof sendKeysToPane;
+  sleep: (ms: number) => Promise<void>;
   tmuxWindowExists: typeof tmuxWindowExists;
   writeWorkspaceRecord: typeof writeWorkspaceRecord;
   now: () => Date;
+  reportWarning?: (warning: string) => void;
 }
 
 const defaultDependencies: ResumeWorkspaceDependencies = {
@@ -60,13 +67,16 @@ const defaultDependencies: ResumeWorkspaceDependencies = {
   createTmuxLayout,
   createTmuxWindow,
   ensureTmuxSession,
+  getTmuxPaneInfo,
   findCodexSessionForWorkspace,
   findOpencodeSessionForWorkspace,
   getTmuxWindowPaneInfo,
   getTmuxWindowPane,
   readWorkspaceRecord,
   restoreWorktree,
+  runGitHubLifecycle,
   sendKeysToPane,
+  sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
   tmuxWindowExists,
   writeWorkspaceRecord,
   now: () => new Date(),
@@ -91,6 +101,19 @@ function formatError(error: unknown): string {
   }
 
   return String(error);
+}
+
+function reportWarnings(
+  reportWarning: ((warning: string) => void) | undefined,
+  warnings: string[],
+): void {
+  if (reportWarning === undefined) {
+    return;
+  }
+
+  for (const warning of warnings) {
+    reportWarning(warning);
+  }
 }
 
 function validateInput(params: ResumeWorkspaceInput): ResumeWorkspaceInput {
@@ -416,14 +439,23 @@ export async function resumeWorkspace(
   }
 
   let command: BuiltAgentCommand;
+  let isFreshLaunch = false;
   try {
     if (latestSessionId === null) {
+      isFreshLaunch = true;
       command = dependencies.buildAgentStartCommand({
         config,
         agent: agentName,
         repo: workspace.repo,
         workspace_name: workspace.name,
         worktree_path: workspace.worktree_path,
+        initial_prompt: buildBootstrapPrompt(config, {
+          repo: workspace.repo,
+          source_kind: workspace.source_kind,
+          source_number: workspace.source_number,
+          workspace_name: workspace.name,
+          branch: workspace.branch,
+        }),
       });
     } else {
       command = dependencies.buildAgentResumeCommand({
@@ -439,6 +471,7 @@ export async function resumeWorkspace(
       `Failed to build agent command for ${workspace.name}: ${formatError(error)}`,
     );
   }
+  reportWarnings(dependencies.reportWarning, command.warnings);
 
   let paneCommand: string;
   try {
@@ -460,6 +493,22 @@ export async function resumeWorkspace(
     );
   }
 
+  if (command.post_launch_prompt !== undefined) {
+    try {
+      await sendPostLaunchPromptToPane(
+        agentPaneId,
+        command.post_launch_prompt,
+        command,
+        workspace.name,
+        dependencies,
+      );
+    } catch (error: unknown) {
+      reportWarnings(dependencies.reportWarning, [
+        `Failed to send bootstrap prompt to ${workspace.name}: ${formatError(error)}`,
+      ]);
+    }
+  }
+
   const startedAt = dependencies.now().toISOString();
   const updatedWorkspace: WorkspaceRecord = {
     ...workspace,
@@ -475,7 +524,26 @@ export async function resumeWorkspace(
   };
 
   try {
-    return await dependencies.writeWorkspaceRecord(updatedWorkspace);
+    const persistedWorkspace = await dependencies.writeWorkspaceRecord(updatedWorkspace);
+
+    if (isFreshLaunch) {
+      try {
+        reportWarnings(
+          dependencies.reportWarning,
+          await dependencies.runGitHubLifecycle({
+            repo: persistedWorkspace.repo,
+            source_kind: persistedWorkspace.source_kind,
+            source_number: persistedWorkspace.source_number,
+          }),
+        );
+      } catch (error: unknown) {
+        reportWarnings(dependencies.reportWarning, [
+          `Failed to apply GitHub lifecycle automation for ${persistedWorkspace.name}: ${formatError(error)}`,
+        ]);
+      }
+    }
+
+    return persistedWorkspace;
   } catch (error: unknown) {
     throw new ResumeWorkspaceError(
       `Failed to update workspace state for ${workspace.name}: ${formatError(error)}`,
@@ -497,21 +565,12 @@ export function registerResumeWorkspaceTool(
       outputSchema: WorkspaceRecordSchema,
     },
     async (args) => {
-      const workspace = await resumeWorkspace(args, config, dependencies);
-      const repoConfig = config.repos[workspace.repo];
-      const warningText = getAdditionalPathWarnings(
-        workspace.agent_type as SupportedAgentType,
-        repoConfig.additional_paths,
-      ).at(0) ?? null;
-      return {
-        content: [
-          { type: "text", text: JSON.stringify(workspace) },
-          ...(warningText === null
-            ? []
-            : [{ type: "text" as const, text: `Warning: ${warningText}` }]),
-        ],
-        structuredContent: workspace,
-      };
+      const warnings: string[] = [];
+      const workspace = await resumeWorkspace(args, config, {
+        ...dependencies,
+        reportWarning: (warning) => warnings.push(warning),
+      });
+      return buildWorkspaceToolResponse(workspace, warnings);
     },
   );
 }

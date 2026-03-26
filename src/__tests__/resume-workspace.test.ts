@@ -17,6 +17,10 @@ function makeConfig(): PitchConfig {
       base_branch: "main",
       worktree_root: "~/.local/share/worktrees",
     },
+    bootstrap_prompts: {
+      issue: "Read issue #{issue_number} in {repo} on {branch} and wait.",
+      pr: "Read global PR #{pr_number} in {repo} and wait.",
+    },
     repos: {
       "kong/kongctl": {
         default_agent: "claude-enterprise",
@@ -24,6 +28,9 @@ function makeConfig(): PitchConfig {
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
         additional_paths: [],
+        bootstrap_prompts: {
+          pr: "Read repo PR #{pr_number} in {repo} on {branch} and wait.",
+        },
         agent_defaults: {
           runtime: undefined,
           args: [],
@@ -202,12 +209,22 @@ function makeDependencies(
         }) satisfies TmuxPaneInfo,
     ),
     getTmuxWindowPane: vi.fn(async () => "%1"),
+    getTmuxPaneInfo: vi.fn(
+      async () =>
+        ({
+          pane_id: "%1",
+          current_command: "opencode",
+          current_path: "/tmp/worktrees/gh-42-fix-bug",
+        }) satisfies TmuxPaneInfo,
+    ),
     readWorkspaceRecord: vi.fn(async () => makeWorkspaceRecord()),
     restoreWorktree: vi.fn(async () => ({
       branch: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     })),
+    runGitHubLifecycle: vi.fn(async () => []),
     sendKeysToPane: vi.fn(async () => undefined),
+    sleep: vi.fn(async () => undefined),
     tmuxWindowExists: vi.fn(async () => true),
     writeWorkspaceRecord: vi.fn(async (workspace: WorkspaceRecord) => workspace),
     now: vi.fn(() => new Date("2026-03-23T04:00:00.000Z")),
@@ -299,11 +316,17 @@ describe("resume workspace", () => {
       repo: "kong/kongctl",
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
     });
     expect(workspace.agent_sessions.at(-1)).toEqual({
       id: "claude-session-2",
       started_at: "2026-03-23T04:00:00.000Z",
       status: "active",
+    });
+    expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
+      repo: "kong/kongctl",
+      source_kind: "issue",
+      source_number: 42,
     });
   });
 
@@ -328,6 +351,7 @@ describe("resume workspace", () => {
     expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
     expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
     expect(workspace).toEqual(originalWorkspace);
+    expect(dependencies.runGitHubLifecycle).not.toHaveBeenCalled();
   });
 
   it("backfills a pending Codex session from the local session store before resuming", async () => {
@@ -531,6 +555,7 @@ describe("resume workspace", () => {
       repo: "kong/kongctl",
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
     });
     expect(workspace.agent_sessions).toEqual([
       {
@@ -544,6 +569,11 @@ describe("resume workspace", () => {
         status: "pending",
       },
     ]);
+    expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
+      repo: "kong/kongctl",
+      source_kind: "issue",
+      source_number: 42,
+    });
   });
 
   it("skips native Codex session lookup for docker Codex workspaces", async () => {
@@ -593,6 +623,12 @@ describe("resume workspace", () => {
       repo: "kong/kongctl",
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
+    });
+    expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
+      repo: "kong/kongctl",
+      source_kind: "issue",
+      source_number: 42,
     });
   });
 
@@ -687,8 +723,14 @@ describe("resume workspace", () => {
       repo: "kong/kongctl",
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
     });
     expect(dependencies.findCodexSessionForWorkspace).not.toHaveBeenCalled();
+    expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
+      repo: "kong/kongctl",
+      source_kind: "issue",
+      source_number: 42,
+    });
   });
 
   it("launches fresh when overriding to a different profile", async () => {
@@ -711,7 +753,28 @@ describe("resume workspace", () => {
       repo: "kong/kongctl",
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
     });
+    expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
+      repo: "kong/kongctl",
+      source_kind: "issue",
+      source_number: 42,
+    });
+  });
+
+  it("does not run GitHub lifecycle automation on a true resume", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies();
+
+    await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.runGitHubLifecycle).not.toHaveBeenCalled();
   });
 
   it("errors when the workspace does not exist", async () => {
@@ -845,6 +908,70 @@ describe("resume workspace", () => {
         status: "active",
       },
     ]);
+  });
+
+  it("sends a deferred bootstrap prompt for a fresh attach-mode OpenCode launch", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          agent_name: "opencode",
+          agent_type: "opencode",
+          agent_env: {
+            OPENCODE_SERVER_PASSWORD: "secret",
+          },
+          agent_sessions: [
+            {
+              id: "pending",
+              started_at: "2026-03-22T20:30:00.000Z",
+              status: "pending",
+            },
+          ],
+        }),
+      ),
+      buildAgentStartCommand: vi.fn(() => ({
+        agent_name: "opencode",
+        agent_type: "opencode",
+        runtime: "native",
+        command: [
+          "opencode",
+          "attach",
+          "http://localhost:4096",
+          "--dir",
+          "/tmp/worktrees/gh-42-fix-bug",
+        ],
+        env: {
+          OPENCODE_SERVER_PASSWORD: "secret",
+        },
+        post_launch_prompt:
+          "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
+        warnings: [],
+      }) satisfies BuiltAgentCommand),
+    });
+
+    await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(1, {
+      pane_id: "%1",
+      command:
+        "OPENCODE_SERVER_PASSWORD='secret' command -- 'opencode' " +
+        "'attach' 'http://localhost:4096' '--dir' '/tmp/worktrees/gh-42-fix-bug'",
+    });
+    expect(dependencies.getTmuxPaneInfo).toHaveBeenCalledWith({
+      pane_id: "%1",
+    });
+    expect(dependencies.sleep).toHaveBeenCalledWith(10000);
+    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(2, {
+      pane_id: "%1",
+      command: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
+      literal: true,
+    });
   });
 
   it("wraps tmux pane lookup failures", async () => {

@@ -252,7 +252,7 @@ priority order:
 
 ```
 # Start
-claude --session-id {uuid} --name {workspace_name} [user flags]
+claude --session-id {uuid} --name {workspace_name} [user flags] [prompt]
 
 # Resume
 claude --resume {session_id}
@@ -266,7 +266,7 @@ working directory has already been changed to the worktree.
 
 ```
 # Start
-codex --cd {worktree_path} [user flags]
+codex --cd {worktree_path} [user flags] [prompt]
 
 # Resume
 codex resume {session_id}
@@ -278,18 +278,21 @@ Session ID is discovered after launch from `~/.codex/sessions/` or captured from
 
 ```
 # Start
-opencode [user flags] {worktree_path}
+opencode [user flags] [--prompt {prompt}] {worktree_path}
 
 # Resume
 opencode --session {session_id}
 ```
 
 OpenCode sessions are persisted under
-`~/.local/share/opencode/storage/session/`. Pitch starts new OpenCode
-workspaces with a pending session ID and backfills the real ID later when it can
-match the stored session metadata to the workspace path.
-If OpenCode is configured in attach mode, Pitch supplies the
-workspace path to `--dir` for both create and resume.
+`~/.local/share/opencode/storage/session/`. Pitch starts
+new OpenCode workspaces with a pending session ID and
+backfills the real ID later when it can match the stored
+session metadata to the workspace path. If OpenCode is
+configured in attach mode, Pitch supplies the workspace
+path to `--dir` for both create and resume. Attach mode
+does not expose a prompt flag, so Pitch best-effort sends
+the bootstrap prompt into the tmux pane after launch.
 
 ### Docker via agent-en-place
 
@@ -344,12 +347,18 @@ defaults:
   base_branch: main
   worktree_root: ~/.local/share/worktrees
 
+bootstrap_prompts:
+  issue: Read GitHub issue #{issue_number} in {repo} using gh and wait.
+  pr: Read GitHub PR #{pr_number} in {repo} using gh and wait.
+
 repos:
   kong/kongctl:
     default_agent: claude-enterprise
     main_worktree: ~/dev/kong/kongctl
     additional_paths:
       - /home/rspurgeon/go
+    bootstrap_prompts:
+      pr: Read repo PR #{pr_number} in {repo} on {branch} and wait.
     agent_overrides:
       claude-enterprise:
         runtime: docker
@@ -405,6 +414,12 @@ If a repo omits `worktree_base`, Pitch derives it as
 `tmux_session`, Pitch uses the repo name segment
 (`kongctl` for `kong/kongctl`).
 
+Bootstrap prompt templates resolve in this order:
+
+1. `repos.<repo>.bootstrap_prompts.<issue|pr>`
+2. top-level `bootstrap_prompts.<issue|pr>`
+3. Pitch built-in default prompt
+
 ---
 
 ## Workspace State
@@ -444,13 +459,26 @@ Pitch exposes the following MCP tools over stdio:
 ### `create_workspace`
 
 Creates a new workspace: branch, worktree, tmux window,
-pane layout, agent launch, state persistence.
+pane layout, agent launch, GitHub lifecycle automation,
+state persistence.
 
 If no workspace state file exists but the expected
 branch, worktree path, or tmux window already exists for
 the derived workspace name, Pitch adopts those matching
-resources instead of failing. Existing tracked
-workspaces are still rejected.
+resources instead of failing. Existing tracked workspaces
+are still rejected.
+
+When Pitch launches a fresh agent process, it also:
+- best-effort assigns the source issue or PR to the
+  current `gh` user
+- for issues, best-effort updates compatible GitHub
+  Project items to `In Progress`
+- sends a read-only bootstrap prompt telling the agent
+  to read the issue or PR and wait
+
+If Pitch adopts an already-running agent pane, it still
+does the GitHub lifecycle automation but does not inject a
+bootstrap prompt into that live session.
 
 **Parameters:**
 - `repo` (string, optional) — GitHub org/repo, defaults from config
@@ -493,6 +521,10 @@ Relaunches the coding agent in an existing workspace, using the most recent
 session ID. For native Codex workspaces whose latest session is still pending,
 Pitch may recover the real session ID from the local Codex session store before
 falling back to a fresh launch.
+
+On a true session resume, Pitch does not re-run GitHub
+lifecycle automation or re-send the bootstrap prompt. On
+a fresh relaunch fallback, it does both.
 
 **Parameters:**
 - `name` (string, required) — workspace name

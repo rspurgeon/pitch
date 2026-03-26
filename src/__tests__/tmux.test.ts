@@ -9,6 +9,7 @@ import {
   createTmuxLayout,
   createTmuxWindow,
   ensureTmuxSession,
+  getTmuxPaneInfo,
   getTmuxWindowPaneInfo,
   getTmuxWindowPane,
   isTmuxAvailable,
@@ -461,6 +462,55 @@ tmuxDescribe("tmux management", () => {
       options,
     );
     await waitForPaneText(window.pane_id, "pitch-pane-test", options);
+  });
+
+  it("sends literal text to a specific pane and presses Enter", async () => {
+    await ensureIsolatedTestSession(sessionName, worktreePath, options);
+    const window = await createTmuxWindow(
+      {
+        session_name: sessionName,
+        window_name: windowName,
+        start_directory: worktreePath,
+      },
+      options,
+    );
+
+    await sendKeysToPane(
+      {
+        pane_id: window.pane_id,
+        command: "printf 'literal tmux text\\n'",
+        literal: true,
+      },
+      options,
+    );
+    await waitForPaneText(window.pane_id, "literal tmux text", options);
+    const content = await capturePane(window.pane_id, options);
+    expect(content).not.toContain("Enter");
+  });
+
+  it("reads pane info by pane id", async () => {
+    await ensureIsolatedTestSession(sessionName, worktreePath, options);
+    const window = await createTmuxWindow(
+      {
+        session_name: sessionName,
+        window_name: windowName,
+        start_directory: worktreePath,
+      },
+      options,
+    );
+
+    await expect(
+      getTmuxPaneInfo(
+        {
+          pane_id: window.pane_id,
+        },
+        options,
+      ),
+    ).resolves.toEqual({
+      pane_id: window.pane_id,
+      current_command: "sh",
+      current_path: worktreePath,
+    });
   });
 
   it("returns typed errors for invalid names", async () => {
