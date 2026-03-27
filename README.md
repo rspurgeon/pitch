@@ -372,7 +372,9 @@ create_workspace \
 
 ## Available Tools
 
-- **ping** — Returns a server status/config summary.
+- **ping** — Returns a server status/config summary plus
+  runtime identity metadata such as name, version, git
+  commit, branch, dirty state, and launch mode.
 - **create_workspace** — Creates a workspace from a
   GitHub issue or pull request by provisioning or
   adopting the git worktree, reusing a matching tmux
@@ -407,14 +409,16 @@ make test          # Run unit tests
 ### Testing Tools
 
 ```bash
-make ping          # Smoke test — MCP handshake + ping
+make ping          # Smoke test — MCP handshake + runtime identity
 make tools-list    # List all registered MCP tools
 make inspect       # Open the MCP Inspector (web UI)
 ```
 
 `make ping` sends a raw JSON-RPC sequence over stdin
 (initialize → ping) and prints the response. Useful for
-quick CLI verification.
+quick CLI verification and for confirming which checkout,
+commit, and launch mode your MCP client is actually
+running.
 
 `make inspect` launches the
 [MCP Inspector](https://github.com/modelcontextprotocol/inspector),
