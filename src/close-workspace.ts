@@ -221,11 +221,7 @@ export async function closeWorkspace(
 
   try {
     await dependencies.deleteOpencodeConfig(existingWorkspace.name);
-  } catch (error: unknown) {
-    throw new CloseWorkspaceError(
-      `Failed to delete OpenCode config for ${input.name}: ${formatError(error)}`,
-    );
-  }
+  } catch {}
 
   if (!shouldCleanupWorktree) {
     try {

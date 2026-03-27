@@ -185,7 +185,7 @@ describe("close workspace", () => {
     expect(dependencies.deleteWorkspaceRecord).not.toHaveBeenCalled();
   });
 
-  it("errors when deleting the OpenCode config fails", async () => {
+  it("still closes when deleting the OpenCode config fails", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
       deleteOpencodeConfig: vi.fn(async () => {
@@ -201,11 +201,19 @@ describe("close workspace", () => {
         config,
         dependencies,
       ),
-    ).rejects.toThrow(
-      "Failed to delete OpenCode config for gh-42-fix-bug: config delete failed",
+    ).resolves.toEqual(
+      makeWorkspaceRecord({
+        status: "closed",
+        updated_at: "2026-03-23T03:00:00.000Z",
+      }),
     );
-    expect(dependencies.removeWorktree).not.toHaveBeenCalled();
-    expect(dependencies.deleteWorkspaceRecord).not.toHaveBeenCalled();
+    expect(dependencies.removeWorktree).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      workspace_name: "gh-42-fix-bug",
+    });
+    expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith(
+      "gh-42-fix-bug",
+    );
     expect(dependencies.writeWorkspaceRecord).not.toHaveBeenCalled();
   });
 
