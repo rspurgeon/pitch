@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -172,4 +172,12 @@ export async function ensureOpencodeConfig(
   await writeFile(filePath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
 
   return filePath;
+}
+
+export async function deleteOpencodeConfig(
+  workspaceName: string,
+  rootDir: string = DEFAULT_OPENCODE_CONFIG_ROOT,
+): Promise<void> {
+  const filePath = opencodeConfigPathForWorkspace(workspaceName, rootDir);
+  await rm(filePath, { force: true });
 }

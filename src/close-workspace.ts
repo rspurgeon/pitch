@@ -15,6 +15,7 @@ import {
   writeWorkspaceRecord,
   type WorkspaceRecord,
 } from "./workspace-state.js";
+import { deleteOpencodeConfig } from "./opencode-config.js";
 
 export const CloseWorkspaceInputSchema = z.object({
   name: z.string().trim().min(1),
@@ -24,6 +25,7 @@ export const CloseWorkspaceInputSchema = z.object({
 export type CloseWorkspaceInput = z.infer<typeof CloseWorkspaceInputSchema>;
 
 export interface CloseWorkspaceDependencies {
+  deleteOpencodeConfig: typeof deleteOpencodeConfig;
   deleteWorkspaceRecord: typeof deleteWorkspaceRecord;
   getTmuxWindowPaneInfo: typeof getTmuxWindowPaneInfo;
   killTmuxWindow: typeof killTmuxWindow;
@@ -36,6 +38,7 @@ export interface CloseWorkspaceDependencies {
 }
 
 const defaultDependencies: CloseWorkspaceDependencies = {
+  deleteOpencodeConfig,
   deleteWorkspaceRecord,
   getTmuxWindowPaneInfo,
   killTmuxWindow,
@@ -213,6 +216,14 @@ export async function closeWorkspace(
   } catch (error: unknown) {
     throw new CloseWorkspaceError(
       `Failed to close tmux window for ${input.name}: ${formatError(error)}`,
+    );
+  }
+
+  try {
+    await dependencies.deleteOpencodeConfig(existingWorkspace.name);
+  } catch (error: unknown) {
+    throw new CloseWorkspaceError(
+      `Failed to delete OpenCode config for ${input.name}: ${formatError(error)}`,
     );
   }
 

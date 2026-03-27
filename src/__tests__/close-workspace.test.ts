@@ -79,6 +79,7 @@ function makeDependencies(
   overrides: Partial<CloseWorkspaceDependencies> = {},
 ): CloseWorkspaceDependencies {
   return {
+    deleteOpencodeConfig: vi.fn(async () => undefined),
     deleteWorkspaceRecord: vi.fn(async () => true),
     getTmuxWindowPaneInfo: vi.fn(
       async () =>
@@ -134,6 +135,9 @@ describe("close workspace", () => {
       repo: config.repos["kong/kongctl"],
       workspace_name: "gh-42-fix-bug",
     });
+    expect(dependencies.deleteOpencodeConfig).toHaveBeenCalledWith(
+      "gh-42-fix-bug",
+    );
     expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith(
       "gh-42-fix-bug",
     );
@@ -174,8 +178,35 @@ describe("close workspace", () => {
         updated_at: "2026-03-23T03:00:00.000Z",
       }),
     );
+    expect(dependencies.deleteOpencodeConfig).toHaveBeenCalledWith(
+      "gh-42-fix-bug",
+    );
     expect(dependencies.removeWorktree).not.toHaveBeenCalled();
     expect(dependencies.deleteWorkspaceRecord).not.toHaveBeenCalled();
+  });
+
+  it("errors when deleting the OpenCode config fails", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      deleteOpencodeConfig: vi.fn(async () => {
+        throw new Error("config delete failed");
+      }),
+    });
+
+    await expect(
+      closeWorkspace(
+        {
+          name: "gh-42-fix-bug",
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow(
+      "Failed to delete OpenCode config for gh-42-fix-bug: config delete failed",
+    );
+    expect(dependencies.removeWorktree).not.toHaveBeenCalled();
+    expect(dependencies.deleteWorkspaceRecord).not.toHaveBeenCalled();
+    expect(dependencies.writeWorkspaceRecord).not.toHaveBeenCalled();
   });
 
   it("treats a missing tmux window as a successful close", async () => {
