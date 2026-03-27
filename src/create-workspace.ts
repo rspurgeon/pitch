@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
   buildAgentStartCommand,
+  resolveAgentEnv,
   type BuiltAgentCommand,
 } from "./agent-launcher.js";
 import { buildBootstrapPrompt } from "./bootstrap-prompt.js";
@@ -34,6 +35,7 @@ import {
 } from "./workspace-state.js";
 import { buildWorkspaceToolResponse } from "./workspace-tool-response.js";
 import { formatAgentPaneCommand } from "./agent-pane-command.js";
+import { ensureOpencodeConfig } from "./opencode-config.js";
 import { shellEscape } from "./shell.js";
 
 export const CreateWorkspaceInputSchema = z
@@ -97,6 +99,7 @@ export interface CreateWorkspaceDependencies {
   sleep: (ms: number) => Promise<void>;
   now: () => Date;
   reportWarning?: (warning: string) => void;
+  ensureOpencodeConfig: typeof ensureOpencodeConfig;
 }
 
 export class CreateWorkspaceError extends Error {
@@ -154,6 +157,7 @@ const defaultDependencies: CreateWorkspaceDependencies = {
   runGitHubLifecycle,
   sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
   now: () => new Date(),
+  ensureOpencodeConfig,
 };
 
 function formatZodIssues(error: z.ZodError): string {
@@ -388,6 +392,36 @@ function buildAgentSessions(
   ];
 }
 
+async function maybeEnsureOpencodeConfig(
+  config: PitchConfig,
+  repoName: string,
+  agentName: string,
+  workspaceName: string,
+  dependencies: CreateWorkspaceDependencies,
+): Promise<string | undefined> {
+  const agentConfig = config.agents[agentName];
+  if (agentConfig === undefined || agentConfig.type !== "opencode") {
+    return undefined;
+  }
+
+  const repoConfig = config.repos[repoName];
+  if (repoConfig === undefined) {
+    throw new CreateWorkspaceError(`Repo is not configured: ${repoName}`);
+  }
+
+  try {
+    return await dependencies.ensureOpencodeConfig({
+      workspace_name: workspaceName,
+      additional_paths: repoConfig.additional_paths,
+      base_config_path: resolveAgentEnv(config, agentName, repoName).OPENCODE_CONFIG,
+    });
+  } catch (error: unknown) {
+    throw new CreateWorkspaceError(
+      `Failed to prepare OpenCode config for ${workspaceName}: ${formatError(error)}`,
+    );
+  }
+}
+
 const SHELL_COMMANDS = new Set([
   "ash",
   "bash",
@@ -544,11 +578,19 @@ export async function createWorkspace(
       workspace_name: workspaceName,
       branch: worktree.branch,
     });
+    const opencodeConfigPath = await maybeEnsureOpencodeConfig(
+      config,
+      repoName,
+      agentName,
+      workspaceName,
+      dependencies,
+    );
 
     const agentCommand = dependencies.buildAgentStartCommand({
       config,
       agent: agentName,
       repo: repoName,
+      opencode_config_path: opencodeConfigPath,
       workspace_name: workspaceName,
       worktree_path: worktree.worktree_path,
       initial_prompt: initialPrompt,

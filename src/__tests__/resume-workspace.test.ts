@@ -145,29 +145,33 @@ function makeClaudeStartCommand(): BuiltAgentCommand {
   };
 }
 
-function makeOpencodeResumeCommand(): BuiltAgentCommand {
+function makeOpencodeResumeCommand(
+  env: Record<string, string> = {
+    OPENCODE_CONFIG_DIR: "~/.config/opencode",
+  },
+): BuiltAgentCommand {
   return {
     agent_name: "opencode",
     agent_type: "opencode",
     runtime: "native",
     command: ["opencode", "--session", "ses_123"],
-    env: {
-      OPENCODE_CONFIG_DIR: "~/.config/opencode",
-    },
+    env,
     session_id: "ses_123",
     warnings: [],
   };
 }
 
-function makeOpencodeStartCommand(): BuiltAgentCommand {
+function makeOpencodeStartCommand(
+  env: Record<string, string> = {
+    OPENCODE_CONFIG_DIR: "~/.config/opencode",
+  },
+): BuiltAgentCommand {
   return {
     agent_name: "opencode",
     agent_type: "opencode",
     runtime: "native",
     command: ["opencode", "--agent", "build", "/tmp/worktrees/gh-42-fix-bug"],
-    env: {
-      OPENCODE_CONFIG_DIR: "~/.config/opencode",
-    },
+    env,
     warnings: [],
   };
 }
@@ -228,6 +232,7 @@ function makeDependencies(
     tmuxWindowExists: vi.fn(async () => true),
     writeWorkspaceRecord: vi.fn(async (workspace: WorkspaceRecord) => workspace),
     now: vi.fn(() => new Date("2026-03-23T04:00:00.000Z")),
+    ensureOpencodeConfig: vi.fn(async () => undefined),
     ...overrides,
   };
 }
@@ -908,6 +913,107 @@ describe("resume workspace", () => {
         status: "active",
       },
     ]);
+  });
+
+  it("uses the generated OpenCode config for fresh relaunches", async () => {
+    const config = makeConfig();
+    config.repos["kong/kongctl"].additional_paths = ["~/go"];
+
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          agent_name: "opencode",
+          agent_type: "opencode",
+          agent_env: {
+            OPENCODE_CONFIG_DIR: "~/.config/opencode",
+          },
+          agent_sessions: [
+            {
+              id: "pending",
+              started_at: "2026-03-22T20:30:00.000Z",
+              status: "pending",
+            },
+          ],
+        }),
+      ),
+      buildAgentStartCommand: vi.fn(() =>
+        makeOpencodeStartCommand({
+          OPENCODE_CONFIG_DIR: "~/.config/opencode",
+          OPENCODE_CONFIG: "/tmp/.pitch/opencode/gh-42-fix-bug.json",
+        }),
+      ),
+      ensureOpencodeConfig: vi.fn(
+        async () => "/tmp/.pitch/opencode/gh-42-fix-bug.json",
+      ),
+    });
+
+    await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.ensureOpencodeConfig).toHaveBeenCalledWith({
+      workspace_name: "gh-42-fix-bug",
+      additional_paths: ["~/go"],
+      base_config_path: undefined,
+    });
+    expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        opencode_config_path: "/tmp/.pitch/opencode/gh-42-fix-bug.json",
+      }),
+    );
+  });
+
+  it("preserves an existing OPENCODE_CONFIG when rebuilding resume config", async () => {
+    const config = makeConfig();
+    config.repos["kong/kongctl"].additional_paths = ["~/go"];
+    config.agents.opencode.env.OPENCODE_CONFIG = "~/.config/opencode/custom.json";
+
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          agent_name: "opencode",
+          agent_type: "opencode",
+          agent_env: {
+            OPENCODE_CONFIG_DIR: "~/.config/opencode",
+            OPENCODE_CONFIG: "~/.config/opencode/custom.json",
+          },
+          agent_sessions: [
+            {
+              id: "pending",
+              started_at: "2026-03-22T20:30:00.000Z",
+              status: "pending",
+            },
+          ],
+        }),
+      ),
+      buildAgentStartCommand: vi.fn(() =>
+        makeOpencodeStartCommand({
+          OPENCODE_CONFIG_DIR: "~/.config/opencode",
+          OPENCODE_CONFIG: "/tmp/.pitch/opencode/gh-42-fix-bug.json",
+        }),
+      ),
+      ensureOpencodeConfig: vi.fn(
+        async () => "/tmp/.pitch/opencode/gh-42-fix-bug.json",
+      ),
+    });
+
+    await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.ensureOpencodeConfig).toHaveBeenCalledWith({
+      workspace_name: "gh-42-fix-bug",
+      additional_paths: ["~/go"],
+      base_config_path: "~/.config/opencode/custom.json",
+    });
   });
 
   it("sends a deferred bootstrap prompt for a fresh attach-mode OpenCode launch", async () => {

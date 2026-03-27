@@ -1,0 +1,11 @@
+repos:
+  kong/kongctl:
+    main_worktree: ~/dev/kong/kongctl
+    additional_paths:
+      - "   "
+      - /home/rspurgeon/go
+
+agents:
+  opencode:
+    type: opencode
+    runtime: native

@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   buildAgentResumeCommand,
   buildAgentStartCommand,
+  resolveAgentEnv,
   type BuiltAgentCommand,
 } from "./agent-launcher.js";
 import { buildBootstrapPrompt } from "./bootstrap-prompt.js";
@@ -31,6 +32,7 @@ import {
 } from "./workspace-state.js";
 import { buildWorkspaceToolResponse } from "./workspace-tool-response.js";
 import { formatAgentPaneCommand } from "./agent-pane-command.js";
+import { ensureOpencodeConfig } from "./opencode-config.js";
 
 export const ResumeWorkspaceInputSchema = z.object({
   name: z.string().trim().min(1),
@@ -59,6 +61,7 @@ export interface ResumeWorkspaceDependencies {
   writeWorkspaceRecord: typeof writeWorkspaceRecord;
   now: () => Date;
   reportWarning?: (warning: string) => void;
+  ensureOpencodeConfig: typeof ensureOpencodeConfig;
 }
 
 const defaultDependencies: ResumeWorkspaceDependencies = {
@@ -80,6 +83,7 @@ const defaultDependencies: ResumeWorkspaceDependencies = {
   tmuxWindowExists,
   writeWorkspaceRecord,
   now: () => new Date(),
+  ensureOpencodeConfig,
 };
 
 export class ResumeWorkspaceError extends Error {
@@ -237,6 +241,36 @@ function isCompatibleRunningAgentPane(
   }
 
   return paneInfo.current_command === workspace.agent_type;
+}
+
+async function maybeEnsureOpencodeConfig(
+  config: PitchConfig,
+  repoName: string,
+  agentName: string,
+  workspaceName: string,
+  dependencies: ResumeWorkspaceDependencies,
+): Promise<string | undefined> {
+  const agentConfig = config.agents[agentName];
+  if (agentConfig === undefined || agentConfig.type !== "opencode") {
+    return undefined;
+  }
+
+  const repoConfig = config.repos[repoName];
+  if (repoConfig === undefined) {
+    throw new ResumeWorkspaceError(`Repo is not configured: ${repoName}`);
+  }
+
+  try {
+    return await dependencies.ensureOpencodeConfig({
+      workspace_name: workspaceName,
+      additional_paths: repoConfig.additional_paths,
+      base_config_path: resolveAgentEnv(config, agentName, repoName).OPENCODE_CONFIG,
+    });
+  } catch (error: unknown) {
+    throw new ResumeWorkspaceError(
+      `Failed to prepare OpenCode config for ${workspaceName}: ${formatError(error)}`,
+    );
+  }
 }
 
 export async function resumeWorkspace(
@@ -441,12 +475,21 @@ export async function resumeWorkspace(
   let command: BuiltAgentCommand;
   let isFreshLaunch = false;
   try {
+    const opencodeConfigPath = await maybeEnsureOpencodeConfig(
+      config,
+      workspace.repo,
+      agentName,
+      workspace.name,
+      dependencies,
+    );
+
     if (latestSessionId === null) {
       isFreshLaunch = true;
       command = dependencies.buildAgentStartCommand({
         config,
         agent: agentName,
         repo: workspace.repo,
+        opencode_config_path: opencodeConfigPath,
         workspace_name: workspace.name,
         worktree_path: workspace.worktree_path,
         initial_prompt: buildBootstrapPrompt(config, {
@@ -462,6 +505,7 @@ export async function resumeWorkspace(
         config,
         agent: agentName,
         repo: workspace.repo,
+        opencode_config_path: opencodeConfigPath,
         session_id: latestSessionId,
         worktree_path: workspace.worktree_path,
       });

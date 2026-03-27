@@ -153,7 +153,11 @@ function makeCodexCommand(): BuiltAgentCommand {
   };
 }
 
-function makeOpencodeCommand(): BuiltAgentCommand {
+function makeOpencodeCommand(
+  env: Record<string, string> = {
+    OPENCODE_CONFIG_DIR: "~/.config/opencode",
+  },
+): BuiltAgentCommand {
   return {
     agent_name: "opencode",
     agent_type: "opencode",
@@ -164,9 +168,7 @@ function makeOpencodeCommand(): BuiltAgentCommand {
       "build",
       "/tmp/worktrees/gh-42-fix-bug",
     ],
-    env: {
-      OPENCODE_CONFIG_DIR: "~/.config/opencode",
-    },
+    env,
     warnings: [],
   };
 }
@@ -242,6 +244,7 @@ function makeDependencies(
     runGitHubLifecycle: vi.fn(async () => []),
     sleep: vi.fn(async () => undefined),
     now: vi.fn(() => new Date("2026-03-22T20:30:00.000Z")),
+    ensureOpencodeConfig: vi.fn(async () => undefined),
     ...overrides,
   };
 }
@@ -502,28 +505,100 @@ describe("create workspace", () => {
     });
   });
 
+  it("generates an OpenCode config when additional_paths are configured", async () => {
+    const config = makeConfig();
+    config.repos["kong/kongctl"].additional_paths = ["~/go"];
+
+    const dependencies = makeDependencies({
+      buildAgentStartCommand: vi.fn(() =>
+        makeOpencodeCommand({
+          OPENCODE_CONFIG_DIR: "~/.config/opencode",
+          OPENCODE_CONFIG: "/tmp/.pitch/opencode/gh-42-fix-bug.json",
+        }),
+      ),
+      ensureOpencodeConfig: vi.fn(
+        async () => "/tmp/.pitch/opencode/gh-42-fix-bug.json",
+      ),
+    });
+
+    await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+        agent: "opencode",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.ensureOpencodeConfig).toHaveBeenCalledWith({
+      workspace_name: "gh-42-fix-bug",
+      additional_paths: ["~/go"],
+      base_config_path: undefined,
+    });
+    expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        opencode_config_path: "/tmp/.pitch/opencode/gh-42-fix-bug.json",
+      }),
+    );
+  });
+
+  it("merges an existing OPENCODE_CONFIG into the generated config", async () => {
+    const config = makeConfig();
+    config.repos["kong/kongctl"].additional_paths = ["~/go"];
+    config.agents.opencode.env.OPENCODE_CONFIG = "~/.config/opencode/custom.json";
+
+    const dependencies = makeDependencies({
+      buildAgentStartCommand: vi.fn(() =>
+        makeOpencodeCommand({
+          OPENCODE_CONFIG_DIR: "~/.config/opencode",
+          OPENCODE_CONFIG: "/tmp/.pitch/opencode/gh-42-fix-bug.json",
+        }),
+      ),
+      ensureOpencodeConfig: vi.fn(
+        async () => "/tmp/.pitch/opencode/gh-42-fix-bug.json",
+      ),
+    });
+
+    await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+        agent: "opencode",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.ensureOpencodeConfig).toHaveBeenCalledWith({
+      workspace_name: "gh-42-fix-bug",
+      additional_paths: ["~/go"],
+      base_config_path: "~/.config/opencode/custom.json",
+    });
+  });
+
   it("sends a deferred bootstrap prompt for attach-mode OpenCode", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
       buildAgentStartCommand: vi.fn(
         (): BuiltAgentCommand => ({
-        agent_name: "opencode",
-        agent_type: "opencode",
-        runtime: "native",
-        command: [
-          "opencode",
-          "attach",
-          "http://localhost:4096",
-          "--dir",
-          "/tmp/worktrees/gh-42-fix-bug",
-        ],
-        env: {
-          OPENCODE_SERVER_PASSWORD: "secret",
-        },
-        post_launch_prompt:
-          "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
-        warnings: [],
-      }),
+          agent_name: "opencode",
+          agent_type: "opencode",
+          runtime: "native",
+          command: [
+            "opencode",
+            "attach",
+            "http://localhost:4096",
+            "--dir",
+            "/tmp/worktrees/gh-42-fix-bug",
+          ],
+          env: {
+            OPENCODE_SERVER_PASSWORD: "secret",
+          },
+          post_launch_prompt:
+            "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
+          warnings: [],
+        }),
       ),
     });
 

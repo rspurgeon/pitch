@@ -265,7 +265,11 @@ argument ordering.
 OpenCode currently supports the `native` runtime only.
 For attach-mode OpenCode setups, configure `args` with
 `attach <url> --dir` and Pitch will supply the workspace
-path for `--dir` on both create and resume.
+path for `--dir` on both create and resume. When an
+OpenCode workspace also needs repo `additional_paths`,
+Pitch generates a user-local config file at
+`~/.pitch/opencode/{workspace_name}.json` and launches
+OpenCode with `OPENCODE_CONFIG` pointing at that file.
 
 #### `repos.<repo>.additional_paths`
 
@@ -279,7 +283,17 @@ Current support:
 |---|---|
 | `claude` | Adds repeated `--add-dir <path>` flags |
 | `codex` | Adds repeated `--add-dir <path>` flags |
-| `opencode` | Ignores them and returns a warning; OpenCode does not support this yet |
+| `opencode` | Generates `permission.external_directory` entries in a user-local OpenCode config and sets `OPENCODE_CONFIG` |
+
+For OpenCode, Pitch writes one deterministic file per
+workspace outside the repo so checked-out worktrees stay
+clean. The generated config contains only the translated
+`permission.external_directory` entries, and OpenCode then
+merges that config with the normal global and project
+config layers. If the selected agent already sets
+`OPENCODE_CONFIG`, Pitch first merges that custom config
+into the generated workspace file so existing OpenCode
+settings are preserved.
 
 #### `repos.<repo>.agent_defaults`
 
@@ -358,7 +372,9 @@ create_workspace \
 
 ## Available Tools
 
-- **ping** — Returns a server status/config summary.
+- **ping** — Returns a server status/config summary plus
+  runtime identity metadata such as name, version, git
+  commit, branch, dirty state, and launch mode.
 - **create_workspace** — Creates a workspace from a
   GitHub issue or pull request by provisioning or
   adopting the git worktree, reusing a matching tmux
@@ -393,14 +409,16 @@ make test          # Run unit tests
 ### Testing Tools
 
 ```bash
-make ping          # Smoke test — MCP handshake + ping
+make ping          # Smoke test — MCP handshake + runtime identity
 make tools-list    # List all registered MCP tools
 make inspect       # Open the MCP Inspector (web UI)
 ```
 
 `make ping` sends a raw JSON-RPC sequence over stdin
 (initialize → ping) and prints the response. Useful for
-quick CLI verification.
+quick CLI verification and for confirming which checkout,
+commit, and launch mode your MCP client is actually
+running.
 
 `make inspect` launches the
 [MCP Inspector](https://github.com/modelcontextprotocol/inspector),

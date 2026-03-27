@@ -16,6 +16,7 @@ export interface BuildStartCommandInput {
   config: PitchConfig;
   agent: string;
   repo?: string;
+  opencode_config_path?: string;
   workspace_name: string;
   worktree_path: string;
   initial_prompt?: string;
@@ -28,6 +29,7 @@ export interface BuildResumeCommandInput {
   config: PitchConfig;
   agent: string;
   repo?: string;
+  opencode_config_path?: string;
   session_id: string;
   worktree_path?: string;
   runtime?: SupportedRuntime;
@@ -53,6 +55,14 @@ interface ResolvedAgentTarget {
   warnings: string[];
 }
 
+export function resolveAgentEnv(
+  config: PitchConfig,
+  agentName: string,
+  repo: string | undefined,
+): Record<string, string> {
+  return resolveAgentTarget(config, agentName, repo).env;
+}
+
 interface AgentRuntimeCommand {
   command: string[];
   env: Record<string, string>;
@@ -64,9 +74,6 @@ export class AgentLauncherError extends Error {
     this.name = "AgentLauncherError";
   }
 }
-
-export const OPENCODE_ADDITIONAL_PATHS_WARNING =
-  "Repo additional_paths are ignored for OpenCode because the CLI does not support them yet";
 
 const AGENT_BINARIES: Record<SupportedAgentType, string> = {
   claude: "claude",
@@ -128,15 +135,9 @@ export function getAdditionalPathWarnings(
   agentType: SupportedAgentType,
   additionalPaths: string[],
 ): string[] {
-  if (additionalPaths.length === 0) {
-    return [];
-  }
-
-  if (agentType === "claude" || agentType === "codex") {
-    return [];
-  }
-
-  return [OPENCODE_ADDITIONAL_PATHS_WARNING];
+  void agentType;
+  void additionalPaths;
+  return [];
 }
 
 function buildAdditionalPathArgs(
@@ -381,7 +382,12 @@ function buildOpencodeStartCommand(
     "opencode",
     resolved.runtime,
     command,
-    resolved.env,
+    {
+      ...resolved.env,
+      ...(input.opencode_config_path === undefined
+        ? {}
+        : { OPENCODE_CONFIG: input.opencode_config_path }),
+    },
   );
 
   return {
@@ -428,7 +434,12 @@ function buildOpencodeResumeCommand(
     "opencode",
     resolved.runtime,
     command,
-    resolved.env,
+    {
+      ...resolved.env,
+      ...(input.opencode_config_path === undefined
+        ? {}
+        : { OPENCODE_CONFIG: input.opencode_config_path }),
+    },
   );
 
   return {
