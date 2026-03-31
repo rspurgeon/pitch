@@ -64,14 +64,6 @@ function normalizeHostPath(path: string): string {
 }
 
 function normalizeGuestPath(path: string): string {
-  if (path === "~") {
-    return "$HOME";
-  }
-
-  if (path.startsWith("~/")) {
-    return posix.join("$HOME", path.slice(2));
-  }
-
   return path;
 }
 

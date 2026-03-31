@@ -55,8 +55,22 @@ function normalizeTrustedPaths(paths: string[]): string[] {
   return [...uniquePaths];
 }
 
+function normalizeGuestTrustedPaths(paths: string[]): string[] {
+  const uniquePaths = new Set<string>();
+
+  for (const path of paths) {
+    uniquePaths.add(normalize(path));
+  }
+
+  return [...uniquePaths];
+}
+
 function resolveClaudeConfigDir(path: string | undefined): string {
   return normalize(resolve(expandHomePath(path ?? "~/.claude")));
+}
+
+function resolveGuestClaudeConfigDir(path: string | undefined): string {
+  return normalize(path ?? "~/.claude");
 }
 
 function buildTrustedPaths(
@@ -76,7 +90,7 @@ function buildTrustedPaths(
     input.workspace_paths.guest_worktree_path,
   );
 
-  return normalizeTrustedPaths(mappedPaths);
+  return normalizeGuestTrustedPaths(mappedPaths);
 }
 
 function isTrustOnlyProjectEntry(entry: ClaudeProjectState | undefined): boolean {
@@ -228,10 +242,9 @@ async function updateVmClaudeTrustFile(
 export async function ensureClaudeTrustedPaths(
   input: EnsureClaudeTrustedPathsInput,
 ): Promise<void> {
-  const claudeConfigDir = resolveClaudeConfigDir(input.claude_config_dir);
-  const trustedPaths = buildTrustedPaths(input);
-
   if (input.environment.kind !== "vm-ssh") {
+    const claudeConfigDir = resolveClaudeConfigDir(input.claude_config_dir);
+    const trustedPaths = buildTrustedPaths(input);
     await updateClaudeTrustFile(claudeConfigDir, trustedPaths);
     return;
   }
@@ -241,5 +254,7 @@ export async function ensureClaudeTrustedPaths(
     throw new Error("Missing vm-ssh execution environment config");
   }
 
+  const claudeConfigDir = resolveGuestClaudeConfigDir(input.claude_config_dir);
+  const trustedPaths = buildTrustedPaths(input);
   await updateVmClaudeTrustFile(vmConfig, claudeConfigDir, trustedPaths);
 }

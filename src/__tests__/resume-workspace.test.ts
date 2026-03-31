@@ -1,4 +1,3 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { BuiltAgentCommand } from "../agent-launcher.js";
 import type { EnsureCodexTrustedPathInput } from "../codex-trust.js";
@@ -424,10 +423,7 @@ describe("resume workspace", () => {
     expect(dependencies.runGitHubLifecycle).not.toHaveBeenCalled();
   });
 
-  it("treats an ssh pane as a compatible running vm-backed agent", async () => {
-    await mkdir("/tmp/worktrees/gh-42-fix-bug/.pitch", { recursive: true });
-    await writeFile("/tmp/worktrees/gh-42-fix-bug/.pitch/vm-agent-active", "active");
-
+  it("reuses an existing ssh pane for a vm-backed fresh launch", async () => {
     const config = makeConfig();
     config.environments["sandbox-vm"] = {
       kind: "vm-ssh",
@@ -452,6 +448,23 @@ describe("resume workspace", () => {
     });
     const dependencies = makeDependencies({
       readWorkspaceRecord: vi.fn(async () => originalWorkspace),
+      buildAgentStartCommand: vi.fn(() => ({
+        agent_name: "codex",
+        agent_type: "codex",
+        runtime: "native",
+        environment_name: "sandbox-vm",
+        environment_kind: "vm-ssh",
+        command: ["ssh", "-tt", "pitch@sandbox.internal"],
+        env: {},
+        agent_env: {
+          CODEX_HOME: "~/.codex",
+        },
+        pane_process_name: "ssh",
+        pane_reuse_command:
+          "env CODEX_HOME=~/.codex codex --cd /srv/pitch/workspaces/gh-42-fix-bug",
+        host_marker_path: "/tmp/worktrees/gh-42-fix-bug/.pitch/vm-agent-active",
+        warnings: [],
+      }) satisfies BuiltAgentCommand),
       getTmuxWindowPaneInfo: vi.fn(
         async () =>
           ({
@@ -471,13 +484,16 @@ describe("resume workspace", () => {
     );
 
     expect(dependencies.buildAgentResumeCommand).not.toHaveBeenCalled();
-    expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
-    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
-    expect(workspace).toEqual(originalWorkspace);
-
-    await rm("/tmp/worktrees/gh-42-fix-bug/.pitch", {
-      recursive: true,
-      force: true,
+    expect(dependencies.buildAgentStartCommand).toHaveBeenCalled();
+    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
+      pane_id: "%1",
+      command:
+        "env CODEX_HOME=~/.codex codex --cd /srv/pitch/workspaces/gh-42-fix-bug",
+    });
+    expect(workspace.agent_sessions.at(-1)).toEqual({
+      id: "pending",
+      started_at: "2026-03-23T04:00:00.000Z",
+      status: "pending",
     });
   });
 

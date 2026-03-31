@@ -34,15 +34,21 @@ function resolveCodexHome(path: string | undefined): string {
   return normalize(resolve(expandHomePath(path ?? "~/.codex")));
 }
 
+function resolveGuestCodexHome(path: string | undefined): string {
+  return normalize(path ?? "~/.codex");
+}
+
 function buildTrustedWorkspacePath(
   environment: ResolvedExecutionEnvironment,
   workspacePaths: ResolvedWorkspacePaths,
 ): string {
+  if (environment.kind === "vm-ssh") {
+    return normalize(workspacePaths.guest_worktree_path);
+  }
+
   return normalize(
     resolve(
-      environment.kind === "vm-ssh"
-        ? workspacePaths.guest_worktree_path
-        : workspacePaths.host_worktree_path,
+      workspacePaths.host_worktree_path,
     ),
   );
 }
@@ -239,13 +245,13 @@ async function updateVmCodexConfigFile(
 export async function ensureCodexTrustedPath(
   input: EnsureCodexTrustedPathInput,
 ): Promise<void> {
-  const codexHome = resolveCodexHome(input.codex_home);
   const trustedPath = buildTrustedWorkspacePath(
     input.environment,
     input.workspace_paths,
   );
 
   if (input.environment.kind !== "vm-ssh") {
+    const codexHome = resolveCodexHome(input.codex_home);
     await updateCodexConfigFile(codexHome, trustedPath, "add");
     return;
   }
@@ -255,19 +261,20 @@ export async function ensureCodexTrustedPath(
     throw new Error("Missing vm-ssh execution environment config");
   }
 
+  const codexHome = resolveGuestCodexHome(input.codex_home);
   await updateVmCodexConfigFile(vmConfig, codexHome, trustedPath, "add");
 }
 
 export async function removeCodexTrustedPath(
   input: EnsureCodexTrustedPathInput,
 ): Promise<void> {
-  const codexHome = resolveCodexHome(input.codex_home);
   const trustedPath = buildTrustedWorkspacePath(
     input.environment,
     input.workspace_paths,
   );
 
   if (input.environment.kind !== "vm-ssh") {
+    const codexHome = resolveCodexHome(input.codex_home);
     await updateCodexConfigFile(codexHome, trustedPath, "remove");
     return;
   }
@@ -277,5 +284,6 @@ export async function removeCodexTrustedPath(
     throw new Error("Missing vm-ssh execution environment config");
   }
 
+  const codexHome = resolveGuestCodexHome(input.codex_home);
   await updateVmCodexConfigFile(vmConfig, codexHome, trustedPath, "remove");
 }
