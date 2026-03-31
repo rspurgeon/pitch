@@ -67,6 +67,7 @@ export const CreateWorkspaceInputSchema = z
     base_branch: z.string().trim().min(1).optional(),
     agent: z.string().trim().min(1).optional(),
     environment: z.string().trim().min(1).optional(),
+    skip_prompt: z.boolean().optional(),
     runtime: z.enum(["native", "docker"]).optional(),
     model: z.string().trim().min(1).optional(),
   })
@@ -633,13 +634,15 @@ export async function createWorkspace(
       worktree.worktree_path,
     );
 
-    const initialPrompt = buildBootstrapPrompt(config, {
-      repo: repoName,
-      source_kind: source.source_kind,
-      source_number: source.source_number,
-      workspace_name: workspaceName,
-      branch: worktree.branch,
-    });
+    const initialPrompt = input.skip_prompt === true
+      ? undefined
+      : buildBootstrapPrompt(config, {
+          repo: repoName,
+          source_kind: source.source_kind,
+          source_number: source.source_number,
+          workspace_name: workspaceName,
+          branch: worktree.branch,
+        });
     const generatedOpencodeConfigPath = await maybeEnsureOpencodeConfig(
       config,
       repoName,

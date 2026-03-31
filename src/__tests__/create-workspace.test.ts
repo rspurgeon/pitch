@@ -360,6 +360,35 @@ describe("create workspace", () => {
     expect(writeCallOrder).toBeLessThan(sendCallOrder);
   });
 
+  it("skips the bootstrap prompt when skip_prompt is true", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies();
+
+    await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+        skip_prompt: true,
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith({
+      config,
+      agent: "claude-enterprise",
+      repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
+      workspace_name: "gh-42-fix-bug",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      initial_prompt: undefined,
+      override_args: undefined,
+      runtime: undefined,
+    });
+  });
+
   it("creates a PR-backed workspace from the PR head branch", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({

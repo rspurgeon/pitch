@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, normalize, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -130,7 +130,10 @@ async function updateCodexConfigFile(
   operation: "add" | "remove",
 ): Promise<void> {
   await mkdir(codexHome, { recursive: true });
-  const configPath = join(codexHome, "config.toml");
+  const overlayPath = join(codexHome, "config.local.toml");
+  const configPath = await access(overlayPath).then(() => overlayPath).catch(() =>
+    join(codexHome, "config.toml")
+  );
 
   let contents = "";
   try {
@@ -158,7 +161,8 @@ function buildVmTrustCommand(
     "trusted_path = os.path.abspath(os.path.expanduser(sys.argv[2]))",
     "operation = sys.argv[3]",
     "os.makedirs(codex_home, exist_ok=True)",
-    "config_path = os.path.join(codex_home, 'config.toml')",
+    "overlay_path = os.path.join(codex_home, 'config.local.toml')",
+    "config_path = overlay_path if os.path.exists(overlay_path) else os.path.join(codex_home, 'config.toml')",
     "contents = ''",
     "if os.path.exists(config_path):",
     "    with open(config_path, 'r', encoding='utf-8') as fh:",
