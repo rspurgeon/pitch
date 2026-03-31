@@ -59,6 +59,32 @@ function makeConfig(): PitchConfig {
         },
       },
     },
+    environments: {
+      "sandbox-vm": {
+        kind: "vm-ssh",
+        default_runtime: "native",
+        ssh_host: "sandbox.internal",
+        ssh_user: "pitch",
+        ssh_port: 2222,
+        ssh_options: ["-o", "StrictHostKeyChecking=accept-new"],
+        guest_workspace_root: "/srv/pitch/workspaces",
+        shared_paths: [
+          {
+            host_path: "/home/rspurgeon/go",
+            guest_path: "/srv/shared/go",
+            mode: "ro",
+          },
+          {
+            host_path: "/home/rspurgeon/.config/kongctl",
+            guest_path: "/srv/shared/kongctl",
+            mode: "ro",
+          },
+        ],
+        bootstrap: {
+          mise_install: true,
+        },
+      },
+    },
     agents: {
       "claude-enterprise": {
         type: "claude",
@@ -554,6 +580,51 @@ describe("agent launcher", () => {
       OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
       OPENAI_BASE_URL: "https://api.example.invalid",
     });
+  });
+
+  it("wraps agent commands for vm-ssh environments", () => {
+    const config = makeConfig();
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "codex",
+      repo: "kong/kongctl",
+      environment: "sandbox-vm",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/srv/pitch/workspaces/gh-565-fix-validation",
+      host_worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.environment_kind).toBe("vm-ssh");
+    expect(command.pane_process_name).toBe("ssh");
+    expect(command.pane_reuse_command).toContain("[pitch] Agent exited");
+    expect(command.host_marker_path).toBe(
+      "/tmp/worktree/.pitch/vm-agent-active",
+    );
+    expect(command.env).toEqual({});
+    expect(command.agent_env).toEqual({
+      CODEX_HOME: "~/.codex",
+      GO_SRC: "/srv/shared/go",
+      KONGCTL_CONFIG_DIR: "/srv/shared/kongctl",
+    });
+    expect(command.command.slice(0, 6)).toEqual([
+      "ssh",
+      "-tt",
+      "-p",
+      "2222",
+      "-o",
+      "StrictHostKeyChecking=accept-new",
+    ]);
+    expect(command.command[6]).toBe("pitch@sandbox.internal");
+    expect(command.command[7]).toContain("bash -lc '");
+    expect(command.command[7]).toContain("exec bash -li");
+    expect(command.command[7]).toContain(
+      "/srv/pitch/workspaces/gh-565-fix-validation",
+    );
+    expect(command.command[7]).toContain("mise install");
+    expect(command.command[7]).toContain("'codex'");
+    expect(command.command[7]).toContain("/srv/shared/go");
+    expect(command.command[7]).toContain("/srv/shared/kongctl");
   });
 
   it("supports explicit runtime overrides", () => {

@@ -1,5 +1,7 @@
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { BuiltAgentCommand } from "../agent-launcher.js";
+import type { EnsureCodexTrustedPathInput } from "../codex-trust.js";
 import type { PitchConfig } from "../config.js";
 import {
   resumeWorkspace,
@@ -39,6 +41,7 @@ function makeConfig(): PitchConfig {
         agent_overrides: {},
       },
     },
+    environments: {},
     agents: {
       "claude-enterprise": {
         type: "claude",
@@ -79,19 +82,23 @@ function makeConfig(): PitchConfig {
 function makeWorkspaceRecord(
   overrides: Partial<WorkspaceRecord> = {},
 ): WorkspaceRecord {
-  return {
+  const workspace: WorkspaceRecord = {
     name: "gh-42-fix-bug",
     repo: "kong/kongctl",
     source_kind: "issue",
     source_number: 42,
     branch: "gh-42-fix-bug",
     worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+    guest_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     base_branch: "main",
     tmux_session: "kongctl",
     tmux_window: "gh-42-fix-bug",
     agent_name: "claude-enterprise",
     agent_type: "claude",
     agent_runtime: "native",
+    environment_name: null,
+    environment_kind: "host",
+    agent_pane_process: "claude",
     agent_env: {
       CLAUDE_CONFIG_DIR: "~/.claude",
     },
@@ -107,6 +114,26 @@ function makeWorkspaceRecord(
     updated_at: "2026-03-22T20:30:00.000Z",
     ...overrides,
   };
+
+  if (overrides.guest_worktree_path === undefined) {
+    workspace.guest_worktree_path = workspace.worktree_path;
+  }
+  if (overrides.environment_name === undefined) {
+    workspace.environment_name = null;
+  }
+  if (overrides.environment_kind === undefined) {
+    workspace.environment_kind = "host";
+  }
+  if (overrides.agent_pane_process === undefined) {
+    workspace.agent_pane_process =
+      workspace.environment_kind === "vm-ssh"
+        ? "ssh"
+        : workspace.agent_runtime === "docker"
+          ? "agent-en-place"
+          : workspace.agent_type;
+  }
+
+  return workspace;
 }
 
 function makeClaudeResumeCommand(): BuiltAgentCommand {
@@ -114,10 +141,16 @@ function makeClaudeResumeCommand(): BuiltAgentCommand {
     agent_name: "claude-enterprise",
     agent_type: "claude",
     runtime: "native",
+    environment_name: undefined,
+    environment_kind: "host",
     command: ["claude", "--resume", "claude-session-1"],
     env: {
       CLAUDE_CONFIG_DIR: "~/.claude",
     },
+    agent_env: {
+      CLAUDE_CONFIG_DIR: "~/.claude",
+    },
+    pane_process_name: "claude",
     session_id: "claude-session-1",
     warnings: [],
   };
@@ -128,6 +161,8 @@ function makeClaudeStartCommand(): BuiltAgentCommand {
     agent_name: "claude-enterprise",
     agent_type: "claude",
     runtime: "native",
+    environment_name: undefined,
+    environment_kind: "host",
     command: [
       "claude",
       "--model",
@@ -140,6 +175,10 @@ function makeClaudeStartCommand(): BuiltAgentCommand {
     env: {
       CLAUDE_CONFIG_DIR: "~/.claude",
     },
+    agent_env: {
+      CLAUDE_CONFIG_DIR: "~/.claude",
+    },
+    pane_process_name: "claude",
     session_id: "claude-session-2",
     warnings: [],
   };
@@ -154,8 +193,12 @@ function makeOpencodeResumeCommand(
     agent_name: "opencode",
     agent_type: "opencode",
     runtime: "native",
+    environment_name: undefined,
+    environment_kind: "host",
     command: ["opencode", "--session", "ses_123"],
     env,
+    agent_env: env,
+    pane_process_name: "opencode",
     session_id: "ses_123",
     warnings: [],
   };
@@ -170,8 +213,12 @@ function makeOpencodeStartCommand(
     agent_name: "opencode",
     agent_type: "opencode",
     runtime: "native",
+    environment_name: undefined,
+    environment_kind: "host",
     command: ["opencode", "--agent", "build", "/tmp/worktrees/gh-42-fix-bug"],
     env,
+    agent_env: env,
+    pane_process_name: "opencode",
     warnings: [],
   };
 }
@@ -233,6 +280,8 @@ function makeDependencies(
     writeWorkspaceRecord: vi.fn(async (workspace: WorkspaceRecord) => workspace),
     now: vi.fn(() => new Date("2026-03-23T04:00:00.000Z")),
     ensureOpencodeConfig: vi.fn(async () => undefined),
+    ensureClaudeTrustedPaths: vi.fn(async () => undefined),
+    ensureCodexTrustedPath: vi.fn(async (_input: EnsureCodexTrustedPathInput) => undefined),
     ...overrides,
   };
 }
@@ -254,8 +303,11 @@ describe("resume workspace", () => {
       config,
       agent: "claude-enterprise",
       repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
       session_id: "claude-session-1",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     });
     expect(dependencies.restoreWorktree).toHaveBeenCalledWith({
       repo: config.repos["kong/kongctl"],
@@ -265,6 +317,16 @@ describe("resume workspace", () => {
     expect(dependencies.ensureTmuxSession).toHaveBeenCalledWith({
       session_name: "kongctl",
       start_directory: "/tmp/worktrees/gh-42-fix-bug",
+    });
+    expect(dependencies.ensureClaudeTrustedPaths).toHaveBeenCalledWith({
+      environment: { kind: "host" },
+      workspace_paths: {
+        host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+        agent_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+        guest_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      },
+      repo: config.repos["kong/kongctl"],
+      claude_config_dir: "~/.claude",
     });
     expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
       pane_id: "%1",
@@ -319,8 +381,11 @@ describe("resume workspace", () => {
       config,
       agent: "claude-enterprise",
       repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
     });
     expect(workspace.agent_sessions.at(-1)).toEqual({
@@ -359,6 +424,63 @@ describe("resume workspace", () => {
     expect(dependencies.runGitHubLifecycle).not.toHaveBeenCalled();
   });
 
+  it("treats an ssh pane as a compatible running vm-backed agent", async () => {
+    await mkdir("/tmp/worktrees/gh-42-fix-bug/.pitch", { recursive: true });
+    await writeFile("/tmp/worktrees/gh-42-fix-bug/.pitch/vm-agent-active", "active");
+
+    const config = makeConfig();
+    config.environments["sandbox-vm"] = {
+      kind: "vm-ssh",
+      ssh_host: "sandbox.internal",
+      ssh_user: "pitch",
+      ssh_options: [],
+      guest_workspace_root: "/srv/pitch/workspaces",
+      shared_paths: [],
+      bootstrap: {
+        mise_install: true,
+      },
+    };
+
+    const originalWorkspace = makeWorkspaceRecord({
+      agent_name: "codex",
+      agent_type: "codex",
+      agent_sessions: [],
+      environment_name: "sandbox-vm",
+      environment_kind: "vm-ssh",
+      guest_worktree_path: "/srv/pitch/workspaces/gh-42-fix-bug",
+      agent_pane_process: "ssh",
+    });
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () => originalWorkspace),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%1",
+            current_command: "ssh",
+            current_path: "/tmp/worktrees/gh-42-fix-bug",
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.buildAgentResumeCommand).not.toHaveBeenCalled();
+    expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
+    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
+    expect(workspace).toEqual(originalWorkspace);
+
+    await rm("/tmp/worktrees/gh-42-fix-bug/.pitch", {
+      recursive: true,
+      force: true,
+    });
+  });
+
   it("backfills a pending Codex session from the local session store before resuming", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
@@ -382,10 +504,16 @@ describe("resume workspace", () => {
         agent_name: "codex",
         agent_type: "codex",
         runtime: "native",
+        environment_name: undefined,
+        environment_kind: "host",
         command: ["codex", "resume", "codex-session-1"],
         env: {
           CODEX_HOME: "~/.codex",
         },
+        agent_env: {
+          CODEX_HOME: "~/.codex",
+        },
+        pane_process_name: "codex",
         session_id: "codex-session-1",
         warnings: [],
       }) satisfies BuiltAgentCommand),
@@ -416,8 +544,11 @@ describe("resume workspace", () => {
       config,
       agent: "codex",
       repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
       session_id: "codex-session-1",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     });
     expect(workspace.agent_sessions).toEqual([
       {
@@ -461,10 +592,16 @@ describe("resume workspace", () => {
         agent_name: "codex",
         agent_type: "codex",
         runtime: "native",
+        environment_name: undefined,
+        environment_kind: "host",
         command: ["codex", "resume", "codex-session-new"],
         env: {
           CODEX_HOME: "~/.codex",
         },
+        agent_env: {
+          CODEX_HOME: "~/.codex",
+        },
+        pane_process_name: "codex",
         session_id: "codex-session-new",
         warnings: [],
       }) satisfies BuiltAgentCommand),
@@ -489,8 +626,11 @@ describe("resume workspace", () => {
       config,
       agent: "codex",
       repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
       session_id: "codex-session-new",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     });
     expect(workspace.agent_sessions).toEqual([
       {
@@ -534,10 +674,16 @@ describe("resume workspace", () => {
         agent_name: "codex",
         agent_type: "codex",
         runtime: "native",
+        environment_name: undefined,
+        environment_kind: "host",
         command: ["codex", "--cd", "/tmp/worktrees/gh-42-fix-bug"],
         env: {
           CODEX_HOME: "~/.codex",
         },
+        agent_env: {
+          CODEX_HOME: "~/.codex",
+        },
+        pane_process_name: "codex",
         warnings: [],
       }) satisfies BuiltAgentCommand),
       findCodexSessionForWorkspace: vi.fn(async () => {
@@ -558,8 +704,11 @@ describe("resume workspace", () => {
       config,
       agent: "codex",
       repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
     });
     expect(workspace.agent_sessions).toEqual([
@@ -605,10 +754,16 @@ describe("resume workspace", () => {
         agent_name: "codex",
         agent_type: "codex",
         runtime: "docker",
+        environment_name: undefined,
+        environment_kind: "host",
         command: ["agent-en-place", "codex"],
         env: {
           CODEX_HOME: "~/.codex-docker",
         },
+        agent_env: {
+          CODEX_HOME: "~/.codex-docker",
+        },
+        pane_process_name: "agent-en-place",
         warnings: [],
       }) satisfies BuiltAgentCommand),
     });
@@ -626,8 +781,11 @@ describe("resume workspace", () => {
       config,
       agent: "codex",
       repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
     });
     expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
@@ -726,8 +884,11 @@ describe("resume workspace", () => {
       config,
       agent: "codex",
       repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
     });
     expect(dependencies.findCodexSessionForWorkspace).not.toHaveBeenCalled();
@@ -756,8 +917,11 @@ describe("resume workspace", () => {
       config,
       agent: "claude-personal",
       repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
     });
     expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
@@ -898,8 +1062,11 @@ describe("resume workspace", () => {
       config,
       agent: "opencode",
       repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
       session_id: "ses_123",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     });
     expect(workspace.agent_sessions).toEqual([
       {
@@ -955,13 +1122,18 @@ describe("resume workspace", () => {
       dependencies,
     );
 
-    expect(dependencies.ensureOpencodeConfig).toHaveBeenCalledWith({
-      workspace_name: "gh-42-fix-bug",
-      additional_paths: ["~/go"],
-      base_config_path: undefined,
-    });
+    expect(dependencies.ensureOpencodeConfig).toHaveBeenCalledWith(
+      {
+        workspace_name: "gh-42-fix-bug",
+        additional_paths: ["~/go"],
+        base_config_path: undefined,
+      },
+      undefined,
+    );
     expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith(
       expect.objectContaining({
+        environment: undefined,
+        host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
         opencode_config_path: "/tmp/.pitch/opencode/gh-42-fix-bug.json",
       }),
     );
@@ -1009,11 +1181,14 @@ describe("resume workspace", () => {
       dependencies,
     );
 
-    expect(dependencies.ensureOpencodeConfig).toHaveBeenCalledWith({
-      workspace_name: "gh-42-fix-bug",
-      additional_paths: ["~/go"],
-      base_config_path: "~/.config/opencode/custom.json",
-    });
+    expect(dependencies.ensureOpencodeConfig).toHaveBeenCalledWith(
+      {
+        workspace_name: "gh-42-fix-bug",
+        additional_paths: ["~/go"],
+        base_config_path: "~/.config/opencode/custom.json",
+      },
+      undefined,
+    );
   });
 
   it("sends a deferred bootstrap prompt for a fresh attach-mode OpenCode launch", async () => {
@@ -1039,6 +1214,8 @@ describe("resume workspace", () => {
         agent_name: "opencode",
         agent_type: "opencode",
         runtime: "native",
+        environment_name: undefined,
+        environment_kind: "host",
         command: [
           "opencode",
           "attach",
@@ -1049,6 +1226,10 @@ describe("resume workspace", () => {
         env: {
           OPENCODE_SERVER_PASSWORD: "secret",
         },
+        agent_env: {
+          OPENCODE_SERVER_PASSWORD: "secret",
+        },
+        pane_process_name: "opencode",
         post_launch_prompt:
           "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
         warnings: [],

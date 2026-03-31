@@ -1,4 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { access } from "node:fs/promises";
+import { join, posix } from "node:path";
 import { z } from "zod";
 import {
   buildAgentStartCommand,
@@ -6,7 +8,9 @@ import {
   type BuiltAgentCommand,
 } from "./agent-launcher.js";
 import { buildBootstrapPrompt } from "./bootstrap-prompt.js";
+import { ensureClaudeTrustedPaths } from "./claude-trust.js";
 import type { PitchConfig, RepoConfig } from "./config.js";
+import { ensureCodexTrustedPath } from "./codex-trust.js";
 import {
   ensureWorkspaceWorktree,
   fetchGitRef,
@@ -14,6 +18,15 @@ import {
 } from "./git.js";
 import { runGitHubLifecycle } from "./github-lifecycle.js";
 import { readPullRequest } from "./github-pr.js";
+import {
+  buildVmAgentHostMarkerPath,
+  mapAdditionalPathsForEnvironment,
+  mapPathForEnvironment,
+  resolveExecutionEnvironment,
+  resolveWorkspacePaths,
+  type ResolvedExecutionEnvironment,
+  type ResolvedWorkspacePaths,
+} from "./execution-environment.js";
 import { sendPostLaunchPromptToPane } from "./post-launch-prompt.js";
 import {
   createTmuxLayout,
@@ -53,6 +66,7 @@ export const CreateWorkspaceInputSchema = z
       ),
     base_branch: z.string().trim().min(1).optional(),
     agent: z.string().trim().min(1).optional(),
+    environment: z.string().trim().min(1).optional(),
     runtime: z.enum(["native", "docker"]).optional(),
     model: z.string().trim().min(1).optional(),
   })
@@ -100,6 +114,8 @@ export interface CreateWorkspaceDependencies {
   now: () => Date;
   reportWarning?: (warning: string) => void;
   ensureOpencodeConfig: typeof ensureOpencodeConfig;
+  ensureClaudeTrustedPaths: typeof ensureClaudeTrustedPaths;
+  ensureCodexTrustedPath: typeof ensureCodexTrustedPath;
 }
 
 export class CreateWorkspaceError extends Error {
@@ -120,6 +136,10 @@ interface RollbackState {
 type ExistingPaneState =
   | {
       kind: "shell";
+      pane_id: string;
+    }
+  | {
+      kind: "connected-shell";
       pane_id: string;
     }
   | {
@@ -158,6 +178,8 @@ const defaultDependencies: CreateWorkspaceDependencies = {
   sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
   now: () => new Date(),
   ensureOpencodeConfig,
+  ensureClaudeTrustedPaths,
+  ensureCodexTrustedPath,
 };
 
 function formatZodIssues(error: z.ZodError): string {
@@ -397,6 +419,8 @@ async function maybeEnsureOpencodeConfig(
   repoName: string,
   agentName: string,
   workspaceName: string,
+  environment: ResolvedExecutionEnvironment,
+  workspacePaths: ResolvedWorkspacePaths,
   dependencies: CreateWorkspaceDependencies,
 ): Promise<string | undefined> {
   const agentConfig = config.agents[agentName];
@@ -410,16 +434,47 @@ async function maybeEnsureOpencodeConfig(
   }
 
   try {
+    const additionalPaths = mapAdditionalPathsForEnvironment(
+      repoConfig.additional_paths,
+      environment,
+      workspacePaths,
+    );
+    const rootDir =
+      environment.kind === "vm-ssh"
+        ? join(workspacePaths.host_worktree_path, ".pitch", "opencode")
+        : undefined;
     return await dependencies.ensureOpencodeConfig({
       workspace_name: workspaceName,
-      additional_paths: repoConfig.additional_paths,
+      additional_paths: additionalPaths,
       base_config_path: resolveAgentEnv(config, agentName, repoName).OPENCODE_CONFIG,
-    });
+    }, rootDir);
   } catch (error: unknown) {
     throw new CreateWorkspaceError(
       `Failed to prepare OpenCode config for ${workspaceName}: ${formatError(error)}`,
     );
   }
+}
+
+function resolveAgentOpencodeConfigPath(
+  environment: ResolvedExecutionEnvironment,
+  workspaceName: string,
+  workspacePaths: ResolvedWorkspacePaths,
+  generatedConfigPath: string | undefined,
+): string | undefined {
+  if (generatedConfigPath === undefined) {
+    return undefined;
+  }
+
+  if (environment.kind !== "vm-ssh") {
+    return generatedConfigPath;
+  }
+
+  return posix.join(
+    workspacePaths.guest_worktree_path,
+    ".pitch",
+    "opencode",
+    `${workspaceName}.json`,
+  );
 }
 
 const SHELL_COMMANDS = new Set([
@@ -433,35 +488,31 @@ const SHELL_COMMANDS = new Set([
   "zsh",
 ]);
 
-function classifyExistingPane(
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function classifyExistingPane(
   currentCommand: string,
   agentCommand: BuiltAgentCommand,
-): ExistingPaneState["kind"] | "unsupported" {
+  worktreePath: string,
+): Promise<ExistingPaneState["kind"] | "unsupported"> {
   if (SHELL_COMMANDS.has(currentCommand)) {
     return "shell";
   }
 
-  if (
-    currentCommand === "claude" &&
-    agentCommand.agent_type === "claude" &&
-    agentCommand.runtime === "native"
-  ) {
-    return "agent";
-  }
+  if (currentCommand === agentCommand.pane_process_name) {
+    if (agentCommand.environment_kind === "vm-ssh") {
+      const markerPath =
+        agentCommand.host_marker_path ?? buildVmAgentHostMarkerPath(worktreePath);
+      return (await pathExists(markerPath)) ? "agent" : "connected-shell";
+    }
 
-  if (
-    currentCommand === "codex" &&
-    agentCommand.agent_type === "codex" &&
-    agentCommand.runtime === "native"
-  ) {
-    return "agent";
-  }
-
-  if (
-    currentCommand === "opencode" &&
-    agentCommand.agent_type === "opencode" &&
-    agentCommand.runtime === "native"
-  ) {
     return "agent";
   }
 
@@ -571,6 +622,17 @@ export async function createWorkspace(
       start_directory: worktree.worktree_path,
     });
 
+    const environment = resolveExecutionEnvironment(
+      config,
+      repoName,
+      input.environment,
+    );
+    const workspacePaths = resolveWorkspacePaths(
+      environment,
+      workspaceName,
+      worktree.worktree_path,
+    );
+
     const initialPrompt = buildBootstrapPrompt(config, {
       repo: repoName,
       source_kind: source.source_kind,
@@ -578,25 +640,65 @@ export async function createWorkspace(
       workspace_name: workspaceName,
       branch: worktree.branch,
     });
-    const opencodeConfigPath = await maybeEnsureOpencodeConfig(
+    const generatedOpencodeConfigPath = await maybeEnsureOpencodeConfig(
       config,
       repoName,
       agentName,
       workspaceName,
+      environment,
+      workspacePaths,
       dependencies,
+    );
+    const opencodeConfigPath = resolveAgentOpencodeConfigPath(
+      environment,
+      workspaceName,
+      workspacePaths,
+      generatedOpencodeConfigPath,
     );
 
     const agentCommand = dependencies.buildAgentStartCommand({
       config,
       agent: agentName,
       repo: repoName,
+      environment: environment.name,
       opencode_config_path: opencodeConfigPath,
       workspace_name: workspaceName,
-      worktree_path: worktree.worktree_path,
+      worktree_path: workspacePaths.agent_worktree_path,
+      host_worktree_path: workspacePaths.host_worktree_path,
       initial_prompt: initialPrompt,
       override_args: buildAgentOverrides(input),
       runtime: input.runtime,
     });
+
+    if (agentCommand.agent_type === "claude") {
+      try {
+        await dependencies.ensureClaudeTrustedPaths({
+          environment,
+          workspace_paths: workspacePaths,
+          repo: repoConfig,
+          claude_config_dir: agentCommand.agent_env.CLAUDE_CONFIG_DIR,
+        });
+      } catch (error: unknown) {
+        reportWarnings(dependencies.reportWarning, [
+          `Failed to pre-trust Claude workspace paths for ${workspaceName}: ${formatError(error)}`,
+        ]);
+      }
+    }
+
+    if (agentCommand.agent_type === "codex") {
+      try {
+        await dependencies.ensureCodexTrustedPath({
+          environment,
+          workspace_paths: workspacePaths,
+          codex_home: agentCommand.agent_env.CODEX_HOME,
+        });
+      } catch (error: unknown) {
+        reportWarnings(dependencies.reportWarning, [
+          `Failed to pre-trust Codex workspace path for ${workspaceName}: ${formatError(error)}`,
+        ]);
+      }
+    }
+
     reportWarnings(dependencies.reportWarning, agentCommand.warnings);
 
     let existingPane: ExistingPaneState | null = null;
@@ -612,9 +714,10 @@ export async function createWorkspace(
         window_name: workspaceName,
         pane_index: 0,
       });
-      const paneKind = classifyExistingPane(
+      const paneKind = await classifyExistingPane(
         paneInfo.current_command,
         agentCommand,
+        worktree.worktree_path,
       );
 
       if (paneKind === "unsupported") {
@@ -661,13 +764,17 @@ export async function createWorkspace(
       source_number: source.source_number,
       branch: worktree.branch,
       worktree_path: worktree.worktree_path,
+      guest_worktree_path: workspacePaths.guest_worktree_path,
       base_branch: source.base_branch,
       tmux_session: repoConfig.tmux_session,
       tmux_window: workspaceName,
       agent_name: agentCommand.agent_name,
       agent_type: agentCommand.agent_type,
       agent_runtime: agentCommand.runtime,
-      agent_env: agentCommand.env,
+      environment_name: environment.name ?? null,
+      environment_kind: environment.kind,
+      agent_pane_process: agentCommand.pane_process_name,
+      agent_env: agentCommand.agent_env,
       agent_sessions:
         existingPane?.kind === "agent"
           ? []
@@ -690,7 +797,10 @@ export async function createWorkspace(
 
       await dependencies.sendKeysToPane({
         pane_id: agentPaneId,
-        command: formatAgentPaneCommand(agentCommand),
+        command: formatAgentPaneCommand(
+          agentCommand,
+          existingPane?.kind === "connected-shell",
+        ),
       });
 
       if (agentCommand.post_launch_prompt !== undefined) {

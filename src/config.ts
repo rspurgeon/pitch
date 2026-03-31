@@ -11,6 +11,7 @@ export const DEFAULT_WORKTREE_ROOT = "~/.local/share/worktrees";
 const DefaultsSchema = z.object({
   repo: z.string().optional(),
   agent: z.string().optional(),
+  environment: z.string().optional(),
   base_branch: z.string().default("main"),
   worktree_root: z.string().default(DEFAULT_WORKTREE_ROOT),
 });
@@ -31,6 +32,7 @@ const AgentEnvSchema = z.preprocess(
 
 const AgentTypeSchema = z.enum(["claude", "codex", "opencode"]);
 const AgentRuntimeSchema = z.enum(["native", "docker"]);
+const ExecutionEnvironmentKindSchema = z.enum(["host", "vm-ssh"]);
 
 const AgentConfigSchema = z
   .object({
@@ -56,9 +58,61 @@ const BootstrapPromptTemplatesSchema = z
   })
   .strict();
 
+const SharedPathModeSchema = z.enum(["ro", "rw"]);
+
+const SharedPathSchema = z.object({
+  host_path: NonEmptyTrimmedStringSchema,
+  guest_path: NonEmptyTrimmedStringSchema,
+  mode: SharedPathModeSchema.default("rw"),
+}).strict();
+
+const EnvironmentBootstrapSchema = z.object({
+  mise_install: z.boolean().default(false),
+}).strict();
+
+const HostExecutionEnvironmentConfigSchema = z.object({
+  kind: z.literal("host"),
+  default_runtime: AgentRuntimeSchema.optional(),
+}).strict();
+
+const VmSshExecutionEnvironmentConfigSchema = z.object({
+  kind: z.literal("vm-ssh"),
+  default_runtime: AgentRuntimeSchema.optional(),
+  ssh_host: NonEmptyTrimmedStringSchema,
+  ssh_user: z.preprocess(nullToUndefined, NonEmptyTrimmedStringSchema.optional()),
+  ssh_port: z.preprocess(
+    nullToUndefined,
+    z.number().int().positive().optional(),
+  ),
+  ssh_identity_file: z.preprocess(
+    nullToUndefined,
+    NonEmptyTrimmedStringSchema.optional(),
+  ),
+  ssh_options: z.preprocess(nullToUndefined, z.array(z.string()).default([])),
+  libvirt_domain: z.preprocess(
+    nullToUndefined,
+    NonEmptyTrimmedStringSchema.optional(),
+  ),
+  guest_workspace_root: NonEmptyTrimmedStringSchema,
+  shared_paths: z.preprocess(
+    nullToUndefined,
+    z.array(SharedPathSchema).default([]),
+  ),
+  bootstrap: z.preprocess(
+    nullToUndefined,
+    EnvironmentBootstrapSchema.default({}),
+  ),
+}).strict();
+
+const ExecutionEnvironmentConfigSchema = z.discriminatedUnion("kind", [
+  HostExecutionEnvironmentConfigSchema,
+  VmSshExecutionEnvironmentConfigSchema,
+]);
+
 const RepoConfigSchema = z
   .object({
     default_agent: z.preprocess(nullToUndefined, z.string().optional()),
+    default_environment: z.preprocess(nullToUndefined, z.string().optional()),
     main_worktree: z.string(),
     worktree_base: z.preprocess(nullToUndefined, z.string().optional()),
     tmux_session: z.preprocess(nullToUndefined, z.string().optional()),
@@ -91,18 +145,34 @@ export const PitchConfigSchema = z.object({
     nullToUndefined,
     z.record(z.string(), RepoConfigSchema).default({}),
   ),
+  environments: z.preprocess(
+    nullToUndefined,
+    z.record(z.string(), ExecutionEnvironmentConfigSchema).default({}),
+  ),
   agents: z.preprocess(
     nullToUndefined,
     z.record(z.string(), AgentConfigSchema).default({}),
   ),
 }).superRefine((config, ctx) => {
   const configuredAgents = new Set(Object.keys(config.agents));
+  const configuredEnvironments = new Set(Object.keys(config.environments));
 
   function addUnknownAgentIssue(path: (string | number)[], agentName: string): void {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path,
       message: `Unknown agent reference: ${agentName}`,
+    });
+  }
+
+  function addUnknownEnvironmentIssue(
+    path: (string | number)[],
+    environmentName: string,
+  ): void {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path,
+      message: `Unknown environment reference: ${environmentName}`,
     });
   }
 
@@ -113,6 +183,16 @@ export const PitchConfigSchema = z.object({
     addUnknownAgentIssue(["defaults", "agent"], config.defaults.agent);
   }
 
+  if (
+    config.defaults.environment !== undefined &&
+    !configuredEnvironments.has(config.defaults.environment)
+  ) {
+    addUnknownEnvironmentIssue(
+      ["defaults", "environment"],
+      config.defaults.environment,
+    );
+  }
+
   for (const [repoName, repoConfig] of Object.entries(config.repos)) {
     if (
       repoConfig.default_agent !== undefined &&
@@ -121,6 +201,16 @@ export const PitchConfigSchema = z.object({
       addUnknownAgentIssue(
         ["repos", repoName, "default_agent"],
         repoConfig.default_agent,
+      );
+    }
+
+    if (
+      repoConfig.default_environment !== undefined &&
+      !configuredEnvironments.has(repoConfig.default_environment)
+    ) {
+      addUnknownEnvironmentIssue(
+        ["repos", repoName, "default_environment"],
+        repoConfig.default_environment,
       );
     }
 
@@ -144,12 +234,14 @@ type RawRepoConfig = z.infer<typeof RepoConfigSchema>;
 export interface Defaults {
   repo?: string;
   agent?: string;
+  environment?: string;
   base_branch: string;
   worktree_root: string;
 }
 
 export interface RepoConfig {
   default_agent?: string;
+  default_environment?: string;
   main_worktree: string;
   worktree_base: string;
   tmux_session: string;
@@ -171,6 +263,39 @@ export interface AgentConfig {
   env: Record<string, string>;
 }
 
+export interface SharedPathConfig {
+  host_path: string;
+  guest_path: string;
+  mode: "ro" | "rw";
+}
+
+export interface EnvironmentBootstrapConfig {
+  mise_install: boolean;
+}
+
+export interface HostExecutionEnvironmentConfig {
+  kind: "host";
+  default_runtime?: AgentRuntime;
+}
+
+export interface VmSshExecutionEnvironmentConfig {
+  kind: "vm-ssh";
+  default_runtime?: AgentRuntime;
+  ssh_host: string;
+  ssh_user?: string;
+  ssh_port?: number;
+  ssh_identity_file?: string;
+  ssh_options: string[];
+  libvirt_domain?: string;
+  guest_workspace_root: string;
+  shared_paths: SharedPathConfig[];
+  bootstrap: EnvironmentBootstrapConfig;
+}
+
+export type ExecutionEnvironmentConfig =
+  | HostExecutionEnvironmentConfig
+  | VmSshExecutionEnvironmentConfig;
+
 export interface AgentOverride {
   runtime?: AgentRuntime;
   args: string[];
@@ -181,11 +306,15 @@ export interface PitchConfig {
   defaults: Defaults;
   bootstrap_prompts: BootstrapPromptTemplates;
   repos: Record<string, RepoConfig>;
+  environments: Record<string, ExecutionEnvironmentConfig>;
   agents: Record<string, AgentConfig>;
 }
 
 export type AgentType = z.infer<typeof AgentTypeSchema>;
 export type AgentRuntime = z.infer<typeof AgentRuntimeSchema>;
+export type ExecutionEnvironmentKind = z.infer<
+  typeof ExecutionEnvironmentKindSchema
+>;
 
 // --- Error class ---
 
@@ -216,6 +345,7 @@ function normalizeRepoConfig(
 ): RepoConfig {
   return {
     default_agent: repoConfig.default_agent,
+    default_environment: repoConfig.default_environment,
     main_worktree: repoConfig.main_worktree,
     worktree_base:
       repoConfig.worktree_base ?? join(defaults.worktree_root, repoName),
@@ -232,6 +362,7 @@ function normalizeConfig(raw: RawPitchConfig): PitchConfig {
     defaults: {
       repo: raw.defaults.repo,
       agent: raw.defaults.agent,
+      environment: raw.defaults.environment,
       base_branch: raw.defaults.base_branch,
       worktree_root: raw.defaults.worktree_root,
     },
@@ -242,6 +373,7 @@ function normalizeConfig(raw: RawPitchConfig): PitchConfig {
         normalizeRepoConfig(repoName, repoConfig, raw.defaults),
       ]),
     ),
+    environments: raw.environments,
     agents: raw.agents,
   };
 }

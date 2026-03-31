@@ -18,7 +18,9 @@ describe("loadConfig", () => {
       expect(config.defaults.worktree_root).toBe("~/.local/share/worktrees");
       expect(config.defaults.repo).toBeUndefined();
       expect(config.defaults.agent).toBeUndefined();
+      expect(config.defaults.environment).toBeUndefined();
       expect(config.repos).toEqual({});
+      expect(config.environments).toEqual({});
       expect(config.agents).toEqual({});
       expect(config.bootstrap_prompts).toEqual({});
     });
@@ -28,6 +30,7 @@ describe("loadConfig", () => {
       expect(config.defaults.base_branch).toBe("main");
       expect(config.defaults.worktree_root).toBe("~/.local/share/worktrees");
       expect(config.repos).toEqual({});
+      expect(config.environments).toEqual({});
       expect(config.agents).toEqual({});
       expect(config.bootstrap_prompts).toEqual({});
     });
@@ -48,6 +51,7 @@ describe("loadConfig", () => {
       expect(config.defaults.base_branch).toBe("main");
       expect(config.defaults.worktree_root).toBe("~/.local/share/worktrees");
       expect(config.repos).toEqual({});
+      expect(config.environments).toEqual({});
       expect(config.agents).toEqual({});
     });
   });
@@ -58,12 +62,14 @@ describe("loadConfig", () => {
 
       expect(config.defaults.repo).toBe("kong/kongctl");
       expect(config.defaults.agent).toBe("codex");
+      expect(config.defaults.environment).toBe("laptop");
       expect(config.defaults.base_branch).toBe("main");
       expect(config.defaults.worktree_root).toBe("~/.local/share/worktrees");
       expect(config.bootstrap_prompts).toEqual({});
 
       expect(config.repos["kong/kongctl"]).toEqual({
         default_agent: "claude-enterprise",
+        default_environment: "sandbox-vm",
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
@@ -83,6 +89,33 @@ describe("loadConfig", () => {
             env: {
               CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1",
             },
+          },
+        },
+      });
+
+      expect(config.environments).toEqual({
+        laptop: {
+          kind: "host",
+        },
+        "sandbox-vm": {
+          kind: "vm-ssh",
+          default_runtime: "native",
+          ssh_host: "sandbox.internal",
+          ssh_user: "pitch",
+          ssh_port: 2222,
+          ssh_identity_file: undefined,
+          ssh_options: ["-o", "StrictHostKeyChecking=accept-new"],
+          libvirt_domain: undefined,
+          guest_workspace_root: "/srv/pitch/workspaces",
+          shared_paths: [
+            {
+              host_path: "/home/rspurgeon/go",
+              guest_path: "/srv/shared/go",
+              mode: "ro",
+            },
+          ],
+          bootstrap: {
+            mise_install: true,
           },
         },
       });
@@ -145,6 +178,7 @@ describe("loadConfig", () => {
 
       expect(config.repos["kong/kongctl"]).toEqual({
         default_agent: "claude-enterprise",
+        default_environment: undefined,
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
@@ -180,7 +214,9 @@ describe("loadConfig", () => {
       expect(config.defaults.base_branch).toBe("main");
       expect(config.defaults.worktree_root).toBe("~/.local/share/worktrees");
       expect(config.defaults.agent).toBeUndefined();
+      expect(config.defaults.environment).toBeUndefined();
       expect(config.repos).toEqual({});
+      expect(config.environments).toEqual({});
       expect(config.agents).toEqual({});
     });
   });
@@ -201,6 +237,15 @@ describe("loadConfig", () => {
       await expect(
         loadConfig(fixture("unknown-agent-reference-config.yaml")),
       ).rejects.toThrow(/Unknown agent reference: missing-agent/);
+    });
+
+    it("rejects unknown environment references in defaults and repos", async () => {
+      await expect(
+        loadConfig(fixture("unknown-environment-reference-config.yaml")),
+      ).rejects.toThrow(ConfigError);
+      await expect(
+        loadConfig(fixture("unknown-environment-reference-config.yaml")),
+      ).rejects.toThrow(/Unknown environment reference: missing-environment/);
     });
 
     it("throws ConfigError for invalid field types", async () => {

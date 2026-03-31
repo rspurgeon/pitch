@@ -1,12 +1,14 @@
 defaults:
   repo: kong/kongctl
   agent: codex
+  environment: laptop
   base_branch: main
   worktree_root: ~/.local/share/worktrees
 
 repos:
   kong/kongctl:
     default_agent: claude-enterprise
+    default_environment: sandbox-vm
     main_worktree: ~/dev/kong/kongctl
     additional_paths:
       - /home/rspurgeon/go
@@ -18,6 +20,27 @@ repos:
       claude-personal:
         env:
           CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1"
+
+environments:
+  laptop:
+    kind: host
+
+  sandbox-vm:
+    kind: vm-ssh
+    default_runtime: native
+    ssh_host: sandbox.internal
+    ssh_user: pitch
+    ssh_port: 2222
+    ssh_options:
+      - -o
+      - StrictHostKeyChecking=accept-new
+    guest_workspace_root: /srv/pitch/workspaces
+    shared_paths:
+      - host_path: /home/rspurgeon/go
+        guest_path: /srv/shared/go
+        mode: ro
+    bootstrap:
+      mise_install: true
 
 agents:
   codex:

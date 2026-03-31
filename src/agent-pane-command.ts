@@ -1,27 +1,18 @@
 import type { BuiltAgentCommand } from "./agent-launcher.js";
-import { shellEscape } from "./shell.js";
+import { formatEnvAssignment, shellEscape } from "./shell.js";
 
-function shouldAllowShellExpansion(value: string): boolean {
-  return (
-    value === "~" ||
-    value.startsWith("~/") ||
-    /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(value) ||
-    /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value)
-  );
-}
+export function formatAgentPaneCommand(
+  command: BuiltAgentCommand,
+  reuseExistingConnection = false,
+): string {
+  if (reuseExistingConnection) {
+    if (command.pane_reuse_command === undefined) {
+      throw new Error("Agent command does not support connection reuse");
+    }
 
-function formatEnvAssignment(key: string, value: string): string {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-    throw new Error(`Invalid environment variable name: ${key}`);
+    return command.pane_reuse_command;
   }
 
-  const renderedValue = shouldAllowShellExpansion(value)
-    ? value
-    : shellEscape(value);
-  return `${key}=${renderedValue}`;
-}
-
-export function formatAgentPaneCommand(command: BuiltAgentCommand): string {
   const envAssignments = Object.entries(command.env).map(([key, value]) =>
     formatEnvAssignment(key, value),
   );

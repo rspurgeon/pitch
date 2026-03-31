@@ -1,4 +1,6 @@
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
+import type { EnsureCodexTrustedPathInput } from "../codex-trust.js";
 import type { PitchConfig } from "../config.js";
 import {
   closeWorkspace,
@@ -33,6 +35,7 @@ function makeConfig(): PitchConfig {
         agent_overrides: {},
       },
     },
+    environments: {},
     agents: {
       codex: {
         type: "codex",
@@ -97,6 +100,7 @@ function makeDependencies(
       branch: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     })),
+    removeCodexTrustedPath: vi.fn(async (_input: EnsureCodexTrustedPathInput) => undefined),
     sleep: vi.fn(async () => undefined),
     now: vi.fn(() => new Date("2026-03-23T03:00:00.000Z")),
     ...overrides,
@@ -262,6 +266,50 @@ describe("close workspace", () => {
 
     expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
     expect(dependencies.killTmuxWindow).toHaveBeenCalled();
+  });
+
+  it("sends Ctrl-C to ssh-backed vm agent panes during graceful shutdown", async () => {
+    await mkdir("/tmp/worktrees/gh-42-fix-bug/.pitch", { recursive: true });
+    await writeFile("/tmp/worktrees/gh-42-fix-bug/.pitch/vm-agent-active", "active");
+
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          environment_name: "sandbox-vm",
+          environment_kind: "vm-ssh",
+          guest_worktree_path: "/srv/pitch/workspaces/gh-42-fix-bug",
+          agent_pane_process: "ssh",
+        }),
+      ),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%1",
+            current_command: "ssh",
+            current_path: "/tmp/worktrees/gh-42-fix-bug",
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    await closeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
+      pane_id: "%1",
+      command: "C-c",
+      enter: false,
+    });
+
+    await rm("/tmp/worktrees/gh-42-fix-bug/.pitch", {
+      recursive: true,
+      force: true,
+    });
   });
 
   it("still closes the workspace when graceful shutdown inspection fails", async () => {

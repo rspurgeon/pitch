@@ -1,7 +1,15 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { access } from "node:fs/promises";
 import { z } from "zod";
+import { removeCodexTrustedPath } from "./codex-trust.js";
 import type { PitchConfig, RepoConfig } from "./config.js";
+import {
+  buildVmAgentHostMarkerPath,
+  deriveAgentPaneProcess,
+  resolveExecutionEnvironment,
+  resolveWorkspacePaths,
+} from "./execution-environment.js";
 import { removeWorktree } from "./git.js";
 import {
   getTmuxWindowPaneInfo,
@@ -33,6 +41,7 @@ export interface CloseWorkspaceDependencies {
   sendKeysToPane: typeof sendKeysToPane;
   writeWorkspaceRecord: typeof writeWorkspaceRecord;
   removeWorktree: typeof removeWorktree;
+  removeCodexTrustedPath: typeof removeCodexTrustedPath;
   sleep: (milliseconds: number) => Promise<void>;
   now: () => Date;
 }
@@ -46,6 +55,7 @@ const defaultDependencies: CloseWorkspaceDependencies = {
   sendKeysToPane,
   writeWorkspaceRecord,
   removeWorktree,
+  removeCodexTrustedPath,
   sleep: async (milliseconds: number) => {
     await delay(milliseconds);
   },
@@ -104,13 +114,6 @@ function buildClosedWorkspaceRecord(
   };
 }
 
-const AGENT_COMMANDS = new Set([
-  "agent-en-place",
-  "claude",
-  "codex",
-  "opencode",
-]);
-
 const SHELL_COMMANDS = new Set([
   "ash",
   "bash",
@@ -121,6 +124,15 @@ const SHELL_COMMANDS = new Set([
   "sh",
   "zsh",
 ]);
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function tryGracefulAgentShutdown(
   workspace: WorkspaceRecord,
@@ -138,7 +150,22 @@ async function tryGracefulAgentShutdown(
     return;
   }
 
-  if (!AGENT_COMMANDS.has(paneInfo.current_command)) {
+  const expectedPaneProcess =
+    workspace.agent_pane_process ??
+    deriveAgentPaneProcess(
+      workspace.agent_type,
+      workspace.agent_runtime,
+      workspace.environment_kind ?? "host",
+    );
+
+  if (paneInfo.current_command !== expectedPaneProcess) {
+    return;
+  }
+
+  if (
+    workspace.environment_kind === "vm-ssh" &&
+    !(await pathExists(buildVmAgentHostMarkerPath(workspace.worktree_path)))
+  ) {
     return;
   }
 
@@ -162,7 +189,11 @@ async function tryGracefulAgentShutdown(
         pane_index: 0,
       });
 
-      if (SHELL_COMMANDS.has(updatedPaneInfo.current_command)) {
+      if (workspace.environment_kind === "vm-ssh") {
+        if (!(await pathExists(buildVmAgentHostMarkerPath(workspace.worktree_path)))) {
+          return;
+        }
+      } else if (SHELL_COMMANDS.has(updatedPaneInfo.current_command)) {
         return;
       }
     } catch {
@@ -222,6 +253,36 @@ export async function closeWorkspace(
   try {
     await dependencies.deleteOpencodeConfig(existingWorkspace.name);
   } catch {}
+
+  if (shouldCleanupWorktree && existingWorkspace.agent_type === "codex") {
+    try {
+      const environment = existingWorkspace.environment_name !== null &&
+          existingWorkspace.environment_name !== undefined
+        ? resolveExecutionEnvironment(
+            config,
+            existingWorkspace.repo,
+            existingWorkspace.environment_name,
+          )
+        : { kind: existingWorkspace.environment_kind ?? "host" };
+      const workspacePaths = resolveWorkspacePaths(
+        environment,
+        existingWorkspace.name,
+        existingWorkspace.worktree_path,
+      );
+      workspacePaths.agent_worktree_path =
+        existingWorkspace.guest_worktree_path ?? workspacePaths.agent_worktree_path;
+      workspacePaths.guest_worktree_path =
+        existingWorkspace.guest_worktree_path ?? workspacePaths.guest_worktree_path;
+
+      await dependencies.removeCodexTrustedPath({
+        environment,
+        workspace_paths: workspacePaths,
+        codex_home: existingWorkspace.agent_env.CODEX_HOME,
+      });
+    } catch {
+      // best-effort cleanup only
+    }
+  }
 
   if (!shouldCleanupWorktree) {
     try {

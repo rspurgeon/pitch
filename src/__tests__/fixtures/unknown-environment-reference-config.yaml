@@ -1,0 +1,20 @@
+defaults:
+  repo: kong/kongctl
+  environment: missing-environment
+
+repos:
+  kong/kongctl:
+    default_agent: claude-enterprise
+    default_environment: sandbox-vm
+    main_worktree: ~/dev/kong/kongctl
+
+environments:
+  sandbox-vm:
+    kind: vm-ssh
+    ssh_host: sandbox.internal
+    guest_workspace_root: /srv/pitch/workspaces
+
+agents:
+  claude-enterprise:
+    type: claude
+    runtime: native

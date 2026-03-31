@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BuiltAgentCommand } from "../agent-launcher.js";
+import type { EnsureCodexTrustedPathInput } from "../codex-trust.js";
 import type { PitchConfig } from "../config.js";
 import {
   createWorkspace,
@@ -39,6 +40,7 @@ function makeConfig(): PitchConfig {
         agent_overrides: {},
       },
     },
+    environments: {},
     agents: {
       "claude-enterprise": {
         type: "claude",
@@ -80,19 +82,23 @@ function makeConfig(): PitchConfig {
 function makeWorkspaceRecord(
   overrides: Partial<WorkspaceRecord> = {},
 ): WorkspaceRecord {
-  return {
+  const workspace: WorkspaceRecord = {
     name: "gh-42-fix-bug",
     repo: "kong/kongctl",
     source_kind: "issue",
     source_number: 42,
     branch: "gh-42-fix-bug",
     worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+    guest_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     base_branch: "main",
     tmux_session: "kongctl",
     tmux_window: "gh-42-fix-bug",
     agent_name: "claude-enterprise",
     agent_type: "claude",
     agent_runtime: "native",
+    environment_name: null,
+    environment_kind: "host",
+    agent_pane_process: "claude",
     agent_env: {
       CLAUDE_CONFIG_DIR: "~/.claude",
     },
@@ -108,6 +114,26 @@ function makeWorkspaceRecord(
     updated_at: "2026-03-22T20:30:00.000Z",
     ...overrides,
   };
+
+  if (overrides.guest_worktree_path === undefined) {
+    workspace.guest_worktree_path = workspace.worktree_path;
+  }
+  if (overrides.environment_name === undefined) {
+    workspace.environment_name = null;
+  }
+  if (overrides.environment_kind === undefined) {
+    workspace.environment_kind = "host";
+  }
+  if (overrides.agent_pane_process === undefined) {
+    workspace.agent_pane_process =
+      workspace.environment_kind === "vm-ssh"
+        ? "ssh"
+        : workspace.agent_runtime === "docker"
+          ? "agent-en-place"
+          : workspace.agent_type;
+  }
+
+  return workspace;
 }
 
 function makeClaudeCommand(): BuiltAgentCommand {
@@ -115,6 +141,8 @@ function makeClaudeCommand(): BuiltAgentCommand {
     agent_name: "claude-enterprise",
     agent_type: "claude",
     runtime: "native",
+    environment_name: undefined,
+    environment_kind: "host",
     command: [
       "claude",
       "--model",
@@ -127,6 +155,10 @@ function makeClaudeCommand(): BuiltAgentCommand {
     env: {
       CLAUDE_CONFIG_DIR: "~/.claude",
     },
+    agent_env: {
+      CLAUDE_CONFIG_DIR: "~/.claude",
+    },
+    pane_process_name: "claude",
     session_id: "claude-session",
     warnings: [],
   };
@@ -137,6 +169,8 @@ function makeCodexCommand(): BuiltAgentCommand {
     agent_name: "codex-api",
     agent_type: "codex",
     runtime: "docker",
+    environment_name: undefined,
+    environment_kind: "host",
     command: [
       "agent-en-place",
       "codex",
@@ -149,6 +183,11 @@ function makeCodexCommand(): BuiltAgentCommand {
       CODEX_HOME: "~/.codex-api",
       OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
     },
+    agent_env: {
+      CODEX_HOME: "~/.codex-api",
+      OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
+    },
+    pane_process_name: "agent-en-place",
     warnings: [],
   };
 }
@@ -162,6 +201,8 @@ function makeOpencodeCommand(
     agent_name: "opencode",
     agent_type: "opencode",
     runtime: "native",
+    environment_name: undefined,
+    environment_kind: "host",
     command: [
       "opencode",
       "--agent",
@@ -169,6 +210,8 @@ function makeOpencodeCommand(
       "/tmp/worktrees/gh-42-fix-bug",
     ],
     env,
+    agent_env: env,
+    pane_process_name: "opencode",
     warnings: [],
   };
 }
@@ -245,6 +288,8 @@ function makeDependencies(
     sleep: vi.fn(async () => undefined),
     now: vi.fn(() => new Date("2026-03-22T20:30:00.000Z")),
     ensureOpencodeConfig: vi.fn(async () => undefined),
+    ensureClaudeTrustedPaths: vi.fn(async () => undefined),
+    ensureCodexTrustedPath: vi.fn(async (_input: EnsureCodexTrustedPathInput) => undefined),
     ...overrides,
   };
 }
@@ -269,8 +314,11 @@ describe("create workspace", () => {
       config,
       agent: "claude-enterprise",
       repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
       override_args: ["--model", "opus"],
       runtime: undefined,
@@ -280,6 +328,16 @@ describe("create workspace", () => {
       workspace_name: "gh-42-fix-bug",
       branch: "gh-42-fix-bug",
       start_point: "main",
+    });
+    expect(dependencies.ensureClaudeTrustedPaths).toHaveBeenCalledWith({
+      environment: { kind: "host" },
+      workspace_paths: {
+        host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+        agent_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+        guest_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      },
+      repo: config.repos["kong/kongctl"],
+      claude_config_dir: "~/.claude",
     });
     expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
       pane_id: "%1",
@@ -315,6 +373,8 @@ describe("create workspace", () => {
           agent_name: "claude-enterprise",
           agent_type: "claude",
           runtime: "native",
+          environment_name: undefined,
+          environment_kind: "host",
           command: [
             "claude",
             "--model",
@@ -327,6 +387,10 @@ describe("create workspace", () => {
           env: {
             CLAUDE_CONFIG_DIR: "~/.claude",
           },
+          agent_env: {
+            CLAUDE_CONFIG_DIR: "~/.claude",
+          },
+          pane_process_name: "claude",
           session_id: "claude-session",
           warnings: [],
         }),
@@ -376,8 +440,11 @@ describe("create workspace", () => {
       config,
       agent: "claude-enterprise",
       repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
       workspace_name: "pr-123-sync-pr",
       worktree_path: "/tmp/worktrees/pr-123-sync-pr",
+      host_worktree_path: "/tmp/worktrees/pr-123-sync-pr",
       initial_prompt: "Read repo PR #123 in kong/kongctl on feature/example and wait.",
       override_args: undefined,
       runtime: undefined,
@@ -531,11 +598,14 @@ describe("create workspace", () => {
       dependencies,
     );
 
-    expect(dependencies.ensureOpencodeConfig).toHaveBeenCalledWith({
-      workspace_name: "gh-42-fix-bug",
-      additional_paths: ["~/go"],
-      base_config_path: undefined,
-    });
+    expect(dependencies.ensureOpencodeConfig).toHaveBeenCalledWith(
+      {
+        workspace_name: "gh-42-fix-bug",
+        additional_paths: ["~/go"],
+        base_config_path: undefined,
+      },
+      undefined,
+    );
     expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         opencode_config_path: "/tmp/.pitch/opencode/gh-42-fix-bug.json",
@@ -570,11 +640,14 @@ describe("create workspace", () => {
       dependencies,
     );
 
-    expect(dependencies.ensureOpencodeConfig).toHaveBeenCalledWith({
-      workspace_name: "gh-42-fix-bug",
-      additional_paths: ["~/go"],
-      base_config_path: "~/.config/opencode/custom.json",
-    });
+    expect(dependencies.ensureOpencodeConfig).toHaveBeenCalledWith(
+      {
+        workspace_name: "gh-42-fix-bug",
+        additional_paths: ["~/go"],
+        base_config_path: "~/.config/opencode/custom.json",
+      },
+      undefined,
+    );
   });
 
   it("sends a deferred bootstrap prompt for attach-mode OpenCode", async () => {
@@ -585,6 +658,8 @@ describe("create workspace", () => {
           agent_name: "opencode",
           agent_type: "opencode",
           runtime: "native",
+          environment_name: undefined,
+          environment_kind: "host",
           command: [
             "opencode",
             "attach",
@@ -595,6 +670,10 @@ describe("create workspace", () => {
           env: {
             OPENCODE_SERVER_PASSWORD: "secret",
           },
+          agent_env: {
+            OPENCODE_SERVER_PASSWORD: "secret",
+          },
+          pane_process_name: "opencode",
           post_launch_prompt:
             "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
           warnings: [],
@@ -626,6 +705,90 @@ describe("create workspace", () => {
       pane_id: "%1",
       command: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
       literal: true,
+    });
+  });
+
+  it("stores vm-backed workspace metadata and uses guest paths", async () => {
+    const config = makeConfig();
+    config.environments["sandbox-vm"] = {
+      kind: "vm-ssh",
+      ssh_host: "sandbox.internal",
+      ssh_user: "pitch",
+      ssh_options: [],
+      guest_workspace_root: "/srv/pitch/workspaces",
+      shared_paths: [],
+      bootstrap: {
+        mise_install: true,
+      },
+    };
+
+    const dependencies = makeDependencies({
+      buildAgentStartCommand: vi.fn(
+        (): BuiltAgentCommand => ({
+          agent_name: "codex",
+          agent_type: "codex",
+          runtime: "native",
+          environment_name: "sandbox-vm",
+          environment_kind: "vm-ssh",
+          command: [
+            "ssh",
+            "-tt",
+            "pitch@sandbox.internal",
+            "--",
+            "remote-command",
+          ],
+          env: {},
+          agent_env: {
+            CODEX_HOME: "~/.codex",
+          },
+          pane_process_name: "ssh",
+          warnings: [],
+        }),
+      ),
+    });
+
+    const workspace = await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+        agent: "codex",
+        environment: "sandbox-vm",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: "sandbox-vm",
+        host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+        worktree_path: "/srv/pitch/workspaces/gh-42-fix-bug",
+      }),
+    );
+    expect(workspace).toEqual(
+      makeWorkspaceRecord({
+        agent_name: "codex",
+        agent_type: "codex",
+        environment_name: "sandbox-vm",
+        environment_kind: "vm-ssh",
+        guest_worktree_path: "/srv/pitch/workspaces/gh-42-fix-bug",
+        agent_pane_process: "ssh",
+        agent_env: {
+          CODEX_HOME: "~/.codex",
+        },
+        agent_sessions: [
+          {
+            id: "pending",
+            started_at: "2026-03-22T20:30:00.000Z",
+            status: "pending",
+          },
+        ],
+      }),
+    );
+    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
+      pane_id: "%1",
+      command:
+        "command -- 'ssh' '-tt' 'pitch@sandbox.internal' '--' 'remote-command'",
     });
   });
 
@@ -789,7 +952,7 @@ describe("create workspace", () => {
     );
   });
 
-  it("refuses to adopt an existing docker wrapper pane as a running agent", async () => {
+  it("adopts an existing docker wrapper pane as a running agent", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
       buildAgentStartCommand: vi.fn(() => makeCodexCommand()),
@@ -804,20 +967,19 @@ describe("create workspace", () => {
       ),
     });
 
-    await expect(
-      createWorkspace(
-        {
-          issue: 42,
-          slug: "fix-bug",
-          agent: "codex-api",
-          runtime: "docker",
-        },
-        config,
-        dependencies,
-      ),
-    ).rejects.toThrow(
-      "Existing tmux window kongctl:gh-42-fix-bug has unsupported pane 0 command: agent-en-place",
+    const workspace = await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+        agent: "codex-api",
+        runtime: "docker",
+      },
+      config,
+      dependencies,
     );
+
+    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
+    expect(workspace.agent_sessions).toEqual([]);
   });
 
   it("errors when an existing tmux window pane is occupied by another process", async () => {

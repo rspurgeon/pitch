@@ -47,7 +47,11 @@ export async function sendPostLaunchPromptToPane(
   dependencies: PostLaunchPromptDependencies,
 ): Promise<void> {
   if (command.agent_type === "opencode") {
-    const ready = await waitForPaneCommand(paneId, "opencode", dependencies);
+    const ready = await waitForPaneCommand(
+      paneId,
+      command.pane_process_name,
+      dependencies,
+    );
     if (!ready) {
       dependencies.reportWarning?.(
         `Timed out waiting for OpenCode to become ready before sending bootstrap prompt to ${workspaceName}`,

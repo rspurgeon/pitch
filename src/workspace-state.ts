@@ -31,6 +31,7 @@ const TimestampSchema = z.preprocess(
 );
 
 export const AgentRuntimeSchema = z.enum(["native", "docker"]);
+export const ExecutionEnvironmentKindSchema = z.enum(["host", "vm-ssh"]);
 export const WorkspaceStatusSchema = z.enum(["active", "closed"]);
 export const WorkspaceSourceKindSchema = z.enum(["issue", "pr"]);
 
@@ -53,6 +54,10 @@ export const WorkspaceRecordSchema = z.object({
   agent_name: z.string(),
   agent_type: z.string(),
   agent_runtime: AgentRuntimeSchema,
+  environment_name: z.string().nullable().optional(),
+  environment_kind: ExecutionEnvironmentKindSchema.optional(),
+  guest_worktree_path: z.string().optional(),
+  agent_pane_process: z.string().optional(),
   agent_env: z.record(z.string(), z.string()).default({}),
   agent_sessions: z.array(AgentSessionSchema).default([]),
   status: WorkspaceStatusSchema,
@@ -67,6 +72,9 @@ const ListWorkspacesOptionsSchema = z.object({
 
 export type AgentSession = z.infer<typeof AgentSessionSchema>;
 export type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
+export type ExecutionEnvironmentKind = z.infer<
+  typeof ExecutionEnvironmentKindSchema
+>;
 export type WorkspaceStatus = z.infer<typeof WorkspaceStatusSchema>;
 export type WorkspaceSourceKind = z.infer<typeof WorkspaceSourceKindSchema>;
 export type ListWorkspacesOptions = z.infer<typeof ListWorkspacesOptionsSchema>;
