@@ -1,11 +1,23 @@
 import { randomUUID } from "node:crypto";
 import type {
   AgentType,
+  ExecutionEnvironmentKind,
   PitchConfig,
+  VmSshExecutionEnvironmentConfig,
 } from "./config.js";
+import {
+  mapAgentArgsForEnvironment,
+  buildVmSshCommand,
+  mapAgentEnvForEnvironment,
+  mapAdditionalPathsForEnvironment,
+  resolveExecutionEnvironment,
+  type ResolvedExecutionEnvironment,
+  type ResolvedWorkspacePaths,
+} from "./execution-environment.js";
 
 export type SupportedAgentType = AgentType;
 export type SupportedRuntime = "native" | "docker";
+export type SupportedEnvironmentKind = ExecutionEnvironmentKind;
 
 export interface AgentLauncher {
   buildStartCommand(input: BuildStartCommandInput): BuiltAgentCommand;
@@ -17,8 +29,10 @@ export interface BuildStartCommandInput {
   agent: string;
   repo?: string;
   opencode_config_path?: string;
+  environment?: string;
   workspace_name: string;
   worktree_path: string;
+  host_worktree_path?: string;
   initial_prompt?: string;
   override_args?: string[];
   runtime?: SupportedRuntime;
@@ -30,8 +44,10 @@ export interface BuildResumeCommandInput {
   agent: string;
   repo?: string;
   opencode_config_path?: string;
+  environment?: string;
   session_id: string;
   worktree_path?: string;
+  host_worktree_path?: string;
   runtime?: SupportedRuntime;
 }
 
@@ -39,8 +55,14 @@ export interface BuiltAgentCommand {
   agent_name: string;
   agent_type: SupportedAgentType;
   runtime: SupportedRuntime;
+  environment_name?: string;
+  environment_kind: SupportedEnvironmentKind;
   command: string[];
   env: Record<string, string>;
+  agent_env: Record<string, string>;
+  pane_process_name: string;
+  pane_reuse_command?: string;
+  host_marker_path?: string;
   session_id?: string;
   post_launch_prompt?: string;
   warnings: string[];
@@ -55,17 +77,17 @@ interface ResolvedAgentTarget {
   warnings: string[];
 }
 
+interface RuntimeWrappedCommand {
+  command: string[];
+  pane_process_name: string;
+}
+
 export function resolveAgentEnv(
   config: PitchConfig,
   agentName: string,
   repo: string | undefined,
 ): Record<string, string> {
   return resolveAgentTarget(config, agentName, repo).env;
-}
-
-interface AgentRuntimeCommand {
-  command: string[];
-  env: Record<string, string>;
 }
 
 export class AgentLauncherError extends Error {
@@ -159,18 +181,17 @@ function wrapRuntimeCommand(
   agentType: SupportedAgentType,
   runtime: SupportedRuntime,
   command: string[],
-  env: Record<string, string>,
-): AgentRuntimeCommand {
+): RuntimeWrappedCommand {
   if (runtime === "native") {
     return {
       command,
-      env,
+      pane_process_name: AGENT_BINARIES[agentType],
     };
   }
 
   return {
     command: ["agent-en-place", agentType, ...command.slice(1)],
-    env,
+    pane_process_name: "agent-en-place",
   };
 }
 
@@ -190,6 +211,8 @@ function resolveAgentTarget(
   agentName: string,
   repo: string | undefined,
   runtimeOverride?: SupportedRuntime,
+  environmentDefaultRuntime?: SupportedRuntime,
+  additionalPaths?: string[],
 ): ResolvedAgentTarget {
   const repoConfig = resolveRepoConfig(config, repo);
   const agentConfig = config.agents[agentName];
@@ -201,11 +224,11 @@ function resolveAgentTarget(
   const repoOverride = repoConfig?.agent_overrides[agentName];
   const additionalPathArgs = buildAdditionalPathArgs(
     agentConfig.type,
-    repoConfig?.additional_paths ?? [],
+    additionalPaths ?? repoConfig?.additional_paths ?? [],
   );
   const warnings = getAdditionalPathWarnings(
     agentConfig.type,
-    repoConfig?.additional_paths ?? [],
+    additionalPaths ?? repoConfig?.additional_paths ?? [],
   );
 
   return {
@@ -213,6 +236,7 @@ function resolveAgentTarget(
     agent_type: agentConfig.type,
     runtime:
       runtimeOverride ??
+      environmentDefaultRuntime ??
       repoOverride?.runtime ??
       repoDefaults?.runtime ??
       agentConfig.runtime,
@@ -231,11 +255,123 @@ function resolveAgentTarget(
   };
 }
 
+function resolveStartEnvironment(
+  input: BuildStartCommandInput,
+): {
+  environment: ResolvedExecutionEnvironment;
+  workspace_paths: ResolvedWorkspacePaths;
+  additional_paths: string[];
+} {
+  const environment = resolveExecutionEnvironment(
+    input.config,
+    input.repo,
+    input.environment,
+  );
+  const hostWorktreePath = input.host_worktree_path ?? input.worktree_path;
+  const workspacePaths: ResolvedWorkspacePaths = {
+    host_worktree_path: hostWorktreePath,
+    agent_worktree_path: input.worktree_path,
+    guest_worktree_path: input.worktree_path,
+  };
+  const repoConfig = resolveRepoConfig(input.config, input.repo);
+
+  return {
+    environment,
+    workspace_paths: workspacePaths,
+    additional_paths: mapAdditionalPathsForEnvironment(
+      repoConfig?.additional_paths ?? [],
+      environment,
+      workspacePaths,
+    ),
+  };
+}
+
+function resolveResumeEnvironment(
+  input: BuildResumeCommandInput,
+): {
+  environment: ResolvedExecutionEnvironment;
+  workspace_paths: ResolvedWorkspacePaths | null;
+} {
+  const environment = resolveExecutionEnvironment(
+    input.config,
+    input.repo,
+    input.environment,
+  );
+
+  if (input.worktree_path === undefined && input.host_worktree_path === undefined) {
+    return {
+      environment,
+      workspace_paths: null,
+    };
+  }
+
+  return {
+    environment,
+    workspace_paths: {
+      host_worktree_path:
+        input.host_worktree_path ?? input.worktree_path ?? "",
+      agent_worktree_path: input.worktree_path ?? input.host_worktree_path ?? "",
+      guest_worktree_path: input.worktree_path ?? input.host_worktree_path ?? "",
+    },
+  };
+}
+
+function wrapExecutionEnvironmentCommand(
+  environment: ResolvedExecutionEnvironment,
+  runtimeCommand: RuntimeWrappedCommand,
+  agentEnv: Record<string, string>,
+  workspacePaths: ResolvedWorkspacePaths | null,
+  runBootstrap: boolean,
+): {
+  command: string[];
+  env: Record<string, string>;
+  pane_process_name: string;
+  pane_reuse_command?: string;
+  host_marker_path?: string;
+} {
+  if (environment.kind !== "vm-ssh") {
+    return {
+      command: runtimeCommand.command,
+      env: agentEnv,
+      pane_process_name: runtimeCommand.pane_process_name,
+    };
+  }
+
+  if (workspacePaths === null || environment.config === undefined) {
+    throw new AgentLauncherError(
+      "vm-ssh execution environments require host and guest worktree paths",
+    );
+  }
+
+  const vmCommand = buildVmSshCommand({
+    environment: environment.config as VmSshExecutionEnvironmentConfig,
+    workspace_paths: workspacePaths,
+    agent_command: runtimeCommand.command,
+    agent_env: agentEnv,
+    run_bootstrap: runBootstrap,
+  });
+
+  return {
+    command: vmCommand.command,
+    env: {},
+    pane_process_name: vmCommand.pane_process_name,
+    pane_reuse_command: vmCommand.reuse_command,
+    host_marker_path: vmCommand.host_marker_path,
+  };
+}
+
 function buildClaudeStartCommand(
   input: BuildStartCommandInput,
   resolved: ResolvedAgentTarget,
+  environment: ResolvedExecutionEnvironment,
+  workspacePaths: ResolvedWorkspacePaths,
 ): BuiltAgentCommand {
   const sessionId = input.session_id ?? randomUUID();
+  const agentEnv = mapAgentEnvForEnvironment(
+    resolved.env,
+    environment,
+    workspacePaths,
+  );
   const layeredArgs = withoutReservedArgs(
     [...resolved.args, ...(input.override_args ?? [])],
     ["--session-id", "--cd", "--name", "-n"],
@@ -251,19 +387,27 @@ function buildClaudeStartCommand(
     ...(input.initial_prompt === undefined ? [] : [input.initial_prompt]),
   ];
 
-  const runtimeCommand = wrapRuntimeCommand(
-    "claude",
-    resolved.runtime,
-    command,
-    resolved.env,
+  const runtimeCommand = wrapRuntimeCommand("claude", resolved.runtime, command);
+  const executionCommand = wrapExecutionEnvironmentCommand(
+    environment,
+    runtimeCommand,
+    agentEnv,
+    workspacePaths,
+    true,
   );
 
   return {
     agent_name: resolved.agent_name,
     agent_type: "claude",
     runtime: resolved.runtime,
-    command: runtimeCommand.command,
-    env: runtimeCommand.env,
+    environment_name: environment.name,
+    environment_kind: environment.kind,
+    command: executionCommand.command,
+    env: executionCommand.env,
+    agent_env: agentEnv,
+    pane_process_name: executionCommand.pane_process_name,
+    pane_reuse_command: executionCommand.pane_reuse_command,
+    host_marker_path: executionCommand.host_marker_path,
     session_id: sessionId,
     warnings: resolved.warnings,
   };
@@ -272,21 +416,35 @@ function buildClaudeStartCommand(
 function buildClaudeResumeCommand(
   input: BuildResumeCommandInput,
   resolved: ResolvedAgentTarget,
+  environment: ResolvedExecutionEnvironment,
+  workspacePaths: ResolvedWorkspacePaths | null,
 ): BuiltAgentCommand {
   const command = [AGENT_BINARIES.claude, "--resume", input.session_id];
-  const runtimeCommand = wrapRuntimeCommand(
-    "claude",
-    resolved.runtime,
-    command,
-    resolved.env,
+  const agentEnv =
+    workspacePaths === null
+      ? resolved.env
+      : mapAgentEnvForEnvironment(resolved.env, environment, workspacePaths);
+  const runtimeCommand = wrapRuntimeCommand("claude", resolved.runtime, command);
+  const executionCommand = wrapExecutionEnvironmentCommand(
+    environment,
+    runtimeCommand,
+    agentEnv,
+    workspacePaths,
+    false,
   );
 
   return {
     agent_name: resolved.agent_name,
     agent_type: "claude",
     runtime: resolved.runtime,
-    command: runtimeCommand.command,
-    env: runtimeCommand.env,
+    environment_name: environment.name,
+    environment_kind: environment.kind,
+    command: executionCommand.command,
+    env: executionCommand.env,
+    agent_env: agentEnv,
+    pane_process_name: executionCommand.pane_process_name,
+    pane_reuse_command: executionCommand.pane_reuse_command,
+    host_marker_path: executionCommand.host_marker_path,
     session_id: input.session_id,
     warnings: resolved.warnings,
   };
@@ -295,7 +453,14 @@ function buildClaudeResumeCommand(
 function buildCodexStartCommand(
   input: BuildStartCommandInput,
   resolved: ResolvedAgentTarget,
+  environment: ResolvedExecutionEnvironment,
+  workspacePaths: ResolvedWorkspacePaths,
 ): BuiltAgentCommand {
+  const agentEnv = mapAgentEnvForEnvironment(
+    resolved.env,
+    environment,
+    workspacePaths,
+  );
   const layeredArgs = withoutReservedArgs(
     [...resolved.args, ...(input.override_args ?? [])],
     ["--cd", "-C"],
@@ -309,19 +474,27 @@ function buildCodexStartCommand(
     ...(input.initial_prompt === undefined ? [] : [input.initial_prompt]),
   ];
 
-  const runtimeCommand = wrapRuntimeCommand(
-    "codex",
-    resolved.runtime,
-    command,
-    resolved.env,
+  const runtimeCommand = wrapRuntimeCommand("codex", resolved.runtime, command);
+  const executionCommand = wrapExecutionEnvironmentCommand(
+    environment,
+    runtimeCommand,
+    agentEnv,
+    workspacePaths,
+    true,
   );
 
   return {
     agent_name: resolved.agent_name,
     agent_type: "codex",
     runtime: resolved.runtime,
-    command: runtimeCommand.command,
-    env: runtimeCommand.env,
+    environment_name: environment.name,
+    environment_kind: environment.kind,
+    command: executionCommand.command,
+    env: executionCommand.env,
+    agent_env: agentEnv,
+    pane_process_name: executionCommand.pane_process_name,
+    pane_reuse_command: executionCommand.pane_reuse_command,
+    host_marker_path: executionCommand.host_marker_path,
     warnings: resolved.warnings,
   };
 }
@@ -329,21 +502,35 @@ function buildCodexStartCommand(
 function buildCodexResumeCommand(
   input: BuildResumeCommandInput,
   resolved: ResolvedAgentTarget,
+  environment: ResolvedExecutionEnvironment,
+  workspacePaths: ResolvedWorkspacePaths | null,
 ): BuiltAgentCommand {
   const command = [AGENT_BINARIES.codex, "resume", input.session_id];
-  const runtimeCommand = wrapRuntimeCommand(
-    "codex",
-    resolved.runtime,
-    command,
-    resolved.env,
+  const agentEnv =
+    workspacePaths === null
+      ? resolved.env
+      : mapAgentEnvForEnvironment(resolved.env, environment, workspacePaths);
+  const runtimeCommand = wrapRuntimeCommand("codex", resolved.runtime, command);
+  const executionCommand = wrapExecutionEnvironmentCommand(
+    environment,
+    runtimeCommand,
+    agentEnv,
+    workspacePaths,
+    false,
   );
 
   return {
     agent_name: resolved.agent_name,
     agent_type: "codex",
     runtime: resolved.runtime,
-    command: runtimeCommand.command,
-    env: runtimeCommand.env,
+    environment_name: environment.name,
+    environment_kind: environment.kind,
+    command: executionCommand.command,
+    env: executionCommand.env,
+    agent_env: agentEnv,
+    pane_process_name: executionCommand.pane_process_name,
+    pane_reuse_command: executionCommand.pane_reuse_command,
+    host_marker_path: executionCommand.host_marker_path,
     session_id: input.session_id,
     warnings: resolved.warnings,
   };
@@ -352,6 +539,8 @@ function buildCodexResumeCommand(
 function buildOpencodeStartCommand(
   input: BuildStartCommandInput,
   resolved: ResolvedAgentTarget,
+  environment: ResolvedExecutionEnvironment,
+  workspacePaths: ResolvedWorkspacePaths,
 ): BuiltAgentCommand {
   assertSupportedRuntime("opencode", resolved.runtime);
 
@@ -378,24 +567,41 @@ function buildOpencodeStartCommand(
     ...(attachMode ? ["--dir", input.worktree_path] : [input.worktree_path]),
   ];
 
-  const runtimeCommand = wrapRuntimeCommand(
-    "opencode",
-    resolved.runtime,
-    command,
+  const agentEnv = mapAgentEnvForEnvironment(
     {
       ...resolved.env,
       ...(input.opencode_config_path === undefined
         ? {}
         : { OPENCODE_CONFIG: input.opencode_config_path }),
     },
+    environment,
+    workspacePaths,
+  );
+  const runtimeCommand = wrapRuntimeCommand(
+    "opencode",
+    resolved.runtime,
+    command,
+  );
+  const executionCommand = wrapExecutionEnvironmentCommand(
+    environment,
+    runtimeCommand,
+    agentEnv,
+    workspacePaths,
+    true,
   );
 
   return {
     agent_name: resolved.agent_name,
     agent_type: "opencode",
     runtime: resolved.runtime,
-    command: runtimeCommand.command,
-    env: runtimeCommand.env,
+    environment_name: environment.name,
+    environment_kind: environment.kind,
+    command: executionCommand.command,
+    env: executionCommand.env,
+    agent_env: agentEnv,
+    pane_process_name: executionCommand.pane_process_name,
+    pane_reuse_command: executionCommand.pane_reuse_command,
+    host_marker_path: executionCommand.host_marker_path,
     post_launch_prompt: attachMode ? input.initial_prompt : undefined,
     warnings: resolved.warnings,
   };
@@ -404,6 +610,8 @@ function buildOpencodeStartCommand(
 function buildOpencodeResumeCommand(
   input: BuildResumeCommandInput,
   resolved: ResolvedAgentTarget,
+  environment: ResolvedExecutionEnvironment,
+  workspacePaths: ResolvedWorkspacePaths | null,
 ): BuiltAgentCommand {
   assertSupportedRuntime("opencode", resolved.runtime);
 
@@ -430,24 +638,49 @@ function buildOpencodeResumeCommand(
     "--session",
     input.session_id,
   ];
+  const agentEnv =
+    workspacePaths === null
+      ? {
+          ...resolved.env,
+          ...(input.opencode_config_path === undefined
+            ? {}
+            : { OPENCODE_CONFIG: input.opencode_config_path }),
+        }
+      : mapAgentEnvForEnvironment(
+          {
+            ...resolved.env,
+            ...(input.opencode_config_path === undefined
+              ? {}
+              : { OPENCODE_CONFIG: input.opencode_config_path }),
+          },
+          environment,
+          workspacePaths,
+        );
   const runtimeCommand = wrapRuntimeCommand(
     "opencode",
     resolved.runtime,
     command,
-    {
-      ...resolved.env,
-      ...(input.opencode_config_path === undefined
-        ? {}
-        : { OPENCODE_CONFIG: input.opencode_config_path }),
-    },
+  );
+  const executionCommand = wrapExecutionEnvironmentCommand(
+    environment,
+    runtimeCommand,
+    agentEnv,
+    workspacePaths,
+    false,
   );
 
   return {
     agent_name: resolved.agent_name,
     agent_type: "opencode",
     runtime: resolved.runtime,
-    command: runtimeCommand.command,
-    env: runtimeCommand.env,
+    environment_name: environment.name,
+    environment_kind: environment.kind,
+    command: executionCommand.command,
+    env: executionCommand.env,
+    agent_env: agentEnv,
+    pane_process_name: executionCommand.pane_process_name,
+    pane_reuse_command: executionCommand.pane_reuse_command,
+    host_marker_path: executionCommand.host_marker_path,
     session_id: input.session_id,
     warnings: resolved.warnings,
   };
@@ -455,103 +688,208 @@ function buildOpencodeResumeCommand(
 
 class ClaudeLauncher implements AgentLauncher {
   buildStartCommand(input: BuildStartCommandInput): BuiltAgentCommand {
+    const { environment, workspace_paths, additional_paths } =
+      resolveStartEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
       input.runtime,
+      environment.default_runtime,
+      additional_paths,
     );
+    const mappedResolved = {
+      ...resolved,
+      args: mapAgentArgsForEnvironment(
+        resolved.args,
+        environment,
+        workspace_paths,
+      ),
+    };
     if (resolved.agent_type !== "claude") {
       throw new AgentLauncherError(
         `Claude launcher cannot build commands for ${resolved.agent_type}`,
       );
     }
 
-    return buildClaudeStartCommand(input, resolved);
+    return buildClaudeStartCommand(
+      input,
+      mappedResolved,
+      environment,
+      workspace_paths,
+    );
   }
 
   buildResumeCommand(input: BuildResumeCommandInput): BuiltAgentCommand {
+    const { environment, workspace_paths } = resolveResumeEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
       input.runtime,
+      environment.default_runtime,
     );
+    const mappedResolved = {
+      ...resolved,
+      args:
+        workspace_paths === null
+          ? resolved.args
+          : mapAgentArgsForEnvironment(
+              resolved.args,
+              environment,
+              workspace_paths,
+            ),
+    };
     if (resolved.agent_type !== "claude") {
       throw new AgentLauncherError(
         `Claude launcher cannot build commands for ${resolved.agent_type}`,
       );
     }
 
-    return buildClaudeResumeCommand(input, resolved);
+    return buildClaudeResumeCommand(
+      input,
+      mappedResolved,
+      environment,
+      workspace_paths,
+    );
   }
 }
 
 class CodexLauncher implements AgentLauncher {
   buildStartCommand(input: BuildStartCommandInput): BuiltAgentCommand {
+    const { environment, workspace_paths, additional_paths } =
+      resolveStartEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
       input.runtime,
+      environment.default_runtime,
+      additional_paths,
     );
+    const mappedResolved = {
+      ...resolved,
+      args: mapAgentArgsForEnvironment(
+        resolved.args,
+        environment,
+        workspace_paths,
+      ),
+    };
     if (resolved.agent_type !== "codex") {
       throw new AgentLauncherError(
         `Codex launcher cannot build commands for ${resolved.agent_type}`,
       );
     }
 
-    return buildCodexStartCommand(input, resolved);
+    return buildCodexStartCommand(
+      input,
+      mappedResolved,
+      environment,
+      workspace_paths,
+    );
   }
 
   buildResumeCommand(input: BuildResumeCommandInput): BuiltAgentCommand {
+    const { environment, workspace_paths } = resolveResumeEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
       input.runtime,
+      environment.default_runtime,
     );
+    const mappedResolved = {
+      ...resolved,
+      args:
+        workspace_paths === null
+          ? resolved.args
+          : mapAgentArgsForEnvironment(
+              resolved.args,
+              environment,
+              workspace_paths,
+            ),
+    };
     if (resolved.agent_type !== "codex") {
       throw new AgentLauncherError(
         `Codex launcher cannot build commands for ${resolved.agent_type}`,
       );
     }
 
-    return buildCodexResumeCommand(input, resolved);
+    return buildCodexResumeCommand(
+      input,
+      mappedResolved,
+      environment,
+      workspace_paths,
+    );
   }
 }
 
 class OpencodeLauncher implements AgentLauncher {
   buildStartCommand(input: BuildStartCommandInput): BuiltAgentCommand {
+    const { environment, workspace_paths, additional_paths } =
+      resolveStartEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
       input.runtime,
+      environment.default_runtime,
+      additional_paths,
     );
+    const mappedResolved = {
+      ...resolved,
+      args: mapAgentArgsForEnvironment(
+        resolved.args,
+        environment,
+        workspace_paths,
+      ),
+    };
     if (resolved.agent_type !== "opencode") {
       throw new AgentLauncherError(
         `OpenCode launcher cannot build commands for ${resolved.agent_type}`,
       );
     }
 
-    return buildOpencodeStartCommand(input, resolved);
+    return buildOpencodeStartCommand(
+      input,
+      mappedResolved,
+      environment,
+      workspace_paths,
+    );
   }
 
   buildResumeCommand(input: BuildResumeCommandInput): BuiltAgentCommand {
+    const { environment, workspace_paths } = resolveResumeEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
       input.runtime,
+      environment.default_runtime,
     );
+    const mappedResolved = {
+      ...resolved,
+      args:
+        workspace_paths === null
+          ? resolved.args
+          : mapAgentArgsForEnvironment(
+              resolved.args,
+              environment,
+              workspace_paths,
+            ),
+    };
     if (resolved.agent_type !== "opencode") {
       throw new AgentLauncherError(
         `OpenCode launcher cannot build commands for ${resolved.agent_type}`,
       );
     }
 
-    return buildOpencodeResumeCommand(input, resolved);
+    return buildOpencodeResumeCommand(
+      input,
+      mappedResolved,
+      environment,
+      workspace_paths,
+    );
   }
 }
 
@@ -574,23 +912,21 @@ export function getAgentLauncher(agentType: SupportedAgentType): AgentLauncher {
 export function buildAgentStartCommand(
   input: BuildStartCommandInput,
 ): BuiltAgentCommand {
-  const resolved = resolveAgentTarget(
-    input.config,
-    input.agent,
-    input.repo,
-    input.runtime,
-  );
-  return getAgentLauncher(resolved.agent_type).buildStartCommand(input);
+  const agentConfig = input.config.agents[input.agent];
+  if (agentConfig === undefined) {
+    throw new AgentLauncherError(`Agent is not configured: ${input.agent}`);
+  }
+
+  return getAgentLauncher(agentConfig.type).buildStartCommand(input);
 }
 
 export function buildAgentResumeCommand(
   input: BuildResumeCommandInput,
 ): BuiltAgentCommand {
-  const resolved = resolveAgentTarget(
-    input.config,
-    input.agent,
-    input.repo,
-    input.runtime,
-  );
-  return getAgentLauncher(resolved.agent_type).buildResumeCommand(input);
+  const agentConfig = input.config.agents[input.agent];
+  if (agentConfig === undefined) {
+    throw new AgentLauncherError(`Agent is not configured: ${input.agent}`);
+  }
+
+  return getAgentLauncher(agentConfig.type).buildResumeCommand(input);
 }

@@ -1,4 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { access } from "node:fs/promises";
+import { join, posix } from "node:path";
 import { z } from "zod";
 import {
   buildAgentResumeCommand,
@@ -7,8 +9,19 @@ import {
   type BuiltAgentCommand,
 } from "./agent-launcher.js";
 import { buildBootstrapPrompt } from "./bootstrap-prompt.js";
+import { ensureClaudeTrustedPaths } from "./claude-trust.js";
 import type { PitchConfig } from "./config.js";
+import { ensureCodexTrustedPath } from "./codex-trust.js";
 import { findCodexSessionForWorkspace } from "./codex-session-store.js";
+import {
+  buildVmAgentHostMarkerPath,
+  deriveAgentPaneProcess,
+  mapAdditionalPathsForEnvironment,
+  resolveExecutionEnvironment,
+  resolveWorkspacePaths,
+  type ResolvedExecutionEnvironment,
+  type ResolvedWorkspacePaths,
+} from "./execution-environment.js";
 import { runGitHubLifecycle } from "./github-lifecycle.js";
 import { findOpencodeSessionForWorkspace } from "./opencode-session-store.js";
 import { sendPostLaunchPromptToPane } from "./post-launch-prompt.js";
@@ -37,6 +50,7 @@ import { ensureOpencodeConfig } from "./opencode-config.js";
 export const ResumeWorkspaceInputSchema = z.object({
   name: z.string().trim().min(1),
   agent: z.string().trim().min(1).optional(),
+  environment: z.string().trim().min(1).optional(),
 }).strict();
 
 export type ResumeWorkspaceInput = z.infer<typeof ResumeWorkspaceInputSchema>;
@@ -62,6 +76,8 @@ export interface ResumeWorkspaceDependencies {
   now: () => Date;
   reportWarning?: (warning: string) => void;
   ensureOpencodeConfig: typeof ensureOpencodeConfig;
+  ensureClaudeTrustedPaths: typeof ensureClaudeTrustedPaths;
+  ensureCodexTrustedPath: typeof ensureCodexTrustedPath;
 }
 
 const defaultDependencies: ResumeWorkspaceDependencies = {
@@ -84,6 +100,8 @@ const defaultDependencies: ResumeWorkspaceDependencies = {
   writeWorkspaceRecord,
   now: () => new Date(),
   ensureOpencodeConfig,
+  ensureClaudeTrustedPaths,
+  ensureCodexTrustedPath,
 };
 
 export class ResumeWorkspaceError extends Error {
@@ -144,6 +162,12 @@ function resolveAgentName(
 
 function currentWorkspaceAgentName(workspace: WorkspaceRecord): string {
   return workspace.agent_name;
+}
+
+function currentWorkspaceEnvironmentName(
+  workspace: WorkspaceRecord,
+): string | undefined {
+  return workspace.environment_name ?? undefined;
 }
 
 function findLatestResumableSessionId(workspace: WorkspaceRecord): string | null {
@@ -228,19 +252,66 @@ function buildNextAgentSession(
   };
 }
 
-function isCompatibleRunningAgentPane(
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isCompatibleRunningAgentPane(
   workspace: WorkspaceRecord,
   paneInfo: TmuxPaneInfo | null,
-): boolean {
+): Promise<boolean> {
   if (paneInfo === null || paneInfo.current_path !== workspace.worktree_path) {
     return false;
   }
 
-  if (workspace.agent_runtime !== "native") {
+  const expectedPaneProcess =
+    workspace.agent_pane_process ??
+    deriveAgentPaneProcess(
+      workspace.agent_type,
+      workspace.agent_runtime,
+      workspace.environment_kind ?? "host",
+    );
+
+  if (paneInfo.current_command !== expectedPaneProcess) {
     return false;
   }
 
-  return paneInfo.current_command === workspace.agent_type;
+  if (workspace.environment_kind === "vm-ssh") {
+    return pathExists(
+      buildVmAgentHostMarkerPath(workspace.worktree_path),
+    );
+  }
+
+  return true;
+}
+
+async function shouldReuseConnectedVmPane(
+  workspace: WorkspaceRecord,
+  paneInfo: TmuxPaneInfo | null,
+  command: BuiltAgentCommand,
+): Promise<boolean> {
+  if (
+    paneInfo === null ||
+    workspace.environment_kind !== "vm-ssh" ||
+    command.pane_reuse_command === undefined
+  ) {
+    return false;
+  }
+
+  if (paneInfo.current_command !== "ssh") {
+    return false;
+  }
+
+  if (paneInfo.current_path !== workspace.worktree_path) {
+    return false;
+  }
+
+  return !(await pathExists(buildVmAgentHostMarkerPath(workspace.worktree_path)));
 }
 
 async function maybeEnsureOpencodeConfig(
@@ -248,6 +319,8 @@ async function maybeEnsureOpencodeConfig(
   repoName: string,
   agentName: string,
   workspaceName: string,
+  environment: ResolvedExecutionEnvironment,
+  workspacePaths: ResolvedWorkspacePaths,
   dependencies: ResumeWorkspaceDependencies,
 ): Promise<string | undefined> {
   const agentConfig = config.agents[agentName];
@@ -261,16 +334,47 @@ async function maybeEnsureOpencodeConfig(
   }
 
   try {
+    const additionalPaths = mapAdditionalPathsForEnvironment(
+      repoConfig.additional_paths,
+      environment,
+      workspacePaths,
+    );
+    const rootDir =
+      environment.kind === "vm-ssh"
+        ? join(workspacePaths.host_worktree_path, ".pitch", "opencode")
+        : undefined;
     return await dependencies.ensureOpencodeConfig({
       workspace_name: workspaceName,
-      additional_paths: repoConfig.additional_paths,
+      additional_paths: additionalPaths,
       base_config_path: resolveAgentEnv(config, agentName, repoName).OPENCODE_CONFIG,
-    });
+    }, rootDir);
   } catch (error: unknown) {
     throw new ResumeWorkspaceError(
       `Failed to prepare OpenCode config for ${workspaceName}: ${formatError(error)}`,
     );
   }
+}
+
+function resolveAgentOpencodeConfigPath(
+  environment: ResolvedExecutionEnvironment,
+  workspaceName: string,
+  workspacePaths: ResolvedWorkspacePaths,
+  generatedConfigPath: string | undefined,
+): string | undefined {
+  if (generatedConfigPath === undefined) {
+    return undefined;
+  }
+
+  if (environment.kind !== "vm-ssh") {
+    return generatedConfigPath;
+  }
+
+  return posix.join(
+    workspacePaths.guest_worktree_path,
+    ".pitch",
+    "opencode",
+    `${workspaceName}.json`,
+  );
 }
 
 export async function resumeWorkspace(
@@ -383,21 +487,50 @@ export async function resumeWorkspace(
     );
   }
 
+  const currentEnvironmentName = currentWorkspaceEnvironmentName(workspace);
+  const environment: ResolvedExecutionEnvironment =
+    input.environment !== undefined || currentEnvironmentName !== undefined
+      ? resolveExecutionEnvironment(
+          config,
+          workspace.repo,
+          input.environment ?? currentEnvironmentName,
+        )
+      : {
+          kind: workspace.environment_kind ?? "host",
+        };
+  const derivedWorkspacePaths = resolveWorkspacePaths(
+    environment,
+    workspace.name,
+    workspace.worktree_path,
+  );
+  const workspacePaths: ResolvedWorkspacePaths = {
+    ...derivedWorkspacePaths,
+    agent_worktree_path:
+      workspace.guest_worktree_path ?? derivedWorkspacePaths.agent_worktree_path,
+    guest_worktree_path:
+      workspace.guest_worktree_path ?? derivedWorkspacePaths.guest_worktree_path,
+  };
+
   const agentName = resolveAgentName(workspace, input.agent);
   const isAgentContextChanged =
     input.agent !== undefined && input.agent !== currentWorkspaceAgentName(workspace);
+  const isEnvironmentContextChanged =
+    input.environment !== undefined && input.environment !== currentEnvironmentName;
   const trailingPendingSession = hasTrailingPendingSession(workspace);
 
-  let latestSessionId = isAgentContextChanged || trailingPendingSession
-    ? null
-    : findLatestResumableSessionId(workspace);
+  let latestSessionId =
+    isAgentContextChanged || isEnvironmentContextChanged || trailingPendingSession
+      ? null
+      : findLatestResumableSessionId(workspace);
 
   if (
     !isAgentContextChanged &&
+    !isEnvironmentContextChanged &&
     trailingPendingSession &&
     latestSessionId === null &&
     workspace.agent_type === "codex" &&
-    workspace.agent_runtime === "native"
+    workspace.agent_runtime === "native" &&
+    environment.kind === "host"
   ) {
     const pendingSessionIndex = findLatestPendingSessionIndex(workspace);
 
@@ -429,10 +562,12 @@ export async function resumeWorkspace(
 
   if (
     !isAgentContextChanged &&
+    !isEnvironmentContextChanged &&
     trailingPendingSession &&
     latestSessionId === null &&
     workspace.agent_type === "opencode" &&
-    workspace.agent_runtime === "native"
+    workspace.agent_runtime === "native" &&
+    environment.kind === "host"
   ) {
     const pendingSessionIndex = findLatestPendingSessionIndex(workspace);
 
@@ -464,9 +599,10 @@ export async function resumeWorkspace(
 
   if (
     !isAgentContextChanged &&
+    !isEnvironmentContextChanged &&
     latestSessionId === null &&
     findLatestPendingSessionIndex(workspace) === null &&
-    isCompatibleRunningAgentPane(workspace, existingPaneInfo)
+    await isCompatibleRunningAgentPane(workspace, existingPaneInfo)
   ) {
     await dependencies.writeWorkspaceRecord(workspace);
     return workspace;
@@ -475,12 +611,20 @@ export async function resumeWorkspace(
   let command: BuiltAgentCommand;
   let isFreshLaunch = false;
   try {
-    const opencodeConfigPath = await maybeEnsureOpencodeConfig(
+    const generatedOpencodeConfigPath = await maybeEnsureOpencodeConfig(
       config,
       workspace.repo,
       agentName,
       workspace.name,
+      environment,
+      workspacePaths,
       dependencies,
+    );
+    const opencodeConfigPath = resolveAgentOpencodeConfigPath(
+      environment,
+      workspace.name,
+      workspacePaths,
+      generatedOpencodeConfigPath,
     );
 
     if (latestSessionId === null) {
@@ -489,9 +633,11 @@ export async function resumeWorkspace(
         config,
         agent: agentName,
         repo: workspace.repo,
+        environment: environment.name,
         opencode_config_path: opencodeConfigPath,
         workspace_name: workspace.name,
-        worktree_path: workspace.worktree_path,
+        worktree_path: workspacePaths.agent_worktree_path,
+        host_worktree_path: workspacePaths.host_worktree_path,
         initial_prompt: buildBootstrapPrompt(config, {
           repo: workspace.repo,
           source_kind: workspace.source_kind,
@@ -505,9 +651,11 @@ export async function resumeWorkspace(
         config,
         agent: agentName,
         repo: workspace.repo,
+        environment: environment.name,
         opencode_config_path: opencodeConfigPath,
         session_id: latestSessionId,
-        worktree_path: workspace.worktree_path,
+        worktree_path: workspacePaths.agent_worktree_path,
+        host_worktree_path: workspacePaths.host_worktree_path,
       });
     }
   } catch (error: unknown) {
@@ -515,11 +663,44 @@ export async function resumeWorkspace(
       `Failed to build agent command for ${workspace.name}: ${formatError(error)}`,
     );
   }
+
+  if (command.agent_type === "claude") {
+    try {
+      await dependencies.ensureClaudeTrustedPaths({
+        environment,
+        workspace_paths: workspacePaths,
+        repo: repoConfig,
+        claude_config_dir: command.agent_env.CLAUDE_CONFIG_DIR,
+      });
+    } catch (error: unknown) {
+      reportWarnings(dependencies.reportWarning, [
+        `Failed to pre-trust Claude workspace paths for ${workspace.name}: ${formatError(error)}`,
+      ]);
+    }
+  }
+
+  if (command.agent_type === "codex") {
+    try {
+      await dependencies.ensureCodexTrustedPath({
+        environment,
+        workspace_paths: workspacePaths,
+        codex_home: command.agent_env.CODEX_HOME,
+      });
+    } catch (error: unknown) {
+      reportWarnings(dependencies.reportWarning, [
+        `Failed to pre-trust Codex workspace path for ${workspace.name}: ${formatError(error)}`,
+      ]);
+    }
+  }
+
   reportWarnings(dependencies.reportWarning, command.warnings);
 
   let paneCommand: string;
   try {
-    paneCommand = formatAgentPaneCommand(command);
+    paneCommand = formatAgentPaneCommand(
+      command,
+      await shouldReuseConnectedVmPane(workspace, existingPaneInfo, command),
+    );
   } catch (error: unknown) {
     throw new ResumeWorkspaceError(
       `Failed to format agent command for ${workspace.name}: ${formatError(error)}`,
@@ -559,7 +740,11 @@ export async function resumeWorkspace(
     agent_name: command.agent_name,
     agent_type: command.agent_type,
     agent_runtime: command.runtime,
-    agent_env: command.env,
+    environment_name: environment.name ?? null,
+    environment_kind: environment.kind,
+    guest_worktree_path: workspacePaths.guest_worktree_path,
+    agent_pane_process: command.pane_process_name,
+    agent_env: command.agent_env,
     agent_sessions: [
       ...workspace.agent_sessions,
       buildNextAgentSession(command, startedAt),

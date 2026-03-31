@@ -31,6 +31,7 @@ function makeConfig(): PitchConfig {
         agent_overrides: {},
       },
     },
+    environments: {},
     agents: {
       codex: {
         type: "codex",
