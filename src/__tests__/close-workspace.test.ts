@@ -1,7 +1,9 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { EnsureCodexTrustedPathInput } from "../codex-trust.js";
 import type { PitchConfig } from "../config.js";
+import { GitWorktreeError } from "../git.js";
 import {
   closeWorkspace,
   CloseWorkspaceError,
@@ -269,13 +271,17 @@ describe("close workspace", () => {
   });
 
   it("sends Ctrl-C to ssh-backed vm agent panes during graceful shutdown", async () => {
-    await mkdir("/tmp/worktrees/gh-42-fix-bug/.pitch", { recursive: true });
-    await writeFile("/tmp/worktrees/gh-42-fix-bug/.pitch/vm-agent-active", "active");
+    const worktreePath = await mkdtemp(
+      join(process.cwd(), ".tmp-close-workspace-vm-agent-"),
+    );
+    await mkdir(join(worktreePath, ".pitch"), { recursive: true });
+    await writeFile(join(worktreePath, ".pitch", "vm-agent-active"), "active");
 
     const config = makeConfig();
     const dependencies = makeDependencies({
       readWorkspaceRecord: vi.fn(async () =>
         makeWorkspaceRecord({
+          worktree_path: worktreePath,
           environment_name: "sandbox-vm",
           environment_kind: "vm-ssh",
           guest_worktree_path: "/srv/pitch/workspaces/gh-42-fix-bug",
@@ -287,7 +293,7 @@ describe("close workspace", () => {
           ({
             pane_id: "%1",
             current_command: "ssh",
-            current_path: "/tmp/worktrees/gh-42-fix-bug",
+            current_path: worktreePath,
           }) satisfies TmuxPaneInfo,
       ),
     });
@@ -306,7 +312,7 @@ describe("close workspace", () => {
       enter: false,
     });
 
-    await rm("/tmp/worktrees/gh-42-fix-bug/.pitch", {
+    await rm(worktreePath, {
       recursive: true,
       force: true,
     });
@@ -372,7 +378,7 @@ describe("close workspace", () => {
     expect(dependencies.deleteWorkspaceRecord).not.toHaveBeenCalled();
   });
 
-  it("errors when the workspace is already closed", async () => {
+  it("retries cleanup when the workspace record is already closed", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
       readWorkspaceRecord: vi.fn(async () =>
@@ -390,8 +396,51 @@ describe("close workspace", () => {
         config,
         dependencies,
       ),
-    ).rejects.toThrow("Workspace already closed: gh-42-fix-bug");
+    ).resolves.toEqual(
+      makeWorkspaceRecord({
+        status: "closed",
+      }),
+    );
     expect(dependencies.killTmuxWindow).not.toHaveBeenCalled();
+    expect(dependencies.removeWorktree).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      workspace_name: "gh-42-fix-bug",
+    });
+    expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith(
+      "gh-42-fix-bug",
+    );
+    expect(dependencies.writeWorkspaceRecord).not.toHaveBeenCalled();
+  });
+
+  it("treats a missing worktree as already cleaned up", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      removeWorktree: vi.fn(async () => {
+        throw new GitWorktreeError(
+          "WORKTREE_MISSING",
+          "Worktree does not exist at /tmp/worktrees/gh-42-fix-bug",
+        );
+      }),
+    });
+
+    await expect(
+      closeWorkspace(
+        {
+          name: "gh-42-fix-bug",
+        },
+        config,
+        dependencies,
+      ),
+    ).resolves.toEqual(
+      makeWorkspaceRecord({
+        status: "closed",
+        updated_at: "2026-03-23T03:00:00.000Z",
+      }),
+    );
+    expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith(
+      "gh-42-fix-bug",
+    );
+    expect(dependencies.writeWorkspaceRecord).not.toHaveBeenCalled();
   });
 
   it("fails cleanup when the workspace repo is no longer configured", async () => {

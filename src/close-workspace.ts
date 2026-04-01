@@ -10,7 +10,7 @@ import {
   resolveExecutionEnvironment,
   resolveWorkspacePaths,
 } from "./execution-environment.js";
-import { removeWorktree } from "./git.js";
+import { GitWorktreeError, removeWorktree } from "./git.js";
 import {
   getTmuxWindowPaneInfo,
   killTmuxWindow,
@@ -112,6 +112,10 @@ function buildClosedWorkspaceRecord(
     status: "closed",
     updated_at: closedAt,
   };
+}
+
+function isMissingWorktreeError(error: unknown): boolean {
+  return error instanceof GitWorktreeError && error.code === "WORKTREE_MISSING";
 }
 
 const SHELL_COMMANDS = new Set([
@@ -226,28 +230,29 @@ export async function closeWorkspace(
     throw new CloseWorkspaceError(`Workspace not found: ${input.name}`);
   }
 
-  if (existingWorkspace.status === "closed") {
-    throw new CloseWorkspaceError(`Workspace already closed: ${input.name}`);
-  }
-
+  const isAlreadyClosed = existingWorkspace.status === "closed";
   const closedAt = dependencies.now().toISOString();
-  const closedWorkspace = buildClosedWorkspaceRecord(existingWorkspace, closedAt);
+  const closedWorkspace = isAlreadyClosed
+    ? existingWorkspace
+    : buildClosedWorkspaceRecord(existingWorkspace, closedAt);
   const shouldCleanupWorktree = input.cleanup_worktree ?? true;
   const repoConfig: RepoConfig | undefined = shouldCleanupWorktree
     ? resolveRepoConfig(config, existingWorkspace.repo)
     : undefined;
 
-  await tryGracefulAgentShutdown(existingWorkspace, dependencies);
+  if (!isAlreadyClosed) {
+    await tryGracefulAgentShutdown(existingWorkspace, dependencies);
 
-  try {
-    await dependencies.killTmuxWindow({
-      session_name: existingWorkspace.tmux_session,
-      window_name: existingWorkspace.tmux_window,
-    });
-  } catch (error: unknown) {
-    throw new CloseWorkspaceError(
-      `Failed to close tmux window for ${input.name}: ${formatError(error)}`,
-    );
+    try {
+      await dependencies.killTmuxWindow({
+        session_name: existingWorkspace.tmux_session,
+        window_name: existingWorkspace.tmux_window,
+      });
+    } catch (error: unknown) {
+      throw new CloseWorkspaceError(
+        `Failed to close tmux window for ${input.name}: ${formatError(error)}`,
+      );
+    }
   }
 
   try {
@@ -306,24 +311,38 @@ export async function closeWorkspace(
       workspace_name: existingWorkspace.name,
     });
   } catch (error: unknown) {
-    try {
-      await dependencies.writeWorkspaceRecord(closedWorkspace);
-    } catch (fallbackError: unknown) {
+    if (!isMissingWorktreeError(error)) {
+      if (isAlreadyClosed) {
+        throw new CloseWorkspaceError(
+          `Failed to clean up worktree for ${input.name}: ${formatError(error)}`,
+        );
+      }
+
+      try {
+        await dependencies.writeWorkspaceRecord(closedWorkspace);
+      } catch (fallbackError: unknown) {
+        throw new CloseWorkspaceError(
+          `Failed to clean up worktree for ${input.name}: ${formatError(error)}\n` +
+            `Fallback state write also failed: ${formatError(fallbackError)}`,
+        );
+      }
+
       throw new CloseWorkspaceError(
-        `Failed to clean up worktree for ${input.name}: ${formatError(error)}\n` +
-          `Fallback state write also failed: ${formatError(fallbackError)}`,
+        `Failed to clean up worktree for ${input.name}: ${formatError(error)}`,
       );
     }
-
-    throw new CloseWorkspaceError(
-      `Failed to clean up worktree for ${input.name}: ${formatError(error)}`,
-    );
   }
 
   try {
     await dependencies.deleteWorkspaceRecord(existingWorkspace.name);
     return closedWorkspace;
   } catch (error: unknown) {
+    if (isAlreadyClosed) {
+      throw new CloseWorkspaceError(
+        `Failed to delete workspace state for ${input.name}: ${formatError(error)}`,
+      );
+    }
+
     try {
       await dependencies.writeWorkspaceRecord(closedWorkspace);
     } catch (fallbackError: unknown) {
