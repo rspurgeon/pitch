@@ -1,5 +1,10 @@
 import { stdout as defaultStdout, stderr as defaultStderr } from "node:process";
-import { closeWorkspace, type CloseWorkspaceInput } from "./close-workspace.js";
+import {
+  closeWorkspace,
+  deleteWorkspace,
+  type CloseWorkspaceInput,
+  type DeleteWorkspaceInput,
+} from "./close-workspace.js";
 import { loadConfig } from "./config.js";
 import { createWorkspace, type CreateWorkspaceInput } from "./create-workspace.js";
 import { resumeWorkspace, type ResumeWorkspaceInput } from "./resume-workspace.js";
@@ -42,6 +47,7 @@ export interface CliDependencies {
   getWorkspace: typeof getWorkspace;
   resumeWorkspace: typeof resumeWorkspace;
   closeWorkspace: typeof closeWorkspace;
+  deleteWorkspace: typeof deleteWorkspace;
   stdout: { write(chunk: string): void };
   stderr: { write(chunk: string): void };
 }
@@ -53,6 +59,7 @@ const defaultDependencies: CliDependencies = {
   getWorkspace,
   resumeWorkspace,
   closeWorkspace,
+  deleteWorkspace,
   stdout: defaultStdout,
   stderr: defaultStderr,
 };
@@ -61,7 +68,8 @@ const BOOLEAN_FLAGS = new Set([
   "help",
   "json",
   "skip-prompt",
-  "keep-worktree",
+  "force",
+  "sync",
 ]);
 
 const STRING_FLAGS = new Set([
@@ -88,6 +96,13 @@ function setFlag(
   value: FlagValue,
 ): void {
   flags.set(normalizeFlagName(flagName), value);
+}
+
+function hasImplicitCreateFlags(flags: Map<string, FlagValue>): boolean {
+  const hasIssue = typeof flags.get("issue") === "string";
+  const hasPr = typeof flags.get("pr") === "string";
+
+  return hasIssue !== hasPr;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -152,6 +167,14 @@ function parseArgs(argv: string[]): ParsedArgs {
   }
 
   if (positionals.length === 0) {
+    if (hasImplicitCreateFlags(flags)) {
+      return {
+        verb: "create",
+        flags,
+        positionals,
+      };
+    }
+
     return {
       verb: "help",
       flags,
@@ -164,6 +187,14 @@ function parseArgs(argv: string[]): ParsedArgs {
   if (maybeAlias === "workspace") {
     remaining.shift();
     if (remaining.length === 0) {
+      if (hasImplicitCreateFlags(flags)) {
+        return {
+          verb: "create",
+          flags,
+          positionals: [],
+        };
+      }
+
       return {
         verb: "help",
         flags,
@@ -290,7 +321,7 @@ function buildCreateInput(flags: Map<string, FlagValue>): CreateWorkspaceInput {
     repo: readStringFlag(flags, "repo"),
     issue: readNumberFlag(flags, "issue"),
     pr: readNumberFlag(flags, "pr"),
-    slug: readStringFlag(flags, "slug") ?? "",
+    slug: readStringFlag(flags, "slug"),
     base_branch: readStringFlag(flags, "base-branch"),
     agent: readStringFlag(flags, "agent"),
     environment: readStringFlag(flags, "environment"),
@@ -330,6 +361,7 @@ function buildResumeInput(
     name: resolveWorkspaceName(flags, positionals),
     agent: readStringFlag(flags, "agent"),
     environment: readStringFlag(flags, "environment"),
+    sync: readBooleanFlag(flags, "sync"),
   };
 }
 
@@ -337,11 +369,18 @@ function buildCloseInput(
   flags: Map<string, FlagValue>,
   positionals: string[],
 ): CloseWorkspaceInput {
-  const keepWorktree = readBooleanFlag(flags, "keep-worktree");
   return {
     name: resolveWorkspaceName(flags, positionals),
-    cleanup_worktree:
-      keepWorktree === true ? false : undefined,
+  };
+}
+
+function buildDeleteInput(
+  flags: Map<string, FlagValue>,
+  positionals: string[],
+): DeleteWorkspaceInput {
+  return {
+    name: resolveWorkspaceName(flags, positionals),
+    force: readBooleanFlag(flags, "force"),
   };
 }
 
@@ -399,12 +438,12 @@ function formatWorkspaceList(workspaces: WorkspaceSummary[]): string {
 function buildHelpText(): string {
   return [
     "Usage:",
-    "  pitch create (--issue N | --pr N) --slug SLUG [options]",
+    "  pitch [create] (--issue N | --pr N) [--slug SLUG] [options]",
     "  pitch list [--repo REPO] [--status active|closed|all]",
     "  pitch get <name>",
-    "  pitch resume <name> [--agent AGENT] [--environment ENV]",
-    "  pitch close <name> [--keep-worktree]",
-    "  pitch delete <name> [--keep-worktree]",
+    "  pitch resume <name> [--agent AGENT] [--environment ENV] [--sync]",
+    "  pitch close <name>",
+    "  pitch delete <name> [--force]",
     "  pitch completion zsh",
     "  pitch workspace <command> ...",
     "",
@@ -416,16 +455,18 @@ function buildHelpText(): string {
     "  --base-branch BRANCH",
     "  --agent AGENT",
     "  --environment ENV",
+    "  --sync",
     "  --runtime native|docker",
     "  --model MODEL",
     "  --skip-prompt",
+    "  --force",
     "  --status active|closed|all",
     "  --name NAME",
-    "  --keep-worktree",
     "  --json",
     "  --help",
     "",
-    "The `workspace` noun is accepted as an alias for compatibility.",
+    "If --issue or --pr is provided without an explicit command, create is",
+    "implied.",
   ].join("\n");
 }
 
@@ -466,7 +507,7 @@ function buildZshCompletionScript(): string {
     "        '--repo[GitHub org/repo]:repo:' \\",
     "        '--issue[Issue number]:issue:' \\",
     "        '--pr[Pull request number]:pr:' \\",
-    "        '--slug[Workspace slug]:slug:' \\",
+    "        '--slug[Optional workspace slug suffix]:slug:' \\",
     "        '--base-branch[Base branch]:branch:' \\",
     "        '--agent[Configured agent]:agent:' \\",
     "        '--environment[Execution environment]:environment:' \\",
@@ -492,20 +533,29 @@ function buildZshCompletionScript(): string {
     "        '1:workspace:_pitch_workspaces'",
     "      ;;",
     "    resume)",
-    "      _pitch_complete_workspace_target \"$command_index\" && return",
-    "      _arguments -s -S \\",
+      "      _pitch_complete_workspace_target \"$command_index\" && return",
+      "      _arguments -s -S \\",
     "        '--name[Workspace name]:workspace:_pitch_workspaces' \\",
     "        '--agent[Configured agent]:agent:' \\",
     "        '--environment[Execution environment]:environment:' \\",
+    "        '--sync[Fast-forward PR workspaces to latest upstream head before resuming]' \\",
     "        '--json[Emit JSON]' \\",
     "        '--help[Show help]' \\",
     "        '1:workspace:_pitch_workspaces'",
     "      ;;",
-    "    close|delete)",
+    "    close)",
+      "      _pitch_complete_workspace_target \"$command_index\" && return",
+      "      _arguments -s -S \\",
+    "        '--name[Workspace name]:workspace:_pitch_workspaces' \\",
+    "        '--json[Emit JSON]' \\",
+    "        '--help[Show help]' \\",
+    "        '1:workspace:_pitch_workspaces'",
+    "      ;;",
+    "    delete)",
     "      _pitch_complete_workspace_target \"$command_index\" && return",
     "      _arguments -s -S \\",
     "        '--name[Workspace name]:workspace:_pitch_workspaces' \\",
-    "        '--keep-worktree[Keep the worktree after closing]' \\",
+    "        '--force[Delete even if the worktree has local changes]' \\",
     "        '--json[Emit JSON]' \\",
     "        '--help[Show help]' \\",
     "        '1:workspace:_pitch_workspaces'",
@@ -517,6 +567,11 @@ function buildZshCompletionScript(): string {
     "}",
     "",
     "_pitch() {",
+    "  if [[ \"${words[2]}\" == --* ]]; then",
+    "    _pitch_dispatch \"create\" 1",
+    "    return",
+    "  fi",
+    "",
     "  if (( CURRENT == 2 )); then",
     "    _values 'pitch command' \\",
     "      'create[Create a workspace]' \\",
@@ -531,6 +586,11 @@ function buildZshCompletionScript(): string {
     "  fi",
     "",
     "  if [[ \"${words[2]}\" == \"workspace\" ]]; then",
+    "    if [[ \"${words[3]}\" == --* ]]; then",
+    "      _pitch_dispatch \"create\" 2",
+    "      return",
+    "    fi",
+    "",
     "    if (( CURRENT == 3 )); then",
     "      _values 'pitch workspace command' \\",
     "        'create[Create a workspace]' \\",
@@ -617,13 +677,23 @@ async function executeCommand(
         warnings,
       };
     }
-    case "close":
+    case "close": {
+      const config = await dependencies.loadConfig();
+      return {
+        command: parsed.verb,
+        result: await dependencies.closeWorkspace(
+          buildCloseInput(parsed.flags, parsed.positionals),
+          config,
+        ),
+        warnings: [],
+      };
+    }
     case "delete": {
       const config = await dependencies.loadConfig();
       return {
-        command: "close",
-        result: await dependencies.closeWorkspace(
-          buildCloseInput(parsed.flags, parsed.positionals),
+        command: parsed.verb,
+        result: await dependencies.deleteWorkspace(
+          buildDeleteInput(parsed.flags, parsed.positionals),
           config,
         ),
         warnings: [],

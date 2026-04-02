@@ -8,8 +8,11 @@ import {
   buildWorktreePath,
   createWorktree,
   ensureWorkspaceWorktree,
+  fastForwardWorktree,
   fetchGitRef,
+  findManagedWorktreeForBranch,
   GitWorktreeError,
+  listWorktreesForBranch,
   removeWorktree,
   restoreWorktree,
 } from "../git.js";
@@ -124,6 +127,28 @@ describe("git worktree management", () => {
     ).resolves.not.toContain(created.worktree_path);
   });
 
+  it("force-removes a dirty worktree", async () => {
+    const created = await createWorktree({
+      repo,
+      workspace_name: "gh-124-force-remove",
+      branch: "gh-124-force-remove",
+      start_point: "main",
+    });
+
+    await writeFile(join(created.worktree_path, "DIRTY.txt"), "dirty\n", "utf-8");
+
+    const removed = await removeWorktree({
+      repo,
+      workspace_name: "gh-124-force-remove",
+      force: true,
+    });
+
+    expect(removed).toEqual(created);
+    await expect(
+      git(["worktree", "list", "--porcelain"], repo.main_worktree),
+    ).resolves.not.toContain(created.worktree_path);
+  });
+
   it("fails gracefully when the main worktree does not exist", async () => {
     await expect(
       createWorktree({
@@ -218,6 +243,31 @@ describe("git worktree management", () => {
     ).resolves.toBe("feature/token-refresh");
   });
 
+  it("can restore a second worktree for a branch that is already checked out", async () => {
+    const existingPath = join(tempRoot, "outside-feature-token-refresh");
+    await git(
+      ["worktree", "add", "-b", "feature/token-refresh", existingPath, "main"],
+      repo.main_worktree,
+    );
+
+    const ensured = await ensureWorkspaceWorktree({
+      repo,
+      workspace_name: "pr-543-debug-ci",
+      branch: "feature/token-refresh",
+      start_point: "main",
+      allow_branch_reuse: true,
+    });
+
+    expect(ensured).toEqual({
+      branch: "feature/token-refresh",
+      worktree_path: join(repo.worktree_base, "pr-543-debug-ci"),
+      adopted: true,
+    });
+    await expect(
+      git(["rev-parse", "--abbrev-ref", "HEAD"], ensured.worktree_path),
+    ).resolves.toBe("feature/token-refresh");
+  });
+
   it("surfaces a typed error when the target branch is already checked out elsewhere", async () => {
     await git(["checkout", "-b", "feature/in-use"], repo.main_worktree);
 
@@ -232,6 +282,69 @@ describe("git worktree management", () => {
       name: "GitWorktreeError",
       code: "BRANCH_IN_USE",
     });
+  });
+
+  it("finds a managed worktree for a checked-out branch", async () => {
+    const created = await createWorktree({
+      repo,
+      workspace_name: "gh-353-env-yaml-tag",
+      branch: "gh-353-env-yaml-tag",
+      start_point: "main",
+    });
+
+    await git(
+      ["branch", "-m", "gh-353-env-yaml-tag", "feature/example"],
+      created.worktree_path,
+    );
+
+    await expect(
+      findManagedWorktreeForBranch(repo, "feature/example"),
+    ).resolves.toEqual({
+      workspace_name: "gh-353-env-yaml-tag",
+      branch: "feature/example",
+      worktree_path: join(repo.worktree_base, "gh-353-env-yaml-tag"),
+    });
+  });
+
+  it("lists all worktrees currently checking out a branch", async () => {
+    await createWorktree({
+      repo,
+      workspace_name: "pr-543-debug-ci",
+      branch: "feature/token-refresh",
+      start_point: "main",
+    });
+    await ensureWorkspaceWorktree({
+      repo,
+      workspace_name: "pr-543-e2e",
+      branch: "feature/token-refresh",
+      start_point: "main",
+      allow_branch_reuse: true,
+    });
+
+    await expect(
+      listWorktreesForBranch(repo, "feature/token-refresh"),
+    ).resolves.toEqual([
+      {
+        branch: "feature/token-refresh",
+        worktree_path: join(repo.worktree_base, "pr-543-debug-ci"),
+      },
+      {
+        branch: "feature/token-refresh",
+        worktree_path: join(repo.worktree_base, "pr-543-e2e"),
+      },
+    ]);
+  });
+
+  it("ignores branch worktrees that live outside the managed worktree base", async () => {
+    const outsidePath = join(tempRoot, "outside-feature-example");
+    await git(
+      ["worktree", "add", "-b", "feature/outside", outsidePath, "main"],
+      repo.main_worktree,
+    );
+
+    await expect(
+      findManagedWorktreeForBranch(repo, "feature/outside"),
+    ).resolves.toBeNull();
   });
 
   it("normalizes configured and registered worktree paths before adoption", async () => {
@@ -437,5 +550,42 @@ describe("git worktree management", () => {
     await expect(
       git(["show-ref", "--verify", "refs/pitch/test/main"], repo.main_worktree),
     ).resolves.toContain("refs/pitch/test/main");
+  });
+
+  it("fast-forwards a worktree to a newer target ref", async () => {
+    await git(["branch", "feature/sync", "main"], repo.main_worktree);
+
+    const worktree = await ensureWorkspaceWorktree({
+      repo,
+      workspace_name: "pr-690",
+      branch: "feature/sync",
+      start_point: "main",
+    });
+
+    const targetPath = join(tempRoot, "feature-sync-target");
+    await git(
+      ["worktree", "add", "-b", "feature/sync-target", targetPath, "feature/sync"],
+      repo.main_worktree,
+    );
+    await writeFile(join(targetPath, "SYNC.txt"), "updated\n", "utf-8");
+    await git(["add", "SYNC.txt"], targetPath);
+    await git(["commit", "-m", "sync target"], targetPath);
+
+    await fastForwardWorktree({
+      worktree_path: worktree.worktree_path,
+      target_ref: "feature/sync-target",
+    });
+
+    await expect(
+      git(["rev-parse", "--abbrev-ref", "HEAD"], worktree.worktree_path),
+    ).resolves.toBe("feature/sync");
+    await expect(
+      git(["status", "--short"], worktree.worktree_path),
+    ).resolves.toBe("");
+    await expect(
+      git(["rev-parse", "feature/sync"], repo.main_worktree),
+    ).resolves.toBe(
+      await git(["rev-parse", "feature/sync-target"], repo.main_worktree),
+    );
   });
 });

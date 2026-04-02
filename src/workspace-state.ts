@@ -43,6 +43,7 @@ export const AgentSessionSchema = z.object({
 
 export const WorkspaceRecordSchema = z.object({
   name: WorkspaceNameSchema,
+  worktree_name: WorkspaceNameSchema.optional(),
   repo: z.string(),
   source_kind: WorkspaceSourceKindSchema,
   source_number: z.number().int().positive(),
@@ -78,6 +79,12 @@ export type ExecutionEnvironmentKind = z.infer<
 export type WorkspaceStatus = z.infer<typeof WorkspaceStatusSchema>;
 export type WorkspaceSourceKind = z.infer<typeof WorkspaceSourceKindSchema>;
 export type ListWorkspacesOptions = z.infer<typeof ListWorkspacesOptionsSchema>;
+
+export function getWorkspaceWorktreeName(
+  workspace: Pick<WorkspaceRecord, "name"> & { worktree_name?: string },
+): string {
+  return workspace.worktree_name ?? workspace.name;
+}
 
 export class WorkspaceStateError extends Error {
   constructor(message: string) {

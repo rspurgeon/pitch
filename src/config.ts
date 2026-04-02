@@ -58,6 +58,16 @@ const BootstrapPromptTemplatesSchema = z
   })
   .strict();
 
+const PaneCommandsSchema = z
+  .object({
+    top_right: z.preprocess(nullToUndefined, NonEmptyTrimmedStringSchema.optional()),
+    bottom_right: z.preprocess(
+      nullToUndefined,
+      NonEmptyTrimmedStringSchema.optional(),
+    ),
+  })
+  .strict();
+
 const SharedPathModeSchema = z.enum(["ro", "rw"]);
 
 const SharedPathSchema = z.object({
@@ -123,6 +133,10 @@ const RepoConfigSchema = z
     bootstrap_prompts: z.preprocess(
       nullToUndefined,
       BootstrapPromptTemplatesSchema.default({}),
+    ),
+    pane_commands: z.preprocess(
+      nullToUndefined,
+      PaneCommandsSchema.default({}),
     ),
     agent_defaults: z.preprocess(
       nullToUndefined,
@@ -247,6 +261,7 @@ export interface RepoConfig {
   tmux_session: string;
   additional_paths: string[];
   bootstrap_prompts: BootstrapPromptTemplates;
+  pane_commands?: PaneCommands;
   agent_defaults: AgentOverride;
   agent_overrides: Record<string, AgentOverride>;
 }
@@ -254,6 +269,11 @@ export interface RepoConfig {
 export interface BootstrapPromptTemplates {
   issue?: string;
   pr?: string;
+}
+
+export interface PaneCommands {
+  top_right?: string;
+  bottom_right?: string;
 }
 
 export interface AgentConfig {
@@ -352,6 +372,7 @@ function normalizeRepoConfig(
     tmux_session: repoConfig.tmux_session ?? deriveTmuxSession(repoName),
     additional_paths: repoConfig.additional_paths,
     bootstrap_prompts: repoConfig.bootstrap_prompts,
+    pane_commands: repoConfig.pane_commands,
     agent_defaults: repoConfig.agent_defaults,
     agent_overrides: repoConfig.agent_overrides,
   };

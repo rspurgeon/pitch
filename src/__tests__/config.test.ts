@@ -75,6 +75,10 @@ describe("loadConfig", () => {
         tmux_session: "kongctl",
         additional_paths: ["/home/rspurgeon/go"],
         bootstrap_prompts: {},
+        pane_commands: {
+          top_right: "nvim .",
+          bottom_right: "make build",
+        },
         agent_defaults: {
           args: [],
           env: {},
@@ -184,6 +188,7 @@ describe("loadConfig", () => {
         tmux_session: "kongctl",
         additional_paths: [],
         bootstrap_prompts: {},
+        pane_commands: {},
         agent_defaults: {
           args: [],
           env: {},

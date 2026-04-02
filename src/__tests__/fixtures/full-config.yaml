@@ -10,6 +10,9 @@ repos:
     default_agent: claude-enterprise
     default_environment: sandbox-vm
     main_worktree: ~/dev/kong/kongctl
+    pane_commands:
+      top_right: nvim .
+      bottom_right: make build
     additional_paths:
       - /home/rspurgeon/go
     agent_overrides:

@@ -1,14 +1,17 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { EnsureCodexTrustedPathInput } from "../codex-trust.js";
 import type { PitchConfig } from "../config.js";
 import { GitWorktreeError } from "../git.js";
 import {
   closeWorkspace,
+  deleteWorkspace,
   CloseWorkspaceError,
-  type CloseWorkspaceDependencies,
+  DeleteWorkspaceError,
+  type WorkspaceLifecycleDependencies,
 } from "../close-workspace.js";
+import { buildVmAgentHostMarkerPath } from "../execution-environment.js";
 import type { TmuxPaneInfo } from "../tmux.js";
 import type { WorkspaceRecord } from "../workspace-state.js";
 
@@ -52,8 +55,9 @@ function makeConfig(): PitchConfig {
 function makeWorkspaceRecord(
   overrides: Partial<WorkspaceRecord> = {},
 ): WorkspaceRecord {
-  return {
+  const workspace: WorkspaceRecord = {
     name: "gh-42-fix-bug",
+    worktree_name: "gh-42-fix-bug",
     repo: "kong/kongctl",
     source_kind: "issue",
     source_number: 42,
@@ -78,11 +82,17 @@ function makeWorkspaceRecord(
     updated_at: "2026-03-22T20:30:00.000Z",
     ...overrides,
   };
+
+  if (overrides.worktree_name === undefined) {
+    workspace.worktree_name = workspace.name;
+  }
+
+  return workspace;
 }
 
 function makeDependencies(
-  overrides: Partial<CloseWorkspaceDependencies> = {},
-): CloseWorkspaceDependencies {
+  overrides: Partial<WorkspaceLifecycleDependencies> = {},
+): WorkspaceLifecycleDependencies {
   return {
     deleteOpencodeConfig: vi.fn(async () => undefined),
     deleteWorkspaceRecord: vi.fn(async () => true),
@@ -94,15 +104,21 @@ function makeDependencies(
           current_path: "/tmp/worktrees/gh-42-fix-bug",
         }) satisfies TmuxPaneInfo,
     ),
+    isWorktreeDirty: vi.fn(async () => false),
     killTmuxWindow: vi.fn(async () => true),
+    listWorkspaceRecords: vi.fn(async () => [makeWorkspaceRecord()]),
     readWorkspaceRecord: vi.fn(async () => makeWorkspaceRecord()),
-    sendKeysToPane: vi.fn(async () => undefined),
-    writeWorkspaceRecord: vi.fn(async (workspace: WorkspaceRecord) => workspace),
+    removeCodexTrustedPath: vi.fn(
+      async (_input: EnsureCodexTrustedPathInput) => undefined,
+    ),
     removeWorktree: vi.fn(async () => ({
       branch: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     })),
-    removeCodexTrustedPath: vi.fn(async (_input: EnsureCodexTrustedPathInput) => undefined),
+    sendKeysToPane: vi.fn(async () => undefined),
+    writeWorkspaceRecord: vi.fn(
+      async (workspace: WorkspaceRecord) => workspace,
+    ),
     sleep: vi.fn(async () => undefined),
     now: vi.fn(() => new Date("2026-03-23T03:00:00.000Z")),
     ...overrides,
@@ -110,7 +126,7 @@ function makeDependencies(
 }
 
 describe("close workspace", () => {
-  it("fully cleans up the workspace by default", async () => {
+  it("closes an active workspace without deleting state or worktree", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies();
 
@@ -128,55 +144,14 @@ describe("close workspace", () => {
         updated_at: "2026-03-23T03:00:00.000Z",
       }),
     );
-    expect(dependencies.killTmuxWindow).toHaveBeenCalledWith({
-      session_name: "kongctl",
-      window_name: "gh-42-fix-bug",
-    });
     expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
       pane_id: "%1",
       command: "C-c",
       enter: false,
     });
-    expect(dependencies.removeWorktree).toHaveBeenCalledWith({
-      repo: config.repos["kong/kongctl"],
-      workspace_name: "gh-42-fix-bug",
-    });
-    expect(dependencies.deleteOpencodeConfig).toHaveBeenCalledWith(
-      "gh-42-fix-bug",
-    );
-    expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith(
-      "gh-42-fix-bug",
-    );
-    expect(dependencies.writeWorkspaceRecord).not.toHaveBeenCalled();
-  });
-
-  it("persists a closed record when cleanup_worktree is false", async () => {
-    const config = makeConfig();
-    const dependencies = makeDependencies();
-
-    const workspace = await closeWorkspace(
-      {
-        name: "gh-42-fix-bug",
-        cleanup_worktree: false,
-      },
-      config,
-      dependencies,
-    );
-
-    expect(workspace).toEqual(
-      makeWorkspaceRecord({
-        status: "closed",
-        updated_at: "2026-03-23T03:00:00.000Z",
-      }),
-    );
     expect(dependencies.killTmuxWindow).toHaveBeenCalledWith({
       session_name: "kongctl",
       window_name: "gh-42-fix-bug",
-    });
-    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
-      pane_id: "%1",
-      command: "C-c",
-      enter: false,
     });
     expect(dependencies.writeWorkspaceRecord).toHaveBeenCalledWith(
       makeWorkspaceRecord({
@@ -184,19 +159,19 @@ describe("close workspace", () => {
         updated_at: "2026-03-23T03:00:00.000Z",
       }),
     );
-    expect(dependencies.deleteOpencodeConfig).toHaveBeenCalledWith(
-      "gh-42-fix-bug",
-    );
     expect(dependencies.removeWorktree).not.toHaveBeenCalled();
     expect(dependencies.deleteWorkspaceRecord).not.toHaveBeenCalled();
+    expect(dependencies.deleteOpencodeConfig).not.toHaveBeenCalled();
   });
 
-  it("still closes when deleting the OpenCode config fails", async () => {
+  it("is idempotent for an already closed workspace", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
-      deleteOpencodeConfig: vi.fn(async () => {
-        throw new Error("config delete failed");
-      }),
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          status: "closed",
+        }),
+      ),
     });
 
     await expect(
@@ -210,72 +185,22 @@ describe("close workspace", () => {
     ).resolves.toEqual(
       makeWorkspaceRecord({
         status: "closed",
-        updated_at: "2026-03-23T03:00:00.000Z",
       }),
     );
-    expect(dependencies.removeWorktree).toHaveBeenCalledWith({
-      repo: config.repos["kong/kongctl"],
-      workspace_name: "gh-42-fix-bug",
-    });
-    expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith(
-      "gh-42-fix-bug",
-    );
+    expect(dependencies.killTmuxWindow).not.toHaveBeenCalled();
     expect(dependencies.writeWorkspaceRecord).not.toHaveBeenCalled();
   });
 
-  it("treats a missing tmux window as a successful close", async () => {
-    const config = makeConfig();
-    const dependencies = makeDependencies({
-      killTmuxWindow: vi.fn(async () => false),
-    });
-
-    await expect(
-      closeWorkspace(
-        {
-          name: "gh-42-fix-bug",
-        },
-        config,
-        dependencies,
-      ),
-    ).resolves.toEqual(
-      makeWorkspaceRecord({
-        status: "closed",
-        updated_at: "2026-03-23T03:00:00.000Z",
-      }),
-    );
-  });
-
-  it("skips graceful shutdown when pane 0 is already a shell", async () => {
-    const config = makeConfig();
-    const dependencies = makeDependencies({
-      getTmuxWindowPaneInfo: vi.fn(
-        async () =>
-          ({
-            pane_id: "%1",
-            current_command: "zsh",
-            current_path: "/tmp/worktrees/gh-42-fix-bug",
-          }) satisfies TmuxPaneInfo,
-      ),
-    });
-
-    await closeWorkspace(
-      {
-        name: "gh-42-fix-bug",
-      },
-      config,
-      dependencies,
-    );
-
-    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
-    expect(dependencies.killTmuxWindow).toHaveBeenCalled();
-  });
-
-  it("sends Ctrl-C to ssh-backed vm agent panes during graceful shutdown", async () => {
+  it("sends Ctrl-C to ssh-backed vm agent panes before closing", async () => {
     const worktreePath = await mkdtemp(
       join(process.cwd(), ".tmp-close-workspace-vm-agent-"),
     );
-    await mkdir(join(worktreePath, ".pitch"), { recursive: true });
-    await writeFile(join(worktreePath, ".pitch", "vm-agent-active"), "active");
+    const markerPath = buildVmAgentHostMarkerPath(
+      worktreePath,
+      "gh-42-fix-bug",
+    );
+    await mkdir(dirname(markerPath), { recursive: true });
+    await writeFile(markerPath, "active");
 
     const config = makeConfig();
     const dependencies = makeDependencies({
@@ -318,27 +243,7 @@ describe("close workspace", () => {
     });
   });
 
-  it("still closes the workspace when graceful shutdown inspection fails", async () => {
-    const config = makeConfig();
-    const dependencies = makeDependencies({
-      getTmuxWindowPaneInfo: vi.fn(async () => {
-        throw new Error("pane inspection failed");
-      }),
-    });
-
-    await closeWorkspace(
-      {
-        name: "gh-42-fix-bug",
-      },
-      config,
-      dependencies,
-    );
-
-    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
-    expect(dependencies.killTmuxWindow).toHaveBeenCalled();
-  });
-
-  it("errors when closing the tmux window fails", async () => {
+  it("fails when closing the tmux window fails", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
       killTmuxWindow: vi.fn(async () => {
@@ -355,211 +260,7 @@ describe("close workspace", () => {
         dependencies,
       ),
     ).rejects.toThrow("Failed to close tmux window for gh-42-fix-bug");
-    expect(dependencies.removeWorktree).not.toHaveBeenCalled();
-    expect(dependencies.deleteWorkspaceRecord).not.toHaveBeenCalled();
-  });
-
-  it("errors when the workspace does not exist", async () => {
-    const config = makeConfig();
-    const dependencies = makeDependencies({
-      readWorkspaceRecord: vi.fn(async () => null),
-    });
-
-    await expect(
-      closeWorkspace(
-        {
-          name: "gh-404-missing",
-        },
-        config,
-        dependencies,
-      ),
-    ).rejects.toThrow("Workspace not found: gh-404-missing");
-    expect(dependencies.killTmuxWindow).not.toHaveBeenCalled();
-    expect(dependencies.deleteWorkspaceRecord).not.toHaveBeenCalled();
-  });
-
-  it("retries cleanup when the workspace record is already closed", async () => {
-    const config = makeConfig();
-    const dependencies = makeDependencies({
-      readWorkspaceRecord: vi.fn(async () =>
-        makeWorkspaceRecord({
-          status: "closed",
-        }),
-      ),
-    });
-
-    await expect(
-      closeWorkspace(
-        {
-          name: "gh-42-fix-bug",
-        },
-        config,
-        dependencies,
-      ),
-    ).resolves.toEqual(
-      makeWorkspaceRecord({
-        status: "closed",
-      }),
-    );
-    expect(dependencies.killTmuxWindow).not.toHaveBeenCalled();
-    expect(dependencies.removeWorktree).toHaveBeenCalledWith({
-      repo: config.repos["kong/kongctl"],
-      workspace_name: "gh-42-fix-bug",
-    });
-    expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith(
-      "gh-42-fix-bug",
-    );
     expect(dependencies.writeWorkspaceRecord).not.toHaveBeenCalled();
-  });
-
-  it("treats a missing worktree as already cleaned up", async () => {
-    const config = makeConfig();
-    const dependencies = makeDependencies({
-      removeWorktree: vi.fn(async () => {
-        throw new GitWorktreeError(
-          "WORKTREE_MISSING",
-          "Worktree does not exist at /tmp/worktrees/gh-42-fix-bug",
-        );
-      }),
-    });
-
-    await expect(
-      closeWorkspace(
-        {
-          name: "gh-42-fix-bug",
-        },
-        config,
-        dependencies,
-      ),
-    ).resolves.toEqual(
-      makeWorkspaceRecord({
-        status: "closed",
-        updated_at: "2026-03-23T03:00:00.000Z",
-      }),
-    );
-    expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith(
-      "gh-42-fix-bug",
-    );
-    expect(dependencies.writeWorkspaceRecord).not.toHaveBeenCalled();
-  });
-
-  it("fails cleanup when the workspace repo is no longer configured", async () => {
-    const config = makeConfig();
-    const dependencies = makeDependencies();
-
-    await expect(
-      closeWorkspace(
-        {
-          name: "gh-42-fix-bug",
-        },
-        {
-          ...config,
-          repos: {},
-        },
-        dependencies,
-      ),
-    ).rejects.toThrow("Repo is not configured: kong/kongctl");
-    expect(dependencies.killTmuxWindow).not.toHaveBeenCalled();
-    expect(dependencies.removeWorktree).not.toHaveBeenCalled();
-  });
-
-  it("fails when worktree cleanup fails", async () => {
-    const config = makeConfig();
-    const dependencies = makeDependencies({
-      removeWorktree: vi.fn(async () => {
-        throw new Error("worktree remove failed");
-      }),
-    });
-
-    await expect(
-      closeWorkspace(
-        {
-          name: "gh-42-fix-bug",
-        },
-        config,
-        dependencies,
-      ),
-    ).rejects.toThrow(
-      "Failed to clean up worktree for gh-42-fix-bug: worktree remove failed",
-    );
-    expect(dependencies.deleteWorkspaceRecord).not.toHaveBeenCalled();
-    expect(dependencies.writeWorkspaceRecord).toHaveBeenCalledWith(
-      makeWorkspaceRecord({
-        status: "closed",
-        updated_at: "2026-03-23T03:00:00.000Z",
-      }),
-    );
-  });
-
-  it("reports fallback failure when worktree cleanup and closed-state write both fail", async () => {
-    const config = makeConfig();
-    const dependencies = makeDependencies({
-      removeWorktree: vi.fn(async () => {
-        throw new Error("worktree remove failed");
-      }),
-      writeWorkspaceRecord: vi.fn(async () => {
-        throw new Error("fallback write failed");
-      }),
-    });
-
-    await expect(
-      closeWorkspace(
-        {
-          name: "gh-42-fix-bug",
-        },
-        config,
-        dependencies,
-      ),
-    ).rejects.toThrow("Fallback state write also failed: fallback write failed");
-  });
-
-  it("falls back to a persisted closed record if deleting workspace state fails", async () => {
-    const config = makeConfig();
-    const dependencies = makeDependencies({
-      deleteWorkspaceRecord: vi.fn(async () => {
-        throw new Error("state delete failed");
-      }),
-    });
-
-    await expect(
-      closeWorkspace(
-        {
-          name: "gh-42-fix-bug",
-        },
-        config,
-        dependencies,
-      ),
-    ).rejects.toThrow(
-      "Failed to delete workspace state for gh-42-fix-bug: state delete failed",
-    );
-    expect(dependencies.writeWorkspaceRecord).toHaveBeenCalledWith(
-      makeWorkspaceRecord({
-        status: "closed",
-        updated_at: "2026-03-23T03:00:00.000Z",
-      }),
-    );
-  });
-
-  it("reports fallback failure when deleting state and fallback write both fail", async () => {
-    const config = makeConfig();
-    const dependencies = makeDependencies({
-      deleteWorkspaceRecord: vi.fn(async () => {
-        throw new Error("state delete failed");
-      }),
-      writeWorkspaceRecord: vi.fn(async () => {
-        throw new Error("fallback write failed");
-      }),
-    });
-
-    await expect(
-      closeWorkspace(
-        {
-          name: "gh-42-fix-bug",
-        },
-        config,
-        dependencies,
-      ),
-    ).rejects.toThrow("Fallback state write also failed: fallback write failed");
   });
 
   it("rejects invalid input before reading state", async () => {
@@ -575,6 +276,229 @@ describe("close workspace", () => {
         dependencies,
       ),
     ).rejects.toThrow(CloseWorkspaceError);
+    expect(dependencies.readWorkspaceRecord).not.toHaveBeenCalled();
+  });
+});
+
+describe("delete workspace", () => {
+  it("deletes a closed workspace and its worktree by default", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          status: "closed",
+        }),
+      ),
+    });
+
+    const workspace = await deleteWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(workspace).toEqual(
+      makeWorkspaceRecord({
+        status: "closed",
+      }),
+    );
+    expect(dependencies.isWorktreeDirty).toHaveBeenCalledWith(
+      "/tmp/worktrees/gh-42-fix-bug",
+    );
+    expect(dependencies.removeWorktree).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      workspace_name: "gh-42-fix-bug",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      force: undefined,
+    });
+    expect(dependencies.removeCodexTrustedPath).toHaveBeenCalled();
+    expect(dependencies.deleteOpencodeConfig).toHaveBeenCalledWith(
+      "gh-42-fix-bug",
+    );
+    expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith(
+      "gh-42-fix-bug",
+    );
+  });
+
+  it("deletes an active workspace after first persisting it as closed", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies();
+
+    await deleteWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.killTmuxWindow).toHaveBeenCalledWith({
+      session_name: "kongctl",
+      window_name: "gh-42-fix-bug",
+    });
+    expect(dependencies.writeWorkspaceRecord).toHaveBeenCalledWith(
+      makeWorkspaceRecord({
+        status: "closed",
+        updated_at: "2026-03-23T03:00:00.000Z",
+      }),
+    );
+    expect(dependencies.removeWorktree).toHaveBeenCalled();
+    expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith(
+      "gh-42-fix-bug",
+    );
+  });
+
+  it("removes only the session record when another workspace shares the worktree", async () => {
+    const config = makeConfig();
+    const primaryWorkspace = makeWorkspaceRecord({
+      name: "pr-690-foo-bar",
+      worktree_name: "gh-353-env-yaml-tag",
+      source_kind: "pr",
+      source_number: 690,
+      branch: "gh-353-env-yaml-tag",
+      worktree_path: "/tmp/worktrees/gh-353-env-yaml-tag",
+      tmux_window: "pr-690-foo-bar",
+    });
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () => primaryWorkspace),
+      listWorkspaceRecords: vi.fn(async () => [
+        primaryWorkspace,
+        makeWorkspaceRecord({
+          name: "pr-690-e2e",
+          worktree_name: "gh-353-env-yaml-tag",
+          source_kind: "pr",
+          source_number: 690,
+          branch: "gh-353-env-yaml-tag",
+          worktree_path: "/tmp/worktrees/gh-353-env-yaml-tag",
+          tmux_window: "pr-690-e2e",
+        }),
+      ]),
+    });
+
+    const workspace = await deleteWorkspace(
+      {
+        name: "pr-690-foo-bar",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(workspace).toEqual(
+      makeWorkspaceRecord({
+        name: "pr-690-foo-bar",
+        worktree_name: "gh-353-env-yaml-tag",
+        source_kind: "pr",
+        source_number: 690,
+        branch: "gh-353-env-yaml-tag",
+        worktree_path: "/tmp/worktrees/gh-353-env-yaml-tag",
+        tmux_window: "pr-690-foo-bar",
+        status: "closed",
+        updated_at: "2026-03-23T03:00:00.000Z",
+      }),
+    );
+    expect(dependencies.isWorktreeDirty).not.toHaveBeenCalled();
+    expect(dependencies.removeWorktree).not.toHaveBeenCalled();
+    expect(dependencies.removeCodexTrustedPath).not.toHaveBeenCalled();
+    expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith(
+      "pr-690-foo-bar",
+    );
+  });
+
+  it("refuses to delete a dirty worktree without force", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      isWorktreeDirty: vi.fn(async () => true),
+    });
+
+    await expect(
+      deleteWorkspace(
+        {
+          name: "gh-42-fix-bug",
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow(
+      "contains modified or untracked files; rerun with --force to delete it.",
+    );
+    expect(dependencies.killTmuxWindow).not.toHaveBeenCalled();
+    expect(dependencies.writeWorkspaceRecord).not.toHaveBeenCalled();
+    expect(dependencies.removeWorktree).not.toHaveBeenCalled();
+  });
+
+  it("allows force deletion of a dirty worktree", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      isWorktreeDirty: vi.fn(async () => true),
+    });
+
+    await deleteWorkspace(
+      {
+        name: "gh-42-fix-bug",
+        force: true,
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.isWorktreeDirty).not.toHaveBeenCalled();
+    expect(dependencies.removeWorktree).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      workspace_name: "gh-42-fix-bug",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      force: true,
+    });
+  });
+
+  it("treats a missing worktree as already cleaned up", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          status: "closed",
+        }),
+      ),
+      removeWorktree: vi.fn(async () => {
+        throw new GitWorktreeError(
+          "WORKTREE_MISSING",
+          "Worktree does not exist at /tmp/worktrees/gh-42-fix-bug",
+        );
+      }),
+    });
+
+    await expect(
+      deleteWorkspace(
+        {
+          name: "gh-42-fix-bug",
+        },
+        config,
+        dependencies,
+      ),
+    ).resolves.toEqual(
+      makeWorkspaceRecord({
+        status: "closed",
+      }),
+    );
+    expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith(
+      "gh-42-fix-bug",
+    );
+  });
+
+  it("rejects invalid input before reading state", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies();
+
+    await expect(
+      deleteWorkspace(
+        {
+          name: "",
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow(DeleteWorkspaceError);
     expect(dependencies.readWorkspaceRecord).not.toHaveBeenCalled();
   });
 });

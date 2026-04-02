@@ -14,7 +14,7 @@ import { ensureCodexTrustedPath } from "./codex-trust.js";
 import {
   ensureWorkspaceWorktree,
   fetchGitRef,
-  GitWorktreeError,
+  findManagedWorktreeForBranch,
   removeWorktree,
 } from "./git.js";
 import { runGitHubLifecycle } from "./github-lifecycle.js";
@@ -38,9 +38,11 @@ import {
   killTmuxWindow,
   sendKeysToPane,
   tmuxWindowExists,
+  type TmuxPaneLayout,
 } from "./tmux.js";
 import {
   deleteWorkspaceRecord,
+  getWorkspaceWorktreeName,
   listWorkspaceRecords,
   readWorkspaceRecord,
   WorkspaceRecordSchema,
@@ -50,6 +52,7 @@ import {
 import { buildWorkspaceToolResponse } from "./workspace-tool-response.js";
 import { formatAgentPaneCommand } from "./agent-pane-command.js";
 import { ensureOpencodeConfig } from "./opencode-config.js";
+import { sendConfiguredPaneCommands } from "./pane-commands.js";
 import { shellEscape } from "./shell.js";
 
 export const CreateWorkspaceInputSchema = z
@@ -64,7 +67,8 @@ export const CreateWorkspaceInputSchema = z
       .regex(
         /^[a-z0-9][a-z0-9-]*$/,
         "Slug must use lowercase letters, numbers, and hyphens",
-      ),
+      )
+      .optional(),
     base_branch: z.string().trim().min(1).optional(),
     agent: z.string().trim().min(1).optional(),
     environment: z.string().trim().min(1).optional(),
@@ -100,6 +104,7 @@ export interface CreateWorkspaceDependencies {
   deleteWorkspaceRecord: typeof deleteWorkspaceRecord;
   ensureWorkspaceWorktree: typeof ensureWorkspaceWorktree;
   fetchGitRef: typeof fetchGitRef;
+  findManagedWorktreeForBranch: typeof findManagedWorktreeForBranch;
   removeWorktree: typeof removeWorktree;
   readPullRequest: typeof readPullRequest;
   ensureTmuxSession: typeof ensureTmuxSession;
@@ -129,6 +134,7 @@ export class CreateWorkspaceError extends Error {
 
 interface RollbackState {
   workspace_name: string;
+  worktree_name: string;
   repo_config: RepoConfig;
   worktree_created: boolean;
   tmux_window_created: boolean;
@@ -165,6 +171,7 @@ const defaultDependencies: CreateWorkspaceDependencies = {
   deleteWorkspaceRecord,
   ensureWorkspaceWorktree,
   fetchGitRef,
+  findManagedWorktreeForBranch,
   removeWorktree,
   readPullRequest,
   ensureTmuxSession,
@@ -257,12 +264,20 @@ function resolveAgentName(
   return resolved;
 }
 
-function buildIssueWorkspaceName(issue: number, slug: string): string {
-  return `gh-${issue}-${slug}`;
+function appendSlug(baseName: string, slug?: string): string {
+  return slug === undefined ? baseName : `${baseName}-${slug}`;
 }
 
-function buildPullRequestWorkspaceName(pr: number, slug: string): string {
-  return `pr-${pr}-${slug}`;
+function buildIssueWorkspaceName(issue: number, slug?: string): string {
+  return appendSlug(`gh-${issue}`, slug);
+}
+
+function buildPullRequestWorkspaceName(pr: number, slug?: string): string {
+  return appendSlug(`pr-${pr}`, slug);
+}
+
+function buildPullRequestWorktreeName(pr: number): string {
+  return `pr-${pr}`;
 }
 
 function buildRequestedWorkspaceName(input: CreateWorkspaceInput): string {
@@ -277,32 +292,81 @@ function buildRequestedWorkspaceName(input: CreateWorkspaceInput): string {
   throw new CreateWorkspaceError("Provide exactly one of issue or pr");
 }
 
-async function ensureNoTrackedPullRequestWorkspace(
-  input: CreateWorkspaceInput,
+function matchesReusablePullRequestCheckout(
+  workspace: WorkspaceRecord,
   repoName: string,
   workspaceName: string,
+  branch: string,
+): boolean {
+  return (
+    workspace.repo === repoName &&
+    workspace.name !== workspaceName &&
+    workspace.branch === branch
+  );
+}
+
+async function resolveWorktreeName(
+  source: ResolvedWorkspaceSource,
+  repoName: string,
+  repoConfig: RepoConfig,
   dependencies: CreateWorkspaceDependencies,
-): Promise<void> {
-  if (input.pr === undefined) {
-    return;
+): Promise<{
+  worktree_name: string;
+  reused_workspace?: WorkspaceRecord;
+  reused_worktree_name?: string;
+}> {
+  if (source.source_kind !== "pr") {
+    return {
+      worktree_name: source.workspace_name,
+    };
   }
 
   const existingWorkspaces = await dependencies.listWorkspaceRecords({
     repo: repoName,
     status: "all",
   });
-  const existingPullRequestWorkspace = existingWorkspaces.find(
-    (workspace) =>
-      workspace.source_kind === "pr" &&
-      workspace.source_number === input.pr &&
-      workspace.name !== workspaceName,
+  const reusableWorkspace =
+    existingWorkspaces.find(
+      (workspace) =>
+        workspace.status === "active" &&
+        matchesReusablePullRequestCheckout(
+          workspace,
+          repoName,
+          source.workspace_name,
+          source.branch,
+        ),
+    ) ??
+    existingWorkspaces.find((workspace) =>
+      matchesReusablePullRequestCheckout(
+        workspace,
+        repoName,
+        source.workspace_name,
+        source.branch,
+      ),
+    );
+
+  if (reusableWorkspace !== undefined) {
+    return {
+      worktree_name: getWorkspaceWorktreeName(reusableWorkspace),
+      reused_workspace: reusableWorkspace,
+    };
+  }
+
+  const reusableManagedWorktree = await dependencies.findManagedWorktreeForBranch(
+    repoConfig,
+    source.branch,
   );
 
-  if (existingPullRequestWorkspace !== undefined) {
-    throw new CreateWorkspaceError(
-      `PR #${input.pr} already has a tracked workspace: ${existingPullRequestWorkspace.name}`,
-    );
+  if (reusableManagedWorktree !== null) {
+    return {
+      worktree_name: reusableManagedWorktree.workspace_name,
+      reused_worktree_name: reusableManagedWorktree.workspace_name,
+    };
   }
+
+  return {
+    worktree_name: buildPullRequestWorktreeName(source.source_number),
+  };
 }
 
 async function resolveWorkspaceSource(
@@ -417,18 +481,6 @@ function buildAgentSessions(
   ];
 }
 
-function shouldRetryPullRequestWithWorkspaceBranch(
-  source: ResolvedWorkspaceSource,
-  error: unknown,
-): error is GitWorktreeError {
-  return (
-    source.source_kind === "pr" &&
-    source.branch !== source.workspace_name &&
-    error instanceof GitWorktreeError &&
-    error.code === "BRANCH_IN_USE"
-  );
-}
-
 async function maybeEnsureOpencodeConfig(
   config: PitchConfig,
   repoName: string,
@@ -515,6 +567,7 @@ async function pathExists(path: string): Promise<boolean> {
 async function classifyExistingPane(
   currentCommand: string,
   agentCommand: BuiltAgentCommand,
+  workspaceName: string,
   worktreePath: string,
 ): Promise<ExistingPaneState["kind"] | "unsupported"> {
   if (SHELL_COMMANDS.has(currentCommand)) {
@@ -524,7 +577,8 @@ async function classifyExistingPane(
   if (currentCommand === agentCommand.pane_process_name) {
     if (agentCommand.environment_kind === "vm-ssh") {
       const markerPath =
-        agentCommand.host_marker_path ?? buildVmAgentHostMarkerPath(worktreePath);
+        agentCommand.host_marker_path ??
+        buildVmAgentHostMarkerPath(worktreePath, workspaceName);
       return (await pathExists(markerPath)) ? "agent" : "connected-shell";
     }
 
@@ -567,11 +621,11 @@ async function rollbackCreateWorkspace(
     try {
       await dependencies.removeWorktree({
         repo: state.repo_config,
-        workspace_name: state.workspace_name,
+        workspace_name: state.worktree_name,
       });
     } catch (error: unknown) {
       cleanupErrors.push(
-        `Failed to remove worktree ${state.workspace_name}: ${formatError(error)}`,
+        `Failed to remove worktree ${state.worktree_name}: ${formatError(error)}`,
       );
     }
   }
@@ -597,6 +651,7 @@ export async function createWorkspace(
 
   const rollbackState: RollbackState = {
     workspace_name: workspaceName,
+    worktree_name: workspaceName,
     repo_config: repoConfig,
     worktree_created: false,
     tmux_window_created: false,
@@ -609,13 +664,6 @@ export async function createWorkspace(
       throw new CreateWorkspaceError(`Workspace already exists: ${workspaceName}`);
     }
 
-    await ensureNoTrackedPullRequestWorkspace(
-      input,
-      repoName,
-      workspaceName,
-      dependencies,
-    );
-
     const source = await resolveWorkspaceSource(
       input,
       repoName,
@@ -623,31 +671,31 @@ export async function createWorkspace(
       config,
       dependencies,
     );
+    const worktreeTarget = await resolveWorktreeName(
+      source,
+      repoName,
+      repoConfig,
+      dependencies,
+    );
+    rollbackState.worktree_name = worktreeTarget.worktree_name;
 
-    let worktree;
-    try {
-      worktree = await dependencies.ensureWorkspaceWorktree({
-        repo: repoConfig,
-        workspace_name: workspaceName,
-        branch: source.branch,
-        start_point: source.start_point,
-      });
-    } catch (error: unknown) {
-      if (!shouldRetryPullRequestWithWorkspaceBranch(source, error)) {
-        throw error;
-      }
-
+    if (worktreeTarget.reused_workspace !== undefined) {
       reportWarnings(dependencies.reportWarning, [
-        `PR head branch ${source.branch} is already checked out in another worktree; using workspace branch ${source.workspace_name} instead.`,
+        `PR head branch ${source.branch} is already tracked by workspace ${worktreeTarget.reused_workspace.name}; reusing worktree ${worktreeTarget.worktree_name}.`,
       ]);
-
-      worktree = await dependencies.ensureWorkspaceWorktree({
-        repo: repoConfig,
-        workspace_name: workspaceName,
-        branch: source.workspace_name,
-        start_point: source.start_point,
-      });
+    } else if (worktreeTarget.reused_worktree_name !== undefined) {
+      reportWarnings(dependencies.reportWarning, [
+        `PR head branch ${source.branch} is already checked out in managed worktree ${worktreeTarget.reused_worktree_name}; adopting that worktree.`,
+      ]);
     }
+
+    const worktree = await dependencies.ensureWorkspaceWorktree({
+      repo: repoConfig,
+      workspace_name: worktreeTarget.worktree_name,
+      branch: source.branch,
+      start_point: source.start_point,
+      ...(source.source_kind === "pr" ? { allow_branch_reuse: true } : {}),
+    });
     rollbackState.worktree_created = !worktree.adopted;
 
     await dependencies.ensureTmuxSession({
@@ -662,7 +710,7 @@ export async function createWorkspace(
     );
     const workspacePaths = resolveWorkspacePaths(
       environment,
-      workspaceName,
+      worktreeTarget.worktree_name,
       worktree.worktree_path,
     );
 
@@ -738,6 +786,7 @@ export async function createWorkspace(
 
     let existingPane: ExistingPaneState | null = null;
     let agentPaneId: string;
+    let createdPanes: TmuxPaneLayout | null = null;
     const windowExists = await dependencies.tmuxWindowExists(
       repoConfig.tmux_session,
       workspaceName,
@@ -752,6 +801,7 @@ export async function createWorkspace(
       const paneKind = await classifyExistingPane(
         paneInfo.current_command,
         agentCommand,
+        workspaceName,
         worktree.worktree_path,
       );
 
@@ -788,12 +838,14 @@ export async function createWorkspace(
         window_name: workspaceName,
         worktree_path: worktree.worktree_path,
       });
+      createdPanes = layout.panes;
       agentPaneId = layout.panes.agent_pane_id;
     }
 
     const timestamp = dependencies.now().toISOString();
     const workspaceRecord: WorkspaceRecord = {
       name: workspaceName,
+      worktree_name: worktreeTarget.worktree_name,
       repo: repoName,
       source_kind: source.source_kind,
       source_number: source.source_number,
@@ -853,6 +905,18 @@ export async function createWorkspace(
           ]);
         }
       }
+    }
+
+    if (createdPanes !== null) {
+      await sendConfiguredPaneCommands(
+        workspaceName,
+        repoConfig.pane_commands,
+        createdPanes,
+        {
+          sendKeysToPane: dependencies.sendKeysToPane,
+          reportWarning: dependencies.reportWarning,
+        },
+      );
     }
 
     try {

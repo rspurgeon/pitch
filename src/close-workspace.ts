@@ -10,7 +10,11 @@ import {
   resolveExecutionEnvironment,
   resolveWorkspacePaths,
 } from "./execution-environment.js";
-import { GitWorktreeError, removeWorktree } from "./git.js";
+import {
+  GitWorktreeError,
+  isWorktreeDirty,
+  removeWorktree,
+} from "./git.js";
 import {
   getTmuxWindowPaneInfo,
   killTmuxWindow,
@@ -18,6 +22,8 @@ import {
 } from "./tmux.js";
 import {
   deleteWorkspaceRecord,
+  getWorkspaceWorktreeName,
+  listWorkspaceRecords,
   readWorkspaceRecord,
   WorkspaceRecordSchema,
   writeWorkspaceRecord,
@@ -27,35 +33,47 @@ import { deleteOpencodeConfig } from "./opencode-config.js";
 
 export const CloseWorkspaceInputSchema = z.object({
   name: z.string().trim().min(1),
-  cleanup_worktree: z.boolean().optional(),
+}).strict();
+
+export const DeleteWorkspaceInputSchema = z.object({
+  name: z.string().trim().min(1),
+  force: z.boolean().optional(),
 }).strict();
 
 export type CloseWorkspaceInput = z.infer<typeof CloseWorkspaceInputSchema>;
+export type DeleteWorkspaceInput = z.infer<typeof DeleteWorkspaceInputSchema>;
 
-export interface CloseWorkspaceDependencies {
+export interface WorkspaceLifecycleDependencies {
   deleteOpencodeConfig: typeof deleteOpencodeConfig;
   deleteWorkspaceRecord: typeof deleteWorkspaceRecord;
   getTmuxWindowPaneInfo: typeof getTmuxWindowPaneInfo;
+  isWorktreeDirty: typeof isWorktreeDirty;
   killTmuxWindow: typeof killTmuxWindow;
+  listWorkspaceRecords: typeof listWorkspaceRecords;
   readWorkspaceRecord: typeof readWorkspaceRecord;
+  removeCodexTrustedPath: typeof removeCodexTrustedPath;
+  removeWorktree: typeof removeWorktree;
   sendKeysToPane: typeof sendKeysToPane;
   writeWorkspaceRecord: typeof writeWorkspaceRecord;
-  removeWorktree: typeof removeWorktree;
-  removeCodexTrustedPath: typeof removeCodexTrustedPath;
   sleep: (milliseconds: number) => Promise<void>;
   now: () => Date;
 }
 
-const defaultDependencies: CloseWorkspaceDependencies = {
+export type CloseWorkspaceDependencies = WorkspaceLifecycleDependencies;
+export type DeleteWorkspaceDependencies = WorkspaceLifecycleDependencies;
+
+const defaultDependencies: WorkspaceLifecycleDependencies = {
   deleteOpencodeConfig,
   deleteWorkspaceRecord,
   getTmuxWindowPaneInfo,
+  isWorktreeDirty,
   killTmuxWindow,
+  listWorkspaceRecords,
   readWorkspaceRecord,
+  removeCodexTrustedPath,
+  removeWorktree,
   sendKeysToPane,
   writeWorkspaceRecord,
-  removeWorktree,
-  removeCodexTrustedPath,
   sleep: async (milliseconds: number) => {
     await delay(milliseconds);
   },
@@ -66,6 +84,13 @@ export class CloseWorkspaceError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "CloseWorkspaceError";
+  }
+}
+
+export class DeleteWorkspaceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DeleteWorkspaceError";
   }
 }
 
@@ -83,7 +108,7 @@ function formatError(error: unknown): string {
   return String(error);
 }
 
-function validateInput(params: CloseWorkspaceInput): CloseWorkspaceInput {
+function validateCloseInput(params: CloseWorkspaceInput): CloseWorkspaceInput {
   const result = CloseWorkspaceInputSchema.safeParse(params);
   if (!result.success) {
     throw new CloseWorkspaceError(
@@ -94,10 +119,23 @@ function validateInput(params: CloseWorkspaceInput): CloseWorkspaceInput {
   return result.data;
 }
 
+function validateDeleteInput(
+  params: DeleteWorkspaceInput,
+): DeleteWorkspaceInput {
+  const result = DeleteWorkspaceInputSchema.safeParse(params);
+  if (!result.success) {
+    throw new DeleteWorkspaceError(
+      `Invalid delete_workspace input:\n${formatZodIssues(result.error)}`,
+    );
+  }
+
+  return result.data;
+}
+
 function resolveRepoConfig(config: PitchConfig, repoName: string): RepoConfig {
   const repoConfig = config.repos[repoName];
   if (repoConfig === undefined) {
-    throw new CloseWorkspaceError(`Repo is not configured: ${repoName}`);
+    throw new Error(`Repo is not configured: ${repoName}`);
   }
 
   return repoConfig;
@@ -116,6 +154,32 @@ function buildClosedWorkspaceRecord(
 
 function isMissingWorktreeError(error: unknown): boolean {
   return error instanceof GitWorktreeError && error.code === "WORKTREE_MISSING";
+}
+
+function sharesWorktree(
+  candidate: WorkspaceRecord,
+  workspace: WorkspaceRecord,
+): boolean {
+  return (
+    candidate.name !== workspace.name &&
+    candidate.repo === workspace.repo &&
+    (
+      getWorkspaceWorktreeName(candidate) ===
+        getWorkspaceWorktreeName(workspace) ||
+      candidate.worktree_path === workspace.worktree_path
+    )
+  );
+}
+
+async function hasSharedWorktreeReferences(
+  workspace: WorkspaceRecord,
+  dependencies: WorkspaceLifecycleDependencies,
+): Promise<boolean> {
+  const workspaces = await dependencies.listWorkspaceRecords({
+    repo: workspace.repo,
+    status: "all",
+  });
+  return workspaces.some((candidate) => sharesWorktree(candidate, workspace));
 }
 
 const SHELL_COMMANDS = new Set([
@@ -140,7 +204,7 @@ async function pathExists(path: string): Promise<boolean> {
 
 async function tryGracefulAgentShutdown(
   workspace: WorkspaceRecord,
-  dependencies: CloseWorkspaceDependencies,
+  dependencies: WorkspaceLifecycleDependencies,
 ): Promise<void> {
   let paneInfo;
 
@@ -168,7 +232,11 @@ async function tryGracefulAgentShutdown(
 
   if (
     workspace.environment_kind === "vm-ssh" &&
-    !(await pathExists(buildVmAgentHostMarkerPath(workspace.worktree_path)))
+    !(
+      await pathExists(
+        buildVmAgentHostMarkerPath(workspace.worktree_path, workspace.name),
+      )
+    )
   ) {
     return;
   }
@@ -194,7 +262,13 @@ async function tryGracefulAgentShutdown(
       });
 
       if (workspace.environment_kind === "vm-ssh") {
-        if (!(await pathExists(buildVmAgentHostMarkerPath(workspace.worktree_path)))) {
+        if (
+          !(
+            await pathExists(
+              buildVmAgentHostMarkerPath(workspace.worktree_path, workspace.name),
+            )
+          )
+        ) {
           return;
         }
       } else if (SHELL_COMMANDS.has(updatedPaneInfo.current_command)) {
@@ -206,156 +280,264 @@ async function tryGracefulAgentShutdown(
   }
 }
 
+async function closeActiveWorkspaceSession(
+  workspace: WorkspaceRecord,
+  dependencies: WorkspaceLifecycleDependencies,
+): Promise<void> {
+  if (workspace.status === "closed") {
+    return;
+  }
+
+  await tryGracefulAgentShutdown(workspace, dependencies);
+
+  try {
+    await dependencies.killTmuxWindow({
+      session_name: workspace.tmux_session,
+      window_name: workspace.tmux_window,
+    });
+  } catch (error: unknown) {
+    throw new Error(
+      `Failed to close tmux window for ${workspace.name}: ${formatError(error)}`,
+    );
+  }
+}
+
+async function maybeRemoveCodexTrustedPath(
+  workspace: WorkspaceRecord,
+  config: PitchConfig,
+  dependencies: WorkspaceLifecycleDependencies,
+): Promise<void> {
+  if (workspace.agent_type !== "codex") {
+    return;
+  }
+
+  try {
+    const environment =
+      workspace.environment_name !== null &&
+      workspace.environment_name !== undefined
+        ? resolveExecutionEnvironment(
+            config,
+            workspace.repo,
+            workspace.environment_name,
+          )
+        : { kind: workspace.environment_kind ?? "host" };
+    const workspacePaths = resolveWorkspacePaths(
+      environment,
+      getWorkspaceWorktreeName(workspace),
+      workspace.worktree_path,
+    );
+    workspacePaths.agent_worktree_path =
+      workspace.guest_worktree_path ?? workspacePaths.agent_worktree_path;
+    workspacePaths.guest_worktree_path =
+      workspace.guest_worktree_path ?? workspacePaths.guest_worktree_path;
+
+    await dependencies.removeCodexTrustedPath({
+      environment,
+      workspace_paths: workspacePaths,
+      codex_home: workspace.agent_env.CODEX_HOME,
+    });
+  } catch {
+    // best-effort cleanup only
+  }
+}
+
+async function readWorkspaceOrThrow(
+  name: string,
+  dependencies: WorkspaceLifecycleDependencies,
+  ErrorCtor: typeof CloseWorkspaceError | typeof DeleteWorkspaceError,
+): Promise<WorkspaceRecord> {
+  let workspace: WorkspaceRecord | null;
+  try {
+    workspace = await dependencies.readWorkspaceRecord(name);
+  } catch (error: unknown) {
+    throw new ErrorCtor(
+      `Failed to read workspace "${name}": ${formatError(error)}`,
+    );
+  }
+
+  if (workspace === null) {
+    throw new ErrorCtor(`Workspace not found: ${name}`);
+  }
+
+  return workspace;
+}
+
 export async function closeWorkspace(
   params: CloseWorkspaceInput,
   config: PitchConfig,
   dependencyOverrides: Partial<CloseWorkspaceDependencies> = {},
 ): Promise<WorkspaceRecord> {
-  const input = validateInput(params);
+  const input = validateCloseInput(params);
   const dependencies: CloseWorkspaceDependencies = {
     ...defaultDependencies,
     ...dependencyOverrides,
   };
 
-  let existingWorkspace: WorkspaceRecord | null;
+  const existingWorkspace = await readWorkspaceOrThrow(
+    input.name,
+    dependencies,
+    CloseWorkspaceError,
+  );
+
+  if (existingWorkspace.status === "closed") {
+    return existingWorkspace;
+  }
+
   try {
-    existingWorkspace = await dependencies.readWorkspaceRecord(input.name);
+    await closeActiveWorkspaceSession(existingWorkspace, dependencies);
+  } catch (error: unknown) {
+    throw new CloseWorkspaceError(formatError(error));
+  }
+
+  const closedWorkspace = buildClosedWorkspaceRecord(
+    existingWorkspace,
+    dependencies.now().toISOString(),
+  );
+
+  try {
+    return await dependencies.writeWorkspaceRecord(closedWorkspace);
   } catch (error: unknown) {
     throw new CloseWorkspaceError(
-      `Failed to read workspace "${input.name}": ${formatError(error)}`,
+      `Failed to update workspace state for ${input.name}: ${formatError(error)}`,
+    );
+  }
+}
+
+async function ensureWorktreeDeletable(
+  workspace: WorkspaceRecord,
+  force: boolean,
+  dependencies: WorkspaceLifecycleDependencies,
+): Promise<void> {
+  if (force) {
+    return;
+  }
+
+  let isDirty: boolean;
+  try {
+    isDirty = await dependencies.isWorktreeDirty(workspace.worktree_path);
+  } catch (error: unknown) {
+    throw new DeleteWorkspaceError(
+      `Failed to inspect worktree for ${workspace.name}: ${formatError(error)}`,
     );
   }
 
-  if (existingWorkspace === null) {
-    throw new CloseWorkspaceError(`Workspace not found: ${input.name}`);
+  if (isDirty) {
+    throw new DeleteWorkspaceError(
+      `Worktree ${workspace.worktree_path} contains modified or untracked files; rerun with --force to delete it.`,
+    );
+  }
+}
+
+async function deleteWorkspaceState(
+  name: string,
+  dependencies: WorkspaceLifecycleDependencies,
+): Promise<void> {
+  try {
+    await dependencies.deleteWorkspaceRecord(name);
+  } catch (error: unknown) {
+    throw new DeleteWorkspaceError(
+      `Failed to delete workspace state for ${name}: ${formatError(error)}`,
+    );
+  }
+}
+
+export async function deleteWorkspace(
+  params: DeleteWorkspaceInput,
+  config: PitchConfig,
+  dependencyOverrides: Partial<DeleteWorkspaceDependencies> = {},
+): Promise<WorkspaceRecord> {
+  const input = validateDeleteInput(params);
+  const dependencies: DeleteWorkspaceDependencies = {
+    ...defaultDependencies,
+    ...dependencyOverrides,
+  };
+
+  const existingWorkspace = await readWorkspaceOrThrow(
+    input.name,
+    dependencies,
+    DeleteWorkspaceError,
+  );
+  const closedWorkspace =
+    existingWorkspace.status === "closed"
+      ? existingWorkspace
+      : buildClosedWorkspaceRecord(
+          existingWorkspace,
+          dependencies.now().toISOString(),
+        );
+
+  let hasSharedReferences: boolean;
+  try {
+    hasSharedReferences = await hasSharedWorktreeReferences(
+      existingWorkspace,
+      dependencies,
+    );
+  } catch (error: unknown) {
+    throw new DeleteWorkspaceError(
+      `Failed to inspect shared worktree usage for ${input.name}: ${formatError(error)}`,
+    );
   }
 
-  const isAlreadyClosed = existingWorkspace.status === "closed";
-  const closedAt = dependencies.now().toISOString();
-  const closedWorkspace = isAlreadyClosed
-    ? existingWorkspace
-    : buildClosedWorkspaceRecord(existingWorkspace, closedAt);
-  const shouldCleanupWorktree = input.cleanup_worktree ?? true;
-  const repoConfig: RepoConfig | undefined = shouldCleanupWorktree
-    ? resolveRepoConfig(config, existingWorkspace.repo)
-    : undefined;
+  if (!hasSharedReferences) {
+    await ensureWorktreeDeletable(
+      existingWorkspace,
+      input.force === true,
+      dependencies,
+    );
+  }
 
-  if (!isAlreadyClosed) {
-    await tryGracefulAgentShutdown(existingWorkspace, dependencies);
+  if (existingWorkspace.status !== "closed") {
+    try {
+      await closeActiveWorkspaceSession(existingWorkspace, dependencies);
+    } catch (error: unknown) {
+      throw new DeleteWorkspaceError(formatError(error));
+    }
 
     try {
-      await dependencies.killTmuxWindow({
-        session_name: existingWorkspace.tmux_session,
-        window_name: existingWorkspace.tmux_window,
-      });
+      await dependencies.writeWorkspaceRecord(closedWorkspace);
     } catch (error: unknown) {
-      throw new CloseWorkspaceError(
-        `Failed to close tmux window for ${input.name}: ${formatError(error)}`,
+      throw new DeleteWorkspaceError(
+        `Failed to update workspace state for ${input.name}: ${formatError(error)}`,
       );
     }
   }
 
   try {
     await dependencies.deleteOpencodeConfig(existingWorkspace.name);
-  } catch {}
-
-  if (shouldCleanupWorktree && existingWorkspace.agent_type === "codex") {
-    try {
-      const environment = existingWorkspace.environment_name !== null &&
-          existingWorkspace.environment_name !== undefined
-        ? resolveExecutionEnvironment(
-            config,
-            existingWorkspace.repo,
-            existingWorkspace.environment_name,
-          )
-        : { kind: existingWorkspace.environment_kind ?? "host" };
-      const workspacePaths = resolveWorkspacePaths(
-        environment,
-        existingWorkspace.name,
-        existingWorkspace.worktree_path,
-      );
-      workspacePaths.agent_worktree_path =
-        existingWorkspace.guest_worktree_path ?? workspacePaths.agent_worktree_path;
-      workspacePaths.guest_worktree_path =
-        existingWorkspace.guest_worktree_path ?? workspacePaths.guest_worktree_path;
-
-      await dependencies.removeCodexTrustedPath({
-        environment,
-        workspace_paths: workspacePaths,
-        codex_home: existingWorkspace.agent_env.CODEX_HOME,
-      });
-    } catch {
-      // best-effort cleanup only
-    }
+  } catch {
+    // best-effort cleanup only
   }
 
-  if (!shouldCleanupWorktree) {
-    try {
-      return await dependencies.writeWorkspaceRecord(closedWorkspace);
-    } catch (error: unknown) {
-      throw new CloseWorkspaceError(
-        `Failed to update workspace state for ${input.name}: ${formatError(error)}`,
-      );
-    }
+  if (hasSharedReferences) {
+    await deleteWorkspaceState(existingWorkspace.name, dependencies);
+    return closedWorkspace;
   }
 
-  if (repoConfig === undefined) {
-    throw new CloseWorkspaceError(
-      `Internal error: missing repo config for ${existingWorkspace.repo}`,
-    );
+  let repoConfig: RepoConfig;
+  try {
+    repoConfig = resolveRepoConfig(config, existingWorkspace.repo);
+  } catch (error: unknown) {
+    throw new DeleteWorkspaceError(formatError(error));
   }
+
+  await maybeRemoveCodexTrustedPath(existingWorkspace, config, dependencies);
 
   try {
     await dependencies.removeWorktree({
       repo: repoConfig,
-      workspace_name: existingWorkspace.name,
+      workspace_name: getWorkspaceWorktreeName(existingWorkspace),
+      worktree_path: existingWorkspace.worktree_path,
+      ...(input.force === true ? { force: true } : {}),
     });
   } catch (error: unknown) {
     if (!isMissingWorktreeError(error)) {
-      if (isAlreadyClosed) {
-        throw new CloseWorkspaceError(
-          `Failed to clean up worktree for ${input.name}: ${formatError(error)}`,
-        );
-      }
-
-      try {
-        await dependencies.writeWorkspaceRecord(closedWorkspace);
-      } catch (fallbackError: unknown) {
-        throw new CloseWorkspaceError(
-          `Failed to clean up worktree for ${input.name}: ${formatError(error)}\n` +
-            `Fallback state write also failed: ${formatError(fallbackError)}`,
-        );
-      }
-
-      throw new CloseWorkspaceError(
-        `Failed to clean up worktree for ${input.name}: ${formatError(error)}`,
+      throw new DeleteWorkspaceError(
+        `Failed to remove worktree for ${input.name}: ${formatError(error)}`,
       );
     }
   }
 
-  try {
-    await dependencies.deleteWorkspaceRecord(existingWorkspace.name);
-    return closedWorkspace;
-  } catch (error: unknown) {
-    if (isAlreadyClosed) {
-      throw new CloseWorkspaceError(
-        `Failed to delete workspace state for ${input.name}: ${formatError(error)}`,
-      );
-    }
-
-    try {
-      await dependencies.writeWorkspaceRecord(closedWorkspace);
-    } catch (fallbackError: unknown) {
-      throw new CloseWorkspaceError(
-        `Failed to delete workspace state for ${input.name}: ${formatError(error)}\n` +
-          `Fallback state write also failed: ${formatError(fallbackError)}`,
-      );
-    }
-
-    throw new CloseWorkspaceError(
-      `Failed to delete workspace state for ${input.name}: ${formatError(error)}`,
-    );
-  }
+  await deleteWorkspaceState(existingWorkspace.name, dependencies);
+  return closedWorkspace;
 }
 
 export function registerCloseWorkspaceTool(
@@ -367,12 +549,35 @@ export function registerCloseWorkspaceTool(
     "close_workspace",
     {
       description:
-        "Close a workspace by tearing down its tmux window and, by default, removing its git worktree and state file.",
+        "Close a workspace by tearing down its tmux window and marking it closed. Worktree cleanup is handled by delete_workspace.",
       inputSchema: CloseWorkspaceInputSchema,
       outputSchema: WorkspaceRecordSchema,
     },
     async (args) => {
       const workspace = await closeWorkspace(args, config, dependencies);
+      return {
+        content: [{ type: "text", text: JSON.stringify(workspace) }],
+        structuredContent: workspace,
+      };
+    },
+  );
+}
+
+export function registerDeleteWorkspaceTool(
+  server: McpServer,
+  config: PitchConfig,
+  dependencies: Partial<DeleteWorkspaceDependencies> = {},
+): void {
+  server.registerTool(
+    "delete_workspace",
+    {
+      description:
+        "Delete a workspace by removing its state file and, when applicable, its git worktree. Refuses dirty worktrees unless force is set.",
+      inputSchema: DeleteWorkspaceInputSchema,
+      outputSchema: WorkspaceRecordSchema,
+    },
+    async (args) => {
+      const workspace = await deleteWorkspace(args, config, dependencies);
       return {
         content: [{ type: "text", text: JSON.stringify(workspace) }],
         structuredContent: workspace,

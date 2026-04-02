@@ -8,7 +8,6 @@ import {
   resolveAgentEnv,
   type BuiltAgentCommand,
 } from "./agent-launcher.js";
-import { buildBootstrapPrompt } from "./bootstrap-prompt.js";
 import { ensureClaudeTrustedPaths } from "./claude-trust.js";
 import type { PitchConfig } from "./config.js";
 import { ensureCodexTrustedPath } from "./codex-trust.js";
@@ -23,9 +22,16 @@ import {
   type ResolvedWorkspacePaths,
 } from "./execution-environment.js";
 import { runGitHubLifecycle } from "./github-lifecycle.js";
+import { readPullRequest } from "./github-pr.js";
 import { findOpencodeSessionForWorkspace } from "./opencode-session-store.js";
 import { sendPostLaunchPromptToPane } from "./post-launch-prompt.js";
-import { restoreWorktree } from "./git.js";
+import {
+  fastForwardWorktree,
+  fetchGitRef,
+  isWorktreeDirty,
+  listWorktreesForBranch,
+  restoreWorktree,
+} from "./git.js";
 import {
   createTmuxLayout,
   createTmuxWindow,
@@ -35,9 +41,11 @@ import {
   getTmuxWindowPane,
   sendKeysToPane,
   tmuxWindowExists,
+  type TmuxPaneLayout,
   type TmuxPaneInfo,
 } from "./tmux.js";
 import {
+  getWorkspaceWorktreeName,
   readWorkspaceRecord,
   WorkspaceRecordSchema,
   writeWorkspaceRecord,
@@ -46,11 +54,13 @@ import {
 import { buildWorkspaceToolResponse } from "./workspace-tool-response.js";
 import { formatAgentPaneCommand } from "./agent-pane-command.js";
 import { ensureOpencodeConfig } from "./opencode-config.js";
+import { sendConfiguredPaneCommands } from "./pane-commands.js";
 
 export const ResumeWorkspaceInputSchema = z.object({
   name: z.string().trim().min(1),
   agent: z.string().trim().min(1).optional(),
   environment: z.string().trim().min(1).optional(),
+  sync: z.boolean().optional(),
 }).strict();
 
 export type ResumeWorkspaceInput = z.infer<typeof ResumeWorkspaceInputSchema>;
@@ -63,9 +73,14 @@ export interface ResumeWorkspaceDependencies {
   ensureTmuxSession: typeof ensureTmuxSession;
   findCodexSessionForWorkspace: typeof findCodexSessionForWorkspace;
   findOpencodeSessionForWorkspace: typeof findOpencodeSessionForWorkspace;
+  fastForwardWorktree: typeof fastForwardWorktree;
+  fetchGitRef: typeof fetchGitRef;
   getTmuxWindowPaneInfo: typeof getTmuxWindowPaneInfo;
   getTmuxWindowPane: typeof getTmuxWindowPane;
   getTmuxPaneInfo: typeof getTmuxPaneInfo;
+  isWorktreeDirty: typeof isWorktreeDirty;
+  listWorktreesForBranch: typeof listWorktreesForBranch;
+  readPullRequest: typeof readPullRequest;
   readWorkspaceRecord: typeof readWorkspaceRecord;
   restoreWorktree: typeof restoreWorktree;
   runGitHubLifecycle: typeof runGitHubLifecycle;
@@ -86,11 +101,16 @@ const defaultDependencies: ResumeWorkspaceDependencies = {
   createTmuxLayout,
   createTmuxWindow,
   ensureTmuxSession,
+  fastForwardWorktree,
+  fetchGitRef,
   getTmuxPaneInfo,
   findCodexSessionForWorkspace,
   findOpencodeSessionForWorkspace,
   getTmuxWindowPaneInfo,
   getTmuxWindowPane,
+  isWorktreeDirty,
+  listWorktreesForBranch,
+  readPullRequest,
   readWorkspaceRecord,
   restoreWorktree,
   runGitHubLifecycle,
@@ -283,7 +303,7 @@ async function isCompatibleRunningAgentPane(
 
   if (workspace.environment_kind === "vm-ssh") {
     return pathExists(
-      buildVmAgentHostMarkerPath(workspace.worktree_path),
+      buildVmAgentHostMarkerPath(workspace.worktree_path, workspace.name),
     );
   }
 
@@ -311,7 +331,115 @@ async function shouldReuseConnectedVmPane(
     return false;
   }
 
-  return !(await pathExists(buildVmAgentHostMarkerPath(workspace.worktree_path)));
+  return !(
+    await pathExists(
+      buildVmAgentHostMarkerPath(workspace.worktree_path, workspace.name),
+    )
+  );
+}
+
+async function maybeSyncWorkspaceOnResume(
+  input: ResumeWorkspaceInput,
+  workspace: WorkspaceRecord,
+  repoConfig: PitchConfig["repos"][string],
+  hasCompatibleRunningPane: boolean,
+  dependencies: ResumeWorkspaceDependencies,
+): Promise<void> {
+  if (input.sync !== true) {
+    return;
+  }
+
+  if (workspace.source_kind !== "pr") {
+    throw new ResumeWorkspaceError(
+      `Sync on resume is only supported for PR workspaces: ${workspace.name}`,
+    );
+  }
+
+  if (hasCompatibleRunningPane) {
+    throw new ResumeWorkspaceError(
+      `Cannot sync ${workspace.name} while a compatible agent pane is already running; use normal git commands inside the workspace instead.`,
+    );
+  }
+
+  let dirty: boolean;
+  try {
+    dirty = await dependencies.isWorktreeDirty(workspace.worktree_path);
+  } catch (error: unknown) {
+    throw new ResumeWorkspaceError(
+      `Failed to inspect worktree for ${workspace.name}: ${formatError(error)}`,
+    );
+  }
+
+  if (dirty) {
+    throw new ResumeWorkspaceError(
+      `Cannot sync ${workspace.name}: worktree ${workspace.worktree_path} contains modified or untracked files.`,
+    );
+  }
+
+  let pullRequest;
+  try {
+    pullRequest = await dependencies.readPullRequest({
+      repo: workspace.repo,
+      pr_number: workspace.source_number,
+    });
+  } catch (error: unknown) {
+    throw new ResumeWorkspaceError(
+      `Failed to resolve PR #${workspace.source_number} for ${workspace.name}: ${formatError(error)}`,
+    );
+  }
+
+  if (pullRequest.head_ref_name !== workspace.branch) {
+    reportWarnings(dependencies.reportWarning, [
+      `PR #${pullRequest.number} head branch is ${pullRequest.head_ref_name}; syncing recorded branch ${workspace.branch} to the latest PR head commit.`,
+    ]);
+  }
+
+  let branchWorktrees;
+  try {
+    branchWorktrees = await dependencies.listWorktreesForBranch(
+      repoConfig,
+      workspace.branch,
+    );
+  } catch (error: unknown) {
+    throw new ResumeWorkspaceError(
+      `Failed to inspect branch worktrees for ${workspace.name}: ${formatError(error)}`,
+    );
+  }
+
+  const siblingWorktrees = branchWorktrees
+    .map((worktree) => worktree.worktree_path)
+    .filter((path) => path !== workspace.worktree_path);
+  if (siblingWorktrees.length > 0) {
+    reportWarnings(dependencies.reportWarning, [
+      `Syncing ${workspace.branch} for ${workspace.name} will also move the branch ref used by other worktrees: ${siblingWorktrees.join(", ")}.`,
+    ]);
+  }
+
+  const targetRef = `refs/pitch/pr/${workspace.source_number}/head`;
+  try {
+    await dependencies.fetchGitRef({
+      repo: repoConfig,
+      remote: "origin",
+      fallback_remote: `${new URL(pullRequest.url).origin}/${workspace.repo}.git`,
+      source_ref: `refs/pull/${workspace.source_number}/head`,
+      destination_ref: targetRef,
+    });
+  } catch (error: unknown) {
+    throw new ResumeWorkspaceError(
+      `Failed to fetch latest PR head for ${workspace.name}: ${formatError(error)}`,
+    );
+  }
+
+  try {
+    await dependencies.fastForwardWorktree({
+      worktree_path: workspace.worktree_path,
+      target_ref: targetRef,
+    });
+  } catch (error: unknown) {
+    throw new ResumeWorkspaceError(
+      `Failed to fast-forward ${workspace.name} to the latest PR head: ${formatError(error)}`,
+    );
+  }
 }
 
 async function maybeEnsureOpencodeConfig(
@@ -400,12 +528,7 @@ export async function resumeWorkspace(
   if (workspace === null) {
     throw new ResumeWorkspaceError(`Workspace not found: ${input.name}`);
   }
-
-  if (workspace.status !== "active") {
-    throw new ResumeWorkspaceError(
-      `Workspace is not active: ${workspace.name}`,
-    );
-  }
+  const wasClosed = workspace.status === "closed";
 
   const repoConfig = config.repos[workspace.repo];
   if (repoConfig === undefined) {
@@ -415,7 +538,7 @@ export async function resumeWorkspace(
   try {
     const restoredWorktree = await dependencies.restoreWorktree({
       repo: repoConfig,
-      workspace_name: workspace.name,
+      workspace_name: getWorkspaceWorktreeName(workspace),
       branch: workspace.branch,
     });
     workspace = {
@@ -441,6 +564,7 @@ export async function resumeWorkspace(
 
   let agentPaneId: string;
   let existingPaneInfo: TmuxPaneInfo | null = null;
+  let createdPanes: TmuxPaneLayout | null = null;
   try {
     const windowExists = await dependencies.tmuxWindowExists(
       workspace.tmux_session,
@@ -459,6 +583,7 @@ export async function resumeWorkspace(
           window_name: workspace.tmux_window,
           worktree_path: workspace.worktree_path,
         });
+        createdPanes = layout.panes;
         agentPaneId = layout.panes.agent_pane_id;
       } catch (error: unknown) {
         throw new ResumeWorkspaceError(
@@ -500,7 +625,7 @@ export async function resumeWorkspace(
         };
   const derivedWorkspacePaths = resolveWorkspacePaths(
     environment,
-    workspace.name,
+    getWorkspaceWorktreeName(workspace),
     workspace.worktree_path,
   );
   const workspacePaths: ResolvedWorkspacePaths = {
@@ -597,15 +722,35 @@ export async function resumeWorkspace(
     }
   }
 
+  const hasCompatibleRunningPane = await isCompatibleRunningAgentPane(
+    workspace,
+    existingPaneInfo,
+  );
+
+  await maybeSyncWorkspaceOnResume(
+    input,
+    workspace,
+    repoConfig,
+    hasCompatibleRunningPane,
+    dependencies,
+  );
+
   if (
     !isAgentContextChanged &&
     !isEnvironmentContextChanged &&
     latestSessionId === null &&
     findLatestPendingSessionIndex(workspace) === null &&
-    await isCompatibleRunningAgentPane(workspace, existingPaneInfo)
+    hasCompatibleRunningPane
   ) {
-    await dependencies.writeWorkspaceRecord(workspace);
-    return workspace;
+    const resumedWorkspace: WorkspaceRecord = wasClosed
+      ? {
+          ...workspace,
+          status: "active",
+          updated_at: dependencies.now().toISOString(),
+        }
+      : workspace;
+    await dependencies.writeWorkspaceRecord(resumedWorkspace);
+    return resumedWorkspace;
   }
 
   let command: BuiltAgentCommand;
@@ -638,13 +783,7 @@ export async function resumeWorkspace(
         workspace_name: workspace.name,
         worktree_path: workspacePaths.agent_worktree_path,
         host_worktree_path: workspacePaths.host_worktree_path,
-        initial_prompt: buildBootstrapPrompt(config, {
-          repo: workspace.repo,
-          source_kind: workspace.source_kind,
-          source_number: workspace.source_number,
-          workspace_name: workspace.name,
-          branch: workspace.branch,
-        }),
+        initial_prompt: undefined,
       });
     } else {
       command = dependencies.buildAgentResumeCommand({
@@ -652,6 +791,7 @@ export async function resumeWorkspace(
         agent: agentName,
         repo: workspace.repo,
         environment: environment.name,
+        workspace_name: workspace.name,
         opencode_config_path: opencodeConfigPath,
         session_id: latestSessionId,
         worktree_path: workspacePaths.agent_worktree_path,
@@ -734,9 +874,22 @@ export async function resumeWorkspace(
     }
   }
 
+  if (createdPanes !== null) {
+    await sendConfiguredPaneCommands(
+      workspace.name,
+      repoConfig.pane_commands,
+      createdPanes,
+      {
+        sendKeysToPane: dependencies.sendKeysToPane,
+        reportWarning: dependencies.reportWarning,
+      },
+    );
+  }
+
   const startedAt = dependencies.now().toISOString();
   const updatedWorkspace: WorkspaceRecord = {
     ...workspace,
+    status: "active",
     agent_name: command.agent_name,
     agent_type: command.agent_type,
     agent_runtime: command.runtime,
@@ -789,7 +942,7 @@ export function registerResumeWorkspaceTool(
     "resume_workspace",
     {
       description:
-        "Resume or relaunch the coding agent in an existing active workspace.",
+        "Resume or relaunch the coding agent in an existing workspace, including previously closed workspaces.",
       inputSchema: ResumeWorkspaceInputSchema,
       outputSchema: WorkspaceRecordSchema,
     },

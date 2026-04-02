@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join, posix, relative, resolve, sep } from "node:path";
+import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import type {
   AgentRuntime,
   ExecutionEnvironmentConfig,
@@ -28,8 +28,20 @@ export interface VmAgentStatePaths {
   guest_marker_path: string;
 }
 
-export function buildVmAgentHostMarkerPath(worktreePath: string): string {
-  return join(worktreePath, ".pitch", "vm-agent-active");
+export function buildVmAgentHostMarkerPath(
+  worktreePath: string,
+  workspaceName: string,
+): string {
+  return join(
+    dirname(worktreePath),
+    ".pitch-state",
+    workspaceName,
+    "vm-agent-active",
+  );
+}
+
+function buildLegacyVmAgentGuestMarkerPath(worktreePath: string): string {
+  return posix.join(worktreePath, ".pitch", "vm-agent-active");
 }
 
 export class ExecutionEnvironmentError extends Error {
@@ -307,15 +319,18 @@ function buildUserLocalPathSnippet(): string {
 }
 
 export function buildVmAgentStatePaths(
+  workspaceName: string,
   workspacePaths: Pick<ResolvedWorkspacePaths, "host_worktree_path" | "guest_worktree_path">,
 ): VmAgentStatePaths {
   return {
     host_marker_path: buildVmAgentHostMarkerPath(
       workspacePaths.host_worktree_path,
+      workspaceName,
     ),
     guest_marker_path: posix.join(
-      workspacePaths.guest_worktree_path,
-      ".pitch",
+      posix.dirname(workspacePaths.guest_worktree_path),
+      ".pitch-state",
+      workspaceName,
       "vm-agent-active",
     ),
   };
@@ -324,13 +339,15 @@ export function buildVmAgentStatePaths(
 function buildVmAgentExecutionSnippet(
   remoteCommand: string,
   guestMarkerPath: string,
+  legacyGuestMarkerPath: string,
 ): string {
   const guestMarkerDir = posix.dirname(guestMarkerPath);
 
   return [
     `mkdir -p -- ${shellEscape(guestMarkerDir)}`,
-    `cleanup() { rm -f -- ${shellEscape(guestMarkerPath)}; }`,
+    `cleanup() { rm -f -- ${shellEscape(guestMarkerPath)} ${shellEscape(legacyGuestMarkerPath)}; }`,
     "trap cleanup EXIT INT TERM",
+    `rm -f -- ${shellEscape(legacyGuestMarkerPath)}`,
     `: > ${shellEscape(guestMarkerPath)}`,
     `${remoteCommand}`,
     "status=$?",
@@ -342,6 +359,7 @@ function buildVmAgentExecutionSnippet(
 
 export interface VmSshCommandInput {
   environment: VmSshExecutionEnvironmentConfig;
+  workspace_name: string;
   workspace_paths: Pick<ResolvedWorkspacePaths, "host_worktree_path" | "guest_worktree_path">;
   agent_command: string[];
   agent_env: Record<string, string>;
@@ -357,7 +375,10 @@ export function buildVmSshCommand(
   pane_process_name: string;
 } {
   const sshTarget = buildVmSshTarget(input.environment);
-  const statePaths = buildVmAgentStatePaths(input.workspace_paths);
+  const statePaths = buildVmAgentStatePaths(
+    input.workspace_name,
+    input.workspace_paths,
+  );
   const remoteEnv = Object.entries(input.agent_env).map(([key, value]) =>
     formatEnvAssignment(key, value),
   );
@@ -374,7 +395,11 @@ export function buildVmSshCommand(
     `${buildUserLocalPathSnippet()} && ` +
     `cd -- ${shellEscape(input.workspace_paths.guest_worktree_path)} && ` +
     `${bootstrapSnippet}clear && ` +
-    `${buildVmAgentExecutionSnippet(remoteCommand, statePaths.guest_marker_path)}`;
+    `${buildVmAgentExecutionSnippet(
+      remoteCommand,
+      statePaths.guest_marker_path,
+      buildLegacyVmAgentGuestMarkerPath(input.workspace_paths.guest_worktree_path),
+    )}`;
   const remoteSessionScript = `${remoteAgentScript}; exec bash -li`;
 
   const command = ["ssh", "-tt"];

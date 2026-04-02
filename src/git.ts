@@ -1,6 +1,6 @@
 import { access, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { RepoConfig } from "./config.js";
@@ -21,17 +21,21 @@ export interface EnsureWorkspaceWorktreeParams {
   workspace_name: string;
   branch: string;
   start_point: string;
+  allow_branch_reuse?: boolean;
 }
 
 export interface RemoveWorktreeParams {
   repo: GitRepoConfig;
   workspace_name: string;
+  worktree_path?: string;
+  force?: boolean;
 }
 
 export interface RestoreWorktreeParams {
   repo: GitRepoConfig;
   workspace_name: string;
   branch: string;
+  allow_branch_reuse?: boolean;
 }
 
 export interface FetchGitRefParams {
@@ -42,9 +46,18 @@ export interface FetchGitRefParams {
   destination_ref: string;
 }
 
+export interface FastForwardWorktreeParams {
+  worktree_path: string;
+  target_ref: string;
+}
+
 export interface WorktreeResult {
   branch: string;
   worktree_path: string;
+}
+
+export interface ManagedWorktreeMatch extends WorktreeResult {
+  workspace_name: string;
 }
 
 export interface EnsuredWorktreeResult extends WorktreeResult {
@@ -238,6 +251,91 @@ async function listRegisteredWorktrees(mainWorktree: string): Promise<string[]> 
   }
 }
 
+async function isRegisteredWorktree(
+  mainWorktree: string,
+  worktreePath: string,
+): Promise<boolean> {
+  const normalizedTarget = await normalizePath(worktreePath);
+  const registeredWorktrees = await listRegisteredWorktrees(mainWorktree);
+  const normalizedRegistered = await Promise.all(
+    registeredWorktrees.map((path) => normalizePath(path)),
+  );
+
+  return normalizedRegistered.includes(normalizedTarget);
+}
+
+async function listRegisteredWorktreeDetails(
+  mainWorktree: string,
+): Promise<Array<{ worktree_path: string; branch: string | null }>> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["worktree", "list", "--porcelain"],
+      { cwd: mainWorktree },
+    );
+
+    const entries: Array<{ worktree_path: string; branch: string | null }> = [];
+    let currentPath: string | null = null;
+    let currentBranch: string | null = null;
+
+    for (const line of stdout.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        if (currentPath !== null) {
+          entries.push({
+            worktree_path: currentPath,
+            branch: currentBranch,
+          });
+        }
+        currentPath = line.slice("worktree ".length).trim();
+        currentBranch = null;
+        continue;
+      }
+
+      if (line.startsWith("branch ")) {
+        const branchRef = line.slice("branch ".length).trim();
+        currentBranch = branchRef.startsWith("refs/heads/")
+          ? branchRef.slice("refs/heads/".length)
+          : branchRef;
+      }
+    }
+
+    if (currentPath !== null) {
+      entries.push({
+        worktree_path: currentPath,
+        branch: currentBranch,
+      });
+    }
+
+    return entries;
+  } catch (err: unknown) {
+    throw new GitWorktreeError(
+      "COMMAND_FAILED",
+      `Failed to list registered worktrees in ${mainWorktree}\n${formatGitError(err)}`,
+    );
+  }
+}
+
+function toWorkspaceNameFromManagedPath(
+  worktreeBase: string,
+  worktreePath: string,
+): string | null {
+  const relativePath = relative(worktreeBase, worktreePath);
+  if (
+    relativePath.length === 0 ||
+    relativePath.startsWith(`..${sep}`) ||
+    relativePath === ".." ||
+    relativePath.includes(sep)
+  ) {
+    return null;
+  }
+
+  try {
+    return validateWorkspaceName(relativePath);
+  } catch {
+    return null;
+  }
+}
+
 async function branchExists(
   mainWorktree: string,
   branch: string,
@@ -391,6 +489,7 @@ export async function ensureWorkspaceWorktree(
       repo: params.repo,
       workspace_name: workspaceName,
       branch,
+      allow_branch_reuse: params.allow_branch_reuse,
     });
     return {
       ...restored,
@@ -405,17 +504,74 @@ export async function ensureWorkspaceWorktree(
   };
 }
 
+export async function findManagedWorktreeForBranch(
+  repo: GitRepoConfig,
+  branch: string,
+): Promise<ManagedWorktreeMatch | null> {
+  const mainWorktree = expandHomePath(repo.main_worktree);
+  const worktreeBase = expandHomePath(repo.worktree_base);
+
+  await ensureMainWorktree(mainWorktree);
+  await ensureValidBranchName(mainWorktree, branch);
+
+  const normalizedWorktreeBase = await normalizePath(worktreeBase);
+  const worktrees = await listRegisteredWorktreeDetails(mainWorktree);
+
+  for (const worktree of worktrees) {
+    if (worktree.branch !== branch) {
+      continue;
+    }
+
+    const normalizedWorktreePath = await normalizePath(worktree.worktree_path);
+    const workspaceName = toWorkspaceNameFromManagedPath(
+      normalizedWorktreeBase,
+      normalizedWorktreePath,
+    );
+
+    if (workspaceName === null) {
+      continue;
+    }
+
+    return {
+      workspace_name: workspaceName,
+      branch,
+      worktree_path: join(worktreeBase, workspaceName),
+    };
+  }
+
+  return null;
+}
+
+export async function listWorktreesForBranch(
+  repo: Pick<GitRepoConfig, "main_worktree">,
+  branch: string,
+): Promise<WorktreeResult[]> {
+  const mainWorktree = expandHomePath(repo.main_worktree);
+
+  await ensureMainWorktree(mainWorktree);
+  await ensureValidBranchName(mainWorktree, branch);
+
+  const worktrees = await listRegisteredWorktreeDetails(mainWorktree);
+  return worktrees
+    .filter((worktree) => worktree.branch === branch)
+    .map((worktree) => ({
+      branch,
+      worktree_path: worktree.worktree_path,
+    }));
+}
+
 export async function removeWorktree(
   params: RemoveWorktreeParams,
 ): Promise<WorktreeResult> {
   const workspaceName = validateWorkspaceName(params.workspace_name);
   const mainWorktree = expandHomePath(params.repo.main_worktree);
-  const worktreePath = buildWorktreePath(params.repo, workspaceName);
+  const worktreePath = params.worktree_path === undefined
+    ? buildWorktreePath(params.repo, workspaceName)
+    : expandHomePath(params.worktree_path);
 
   await ensureMainWorktree(mainWorktree);
 
-  const registeredWorktrees = await listRegisteredWorktrees(mainWorktree);
-  if (!registeredWorktrees.includes(worktreePath)) {
+  if (!(await isRegisteredWorktree(mainWorktree, worktreePath))) {
     throw new GitWorktreeError(
       "WORKTREE_MISSING",
       `Worktree does not exist at ${worktreePath}`,
@@ -430,12 +586,65 @@ export async function removeWorktree(
       branch = workspaceName;
     }
   }
-  await runGit(["worktree", "remove", worktreePath], mainWorktree);
+
+  const removeArgs = ["worktree", "remove"];
+  if (params.force === true) {
+    removeArgs.push("--force");
+  }
+  removeArgs.push(worktreePath);
+  await runGit(removeArgs, mainWorktree);
 
   return {
     branch,
     worktree_path: worktreePath,
   };
+}
+
+export async function isWorktreeDirty(worktreePath: string): Promise<boolean> {
+  const expandedPath = expandHomePath(worktreePath);
+  if (!(await pathExists(expandedPath))) {
+    return false;
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["status", "--porcelain", "--untracked-files=all"],
+      { cwd: expandedPath },
+    );
+    return stdout.trim().length > 0;
+  } catch (err: unknown) {
+    throw new GitWorktreeError(
+      "COMMAND_FAILED",
+      `Failed to inspect worktree status at ${expandedPath}\n${formatGitError(err)}`,
+    );
+  }
+}
+
+export async function fastForwardWorktree(
+  params: FastForwardWorktreeParams,
+): Promise<void> {
+  const worktreePath = expandHomePath(params.worktree_path);
+
+  if (!(await pathExists(worktreePath))) {
+    throw new GitWorktreeError(
+      "WORKTREE_MISSING",
+      `Worktree does not exist at ${worktreePath}`,
+    );
+  }
+
+  try {
+    await execFileAsync(
+      "git",
+      ["merge", "--ff-only", params.target_ref],
+      { cwd: worktreePath },
+    );
+  } catch (err: unknown) {
+    throw new GitWorktreeError(
+      "COMMAND_FAILED",
+      `Failed to fast-forward worktree at ${worktreePath} to ${params.target_ref}\n${formatGitError(err)}`,
+    );
+  }
 }
 
 export async function fetchGitRef(
@@ -512,8 +721,12 @@ export async function restoreWorktree(
   }
 
   await mkdir(expandHomePath(params.repo.worktree_base), { recursive: true });
+  const addArgs = params.allow_branch_reuse === true
+    ? ["worktree", "add", "-f", worktreePath, branch]
+    : ["worktree", "add", worktreePath, branch];
+
   try {
-    await runGit(["worktree", "add", worktreePath, branch], mainWorktree);
+    await runGit(addArgs, mainWorktree);
   } catch (error: unknown) {
     if (isBranchInUseError(error)) {
       throw new GitWorktreeError(
