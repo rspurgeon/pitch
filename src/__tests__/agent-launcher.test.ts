@@ -622,9 +622,11 @@ describe("agent launcher", () => {
       "/srv/pitch/workspaces/gh-565-fix-validation",
     );
     expect(command.command[7]).toContain("mise install");
+    expect(command.command[7]).toContain("clear &&");
     expect(command.command[7]).toContain("'codex'");
     expect(command.command[7]).toContain("/srv/shared/go");
     expect(command.command[7]).toContain("/srv/shared/kongctl");
+    expect(command.pane_reuse_command).toContain("clear &&");
   });
 
   it("supports explicit runtime overrides", () => {

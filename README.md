@@ -4,7 +4,8 @@ Pitch is a local-first workspace orchestration tool for
 coding agent sessions. It takes a GitHub issue or pull
 request and sets up everything a coding agent needs to
 work: git branch, worktree, tmux window, and agent process
-— all tracked and managed through an MCP server.
+— all tracked and managed through a direct CLI or MCP
+server.
 
 See [docs/design.md](docs/design.md) for the full design
 document.
@@ -29,6 +30,37 @@ make install
 Pitch is a stdio MCP server. In normal use, you do not
 launch it separately with `make start`. Instead, configure
 your MCP client to spawn Pitch on demand.
+
+## Direct CLI
+
+When you already know which workspace lifecycle action you
+want, use the direct CLI instead of routing through an
+agent prompt:
+
+```bash
+npx tsx src/bin/pitch.ts create --pr 700 --slug default-aas --skip-prompt
+npx tsx src/bin/pitch.ts list
+npx tsx src/bin/pitch.ts get pr-700-default-aas
+npx tsx src/bin/pitch.ts resume pr-700-default-aas
+npx tsx src/bin/pitch.ts close pr-700-default-aas
+npx tsx src/bin/pitch.ts delete pr-700-default-aas
+npx tsx src/bin/pitch.ts completion zsh > ~/bin/functions/_pitch
+```
+
+Top-level verbs are the primary interface. `workspace` is
+accepted as a compatibility alias, for example
+`npx tsx src/bin/pitch.ts workspace create ...`.
+`delete` is accepted as an alias for `close`.
+
+The `completion zsh` command emits a zsh completion script
+with dynamic workspace-name completion for `get`,
+`resume`, `close`, and `delete`.
+
+If Pitch is installed as a package, it exposes two
+executables:
+
+- `pitch` — direct CLI
+- `pitch-mcp` — stdio MCP server
 
 ## MCP Client Configuration
 
@@ -107,6 +139,12 @@ launch it yourself:
 make start
 ```
 
+For direct CLI testing from the repository checkout, use:
+
+```bash
+npm run cli -- --help
+```
+
 For most manual verification, `make ping`,
 `make tools-list`, and `make inspect` are usually more
 convenient than starting the server yourself.
@@ -145,6 +183,13 @@ custom `args` or `env`. For `myorg/myrepo`, Pitch will
 derive `worktree_base` as
 `~/.local/share/worktrees/myorg/myrepo` and `tmux_session`
 as `myrepo`.
+
+With that config in place, the direct CLI can create a
+workspace with:
+
+```bash
+npx tsx src/bin/pitch.ts create --issue 42 --slug fix-bug
+```
 
 ### Configuration Reference
 
@@ -370,6 +415,12 @@ create_workspace \
   --pr 543 --slug debug-ci --agent claude-enterprise
 ```
 
+The direct CLI uses the same underlying implementation:
+
+```bash
+npx tsx src/bin/pitch.ts create --pr 543 --slug debug-ci --agent claude-enterprise
+```
+
 ## Available Tools
 
 - **ping** — Returns a server status/config summary plus
@@ -402,6 +453,7 @@ make install       # Install dependencies
 make build         # Compile TypeScript to dist/
 make clean         # Remove build artifacts
 make start         # Launch the MCP server
+npm run cli -- --help # Show direct CLI usage
 make lint          # Type-check without emitting
 make test          # Run unit tests
 ```

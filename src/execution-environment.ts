@@ -373,7 +373,8 @@ export function buildVmSshCommand(
   const remoteAgentScript =
     `${buildUserLocalPathSnippet()} && ` +
     `cd -- ${shellEscape(input.workspace_paths.guest_worktree_path)} && ` +
-    `${bootstrapSnippet}${buildVmAgentExecutionSnippet(remoteCommand, statePaths.guest_marker_path)}`;
+    `${bootstrapSnippet}clear && ` +
+    `${buildVmAgentExecutionSnippet(remoteCommand, statePaths.guest_marker_path)}`;
   const remoteSessionScript = `${remoteAgentScript}; exec bash -li`;
 
   const command = ["ssh", "-tt"];

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { BuiltAgentCommand } from "../agent-launcher.js";
 import type { EnsureCodexTrustedPathInput } from "../codex-trust.js";
 import type { PitchConfig } from "../config.js";
+import { GitWorktreeError } from "../git.js";
 import {
   createWorkspace,
   CreateWorkspaceError,
@@ -446,6 +447,7 @@ describe("create workspace", () => {
     expect(dependencies.fetchGitRef).toHaveBeenCalledWith({
       repo: config.repos["kong/kongctl"],
       remote: "origin",
+      fallback_remote: "https://github.com/kong/kongctl.git",
       source_ref: "refs/pull/123/head",
       destination_ref: "refs/pitch/pr/123/head",
     });
@@ -514,6 +516,64 @@ describe("create workspace", () => {
     );
     expect(dependencies.fetchGitRef).not.toHaveBeenCalled();
     expect(dependencies.ensureWorkspaceWorktree).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the workspace branch when the PR head branch is already in use", async () => {
+    const config = makeConfig();
+    const warnings: string[] = [];
+    const dependencies = makeDependencies({
+      ensureWorkspaceWorktree: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new GitWorktreeError(
+            "BRANCH_IN_USE",
+            "Branch is already checked out in another worktree: feature/example",
+          ),
+        )
+        .mockResolvedValueOnce({
+          branch: "pr-123-sync-pr",
+          worktree_path: "/tmp/worktrees/pr-123-sync-pr",
+          adopted: false,
+        }),
+    });
+
+    const workspace = await createWorkspace(
+      {
+        pr: 123,
+        slug: "sync-pr",
+      },
+      config,
+      {
+        ...dependencies,
+        reportWarning: (warning) => warnings.push(warning),
+      },
+    );
+
+    expect(dependencies.ensureWorkspaceWorktree).toHaveBeenNthCalledWith(1, {
+      repo: config.repos["kong/kongctl"],
+      workspace_name: "pr-123-sync-pr",
+      branch: "feature/example",
+      start_point: "refs/pitch/pr/123/head",
+    });
+    expect(dependencies.ensureWorkspaceWorktree).toHaveBeenNthCalledWith(2, {
+      repo: config.repos["kong/kongctl"],
+      workspace_name: "pr-123-sync-pr",
+      branch: "pr-123-sync-pr",
+      start_point: "refs/pitch/pr/123/head",
+    });
+    expect(workspace).toEqual(
+      makeWorkspaceRecord({
+        name: "pr-123-sync-pr",
+        source_kind: "pr",
+        source_number: 123,
+        branch: "pr-123-sync-pr",
+        worktree_path: "/tmp/worktrees/pr-123-sync-pr",
+        tmux_window: "pr-123-sync-pr",
+      }),
+    );
+    expect(warnings).toEqual([
+      "PR head branch feature/example is already checked out in another worktree; using workspace branch pr-123-sync-pr instead.",
+    ]);
   });
 
   it("stores a pending Codex session and preserves shell-expanded env vars", async () => {

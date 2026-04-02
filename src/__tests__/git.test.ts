@@ -8,6 +8,7 @@ import {
   buildWorktreePath,
   createWorktree,
   ensureWorkspaceWorktree,
+  fetchGitRef,
   GitWorktreeError,
   removeWorktree,
   restoreWorktree,
@@ -217,6 +218,22 @@ describe("git worktree management", () => {
     ).resolves.toBe("feature/token-refresh");
   });
 
+  it("surfaces a typed error when the target branch is already checked out elsewhere", async () => {
+    await git(["checkout", "-b", "feature/in-use"], repo.main_worktree);
+
+    await expect(
+      ensureWorkspaceWorktree({
+        repo,
+        workspace_name: "pr-543-debug-ci",
+        branch: "feature/in-use",
+        start_point: "main",
+      }),
+    ).rejects.toMatchObject({
+      name: "GitWorktreeError",
+      code: "BRANCH_IN_USE",
+    });
+  });
+
   it("normalizes configured and registered worktree paths before adoption", async () => {
     const actualBase = join(tempRoot, "actual-worktrees");
     const symlinkBase = join(tempRoot, "linked-worktrees");
@@ -405,5 +422,20 @@ describe("git worktree management", () => {
       name: "GitWorktreeError",
       code: "BRANCH_MISSING",
     });
+  });
+
+  it("falls back to an alternate remote when the primary fetch remote fails", async () => {
+    const refName = await fetchGitRef({
+      repo,
+      remote: "missing-remote",
+      fallback_remote: repo.main_worktree,
+      source_ref: "refs/heads/main",
+      destination_ref: "refs/pitch/test/main",
+    });
+
+    expect(refName).toBe("refs/pitch/test/main");
+    await expect(
+      git(["show-ref", "--verify", "refs/pitch/test/main"], repo.main_worktree),
+    ).resolves.toContain("refs/pitch/test/main");
   });
 });
