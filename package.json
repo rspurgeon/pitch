@@ -4,7 +4,12 @@
   "description": "Local-first workspace orchestration tool for coding agent sessions",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "pitch": "dist/bin/pitch.js",
+    "pitch-mcp": "dist/index.js"
+  },
   "scripts": {
+    "cli": "tsx src/bin/pitch.ts",
     "start": "tsx src/index.ts",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run"

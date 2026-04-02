@@ -9,12 +9,12 @@ or pull request to a fully configured development
 workspace: git worktree, tmux window, coding agent — all
 wired up and tracked.
 
-Pitch exposes an MCP server over stdio. A user interacts
-with Pitch through any MCP-capable agent (Claude Code,
-Codex, etc.) acting as a "Pilot" — issuing natural
-language commands that translate into MCP tool calls.
-Pitch itself is not an agent; it is a deterministic
-automation layer.
+Pitch exposes both a direct CLI and an MCP server over
+stdio. Operators can invoke deterministic workspace
+lifecycle commands directly, while MCP-capable agents
+(Claude Code, Codex, etc.) can drive the same operations
+through natural-language requests. Pitch itself is not an
+agent; it is a deterministic automation layer.
 
 ### What Pitch Does
 
@@ -27,12 +27,39 @@ debug-ci", Pitch:
    path
 3. Creates or adopts the appropriate local branch
    (`gh-565-fix-validation` for an issue workspace, or the
-   actual PR head branch for a PR workspace)
+   PR head branch when available for a PR workspace)
 4. Finds or creates the project's tmux session
 4. Creates a new tmux window named `gh-565-fix-validation`
 5. Splits the window into a three-pane layout
 6. Launches the configured coding agent in the left pane
 7. Records the workspace state to disk
+
+### Direct CLI Surface
+
+The direct CLI is optimized for deterministic terminal
+control when the operator already knows the desired
+workspace action:
+
+```bash
+pitch create --issue 565 --slug fix-validation
+pitch create --pr 543 --slug debug-ci
+pitch list
+pitch get pr-543-debug-ci
+pitch resume pr-543-debug-ci
+pitch close pr-543-debug-ci
+pitch delete pr-543-debug-ci
+pitch completion zsh > ~/bin/functions/_pitch
+```
+
+Top-level verbs are the primary interface. `pitch
+workspace <command> ...` may exist as a compatibility
+alias, but workspace lifecycle remains the default command
+surface because workspace is Pitch's primary entity.
+`delete` may exist as an alias for `close`.
+
+Shell completion may be exposed from the CLI itself,
+including dynamic completion of existing workspace names
+for commands that target a workspace.
 
 ### Technology
 
@@ -71,7 +98,7 @@ work. Pitch stores the source as:
 | Relationship | Cardinality | Notes |
 |---|---|---|
 | Issue → Workspace | 1:many | Separate slugs can produce multiple workspaces |
-| PR → Workspace | 1:1 | Current implementation reuses the PR head branch, so Pitch tracks one workspace per PR |
+| PR → Workspace | 1:1 | Pitch tracks one workspace per PR |
 | Workspace → Branch | 1:1 | PR workspaces may use a branch name different from the workspace name |
 | Branch → Worktree | 1:1 | Git enforces this |
 | Workspace → tmux window | 1:1 | Window named after workspace |
@@ -91,10 +118,11 @@ This string is used as:
 - Workspace identifier in Pitch's state
 
 For issue workspaces, the git branch usually matches the
-workspace name. For PR workspaces, the git branch uses the
-actual PR head branch name so it matches the PR, but users
-may still need to set upstream or add a remote before a
-plain `git push` will update that PR branch.
+workspace name. For PR workspaces, Pitch prefers the
+actual PR head branch name when it is not already checked
+out elsewhere. If that branch is already in use by another
+worktree, Pitch falls back to a workspace-local branch
+name so workspace creation can still proceed.
 
 ---
 

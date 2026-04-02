@@ -37,6 +37,7 @@ export interface RestoreWorktreeParams {
 export interface FetchGitRefParams {
   repo: Pick<GitRepoConfig, "main_worktree">;
   remote: string;
+  fallback_remote?: string;
   source_ref: string;
   destination_ref: string;
 }
@@ -55,6 +56,7 @@ type GitWorktreeErrorCode =
   | "INVALID_MAIN_WORKTREE"
   | "INVALID_WORKSPACE_NAME"
   | "INVALID_BRANCH_NAME"
+  | "BRANCH_IN_USE"
   | "BRANCH_MISSING"
   | "BRANCH_EXISTS"
   | "WORKTREE_EXISTS"
@@ -104,6 +106,10 @@ function formatGitError(err: unknown): string {
   }
 
   return String(err);
+}
+
+function isBranchInUseError(error: unknown): boolean {
+  return formatGitError(error).includes("is already used by worktree at");
 }
 
 async function runGit(
@@ -339,10 +345,21 @@ export async function createWorktree(
   }
 
   await mkdir(expandHomePath(params.repo.worktree_base), { recursive: true });
-  await runGit(
-    ["worktree", "add", "-b", branch, worktreePath, params.start_point],
-    mainWorktree,
-  );
+  try {
+    await runGit(
+      ["worktree", "add", "-b", branch, worktreePath, params.start_point],
+      mainWorktree,
+    );
+  } catch (error: unknown) {
+    if (isBranchInUseError(error)) {
+      throw new GitWorktreeError(
+        "BRANCH_IN_USE",
+        `Branch is already checked out in another worktree: ${branch}`,
+      );
+    }
+
+    throw error;
+  }
 
   return {
     branch,
@@ -427,15 +444,33 @@ export async function fetchGitRef(
   const mainWorktree = expandHomePath(params.repo.main_worktree);
   await ensureMainWorktree(mainWorktree);
 
-  await runGit(
-    [
-      "fetch",
-      "--no-tags",
-      params.remote,
-      `${params.source_ref}:${params.destination_ref}`,
-    ],
-    mainWorktree,
-  );
+  const refSpec = `${params.source_ref}:${params.destination_ref}`;
+
+  try {
+    await runGit(
+      ["fetch", "--no-tags", params.remote, refSpec],
+      mainWorktree,
+    );
+  } catch (primaryError: unknown) {
+    if (
+      params.fallback_remote === undefined ||
+      params.fallback_remote === params.remote
+    ) {
+      throw primaryError;
+    }
+
+    try {
+      await runGit(
+        ["fetch", "--no-tags", params.fallback_remote, refSpec],
+        mainWorktree,
+      );
+    } catch (fallbackError: unknown) {
+      throw new GitWorktreeError(
+        "COMMAND_FAILED",
+        `Failed to fetch ${params.source_ref} into ${params.destination_ref} via ${params.remote} and fallback remote ${params.fallback_remote}\nPrimary: ${formatGitError(primaryError)}\nFallback: ${formatGitError(fallbackError)}`,
+      );
+    }
+  }
 
   return params.destination_ref;
 }
@@ -477,7 +512,18 @@ export async function restoreWorktree(
   }
 
   await mkdir(expandHomePath(params.repo.worktree_base), { recursive: true });
-  await runGit(["worktree", "add", worktreePath, branch], mainWorktree);
+  try {
+    await runGit(["worktree", "add", worktreePath, branch], mainWorktree);
+  } catch (error: unknown) {
+    if (isBranchInUseError(error)) {
+      throw new GitWorktreeError(
+        "BRANCH_IN_USE",
+        `Branch is already checked out in another worktree: ${branch}`,
+      );
+    }
+
+    throw error;
+  }
 
   return {
     branch,

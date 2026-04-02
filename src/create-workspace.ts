@@ -14,6 +14,7 @@ import { ensureCodexTrustedPath } from "./codex-trust.js";
 import {
   ensureWorkspaceWorktree,
   fetchGitRef,
+  GitWorktreeError,
   removeWorktree,
 } from "./git.js";
 import { runGitHubLifecycle } from "./github-lifecycle.js";
@@ -357,6 +358,7 @@ async function resolveWorkspaceSource(
     await dependencies.fetchGitRef({
       repo: repoConfig,
       remote: "origin",
+      fallback_remote: `${new URL(pullRequest.url).origin}/${repoName}.git`,
       source_ref: `refs/pull/${pullRequest.number}/head`,
       destination_ref: startPoint,
     });
@@ -413,6 +415,18 @@ function buildAgentSessions(
       status: "pending",
     },
   ];
+}
+
+function shouldRetryPullRequestWithWorkspaceBranch(
+  source: ResolvedWorkspaceSource,
+  error: unknown,
+): error is GitWorktreeError {
+  return (
+    source.source_kind === "pr" &&
+    source.branch !== source.workspace_name &&
+    error instanceof GitWorktreeError &&
+    error.code === "BRANCH_IN_USE"
+  );
 }
 
 async function maybeEnsureOpencodeConfig(
@@ -610,12 +624,30 @@ export async function createWorkspace(
       dependencies,
     );
 
-    const worktree = await dependencies.ensureWorkspaceWorktree({
-      repo: repoConfig,
-      workspace_name: workspaceName,
-      branch: source.branch,
-      start_point: source.start_point,
-    });
+    let worktree;
+    try {
+      worktree = await dependencies.ensureWorkspaceWorktree({
+        repo: repoConfig,
+        workspace_name: workspaceName,
+        branch: source.branch,
+        start_point: source.start_point,
+      });
+    } catch (error: unknown) {
+      if (!shouldRetryPullRequestWithWorkspaceBranch(source, error)) {
+        throw error;
+      }
+
+      reportWarnings(dependencies.reportWarning, [
+        `PR head branch ${source.branch} is already checked out in another worktree; using workspace branch ${source.workspace_name} instead.`,
+      ]);
+
+      worktree = await dependencies.ensureWorkspaceWorktree({
+        repo: repoConfig,
+        workspace_name: workspaceName,
+        branch: source.workspace_name,
+        start_point: source.start_point,
+      });
+    }
     rollbackState.worktree_created = !worktree.adopted;
 
     await dependencies.ensureTmuxSession({
