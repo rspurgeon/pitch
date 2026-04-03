@@ -243,6 +243,55 @@ describe("close workspace", () => {
     });
   });
 
+  it("sends Ctrl-C to ssh-backed vm agent panes when only the legacy marker exists", async () => {
+    const worktreePath = await mkdtemp(
+      join(process.cwd(), ".tmp-close-workspace-legacy-vm-agent-"),
+    );
+    const legacyMarkerPath = join(worktreePath, ".pitch", "vm-agent-active");
+    await mkdir(dirname(legacyMarkerPath), { recursive: true });
+    await writeFile(legacyMarkerPath, "active");
+
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          worktree_path: worktreePath,
+          environment_name: "sandbox-vm",
+          environment_kind: "vm-ssh",
+          guest_worktree_path: "/srv/pitch/workspaces/gh-42-fix-bug",
+          agent_pane_process: "ssh",
+        }),
+      ),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%1",
+            current_command: "ssh",
+            current_path: worktreePath,
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    await closeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
+      pane_id: "%1",
+      command: "C-c",
+      enter: false,
+    });
+
+    await rm(worktreePath, {
+      recursive: true,
+      force: true,
+    });
+  });
+
   it("fails when closing the tmux window fails", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({

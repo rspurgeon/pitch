@@ -127,6 +127,39 @@ describe("git worktree management", () => {
     ).resolves.not.toContain(created.worktree_path);
   });
 
+  it("rejects an explicit worktree path that does not match the managed workspace path", async () => {
+    await createWorktree({
+      repo,
+      workspace_name: "gh-124-remove-worktree",
+      branch: "gh-124-remove-worktree",
+      start_point: "main",
+    });
+    const other = await createWorktree({
+      repo,
+      workspace_name: "gh-124-other-worktree",
+      branch: "gh-124-other-worktree",
+      start_point: "main",
+    });
+
+    await expect(
+      removeWorktree({
+        repo,
+        workspace_name: "gh-124-remove-worktree",
+        worktree_path: other.worktree_path,
+      }),
+    ).rejects.toMatchObject({
+      name: "GitWorktreeError",
+      code: "INVALID_WORKTREE_PATH",
+    });
+
+    await expect(
+      git(["worktree", "list", "--porcelain"], repo.main_worktree),
+    ).resolves.toContain(other.worktree_path);
+    await expect(
+      git(["worktree", "list", "--porcelain"], repo.main_worktree),
+    ).resolves.toContain(buildWorktreePath(repo, "gh-124-remove-worktree"));
+  });
+
   it("force-removes a dirty worktree", async () => {
     const created = await createWorktree({
       repo,

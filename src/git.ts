@@ -74,6 +74,7 @@ type GitWorktreeErrorCode =
   | "BRANCH_EXISTS"
   | "WORKTREE_EXISTS"
   | "WORKTREE_MISSING"
+  | "INVALID_WORKTREE_PATH"
   | "COMMAND_FAILED";
 
 export class GitWorktreeError extends Error {
@@ -565,11 +566,27 @@ export async function removeWorktree(
 ): Promise<WorktreeResult> {
   const workspaceName = validateWorkspaceName(params.workspace_name);
   const mainWorktree = expandHomePath(params.repo.main_worktree);
+  const expectedWorktreePath = buildWorktreePath(params.repo, workspaceName);
   const worktreePath = params.worktree_path === undefined
-    ? buildWorktreePath(params.repo, workspaceName)
+    ? expectedWorktreePath
     : expandHomePath(params.worktree_path);
 
   await ensureMainWorktree(mainWorktree);
+
+  if (params.worktree_path !== undefined) {
+    const [normalizedWorktreePath, normalizedExpectedWorktreePath] =
+      await Promise.all([
+        normalizePath(worktreePath),
+        normalizePath(expectedWorktreePath),
+      ]);
+
+    if (normalizedWorktreePath !== normalizedExpectedWorktreePath) {
+      throw new GitWorktreeError(
+        "INVALID_WORKTREE_PATH",
+        `Worktree path does not match the managed worktree for ${workspaceName}: ${worktreePath}`,
+      );
+    }
+  }
 
   if (!(await isRegisteredWorktree(mainWorktree, worktreePath))) {
     throw new GitWorktreeError(

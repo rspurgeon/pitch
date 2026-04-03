@@ -1,5 +1,4 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { access } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { z } from "zod";
 import {
@@ -13,8 +12,8 @@ import type { PitchConfig } from "./config.js";
 import { ensureCodexTrustedPath } from "./codex-trust.js";
 import { findCodexSessionForWorkspace } from "./codex-session-store.js";
 import {
-  buildVmAgentHostMarkerPath,
   deriveAgentPaneProcess,
+  isVmAgentActiveOnHost,
   mapAdditionalPathsForEnvironment,
   resolveExecutionEnvironment,
   resolveWorkspacePaths,
@@ -272,15 +271,6 @@ function buildNextAgentSession(
   };
 }
 
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function isCompatibleRunningAgentPane(
   workspace: WorkspaceRecord,
   paneInfo: TmuxPaneInfo | null,
@@ -302,9 +292,7 @@ async function isCompatibleRunningAgentPane(
   }
 
   if (workspace.environment_kind === "vm-ssh") {
-    return pathExists(
-      buildVmAgentHostMarkerPath(workspace.worktree_path, workspace.name),
-    );
+    return isVmAgentActiveOnHost(workspace.worktree_path, workspace.name);
   }
 
   return true;
@@ -331,11 +319,7 @@ async function shouldReuseConnectedVmPane(
     return false;
   }
 
-  return !(
-    await pathExists(
-      buildVmAgentHostMarkerPath(workspace.worktree_path, workspace.name),
-    )
-  );
+  return !(await isVmAgentActiveOnHost(workspace.worktree_path, workspace.name));
 }
 
 async function maybeSyncWorkspaceOnResume(

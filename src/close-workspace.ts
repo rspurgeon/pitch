@@ -1,12 +1,11 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { access } from "node:fs/promises";
 import { z } from "zod";
 import { removeCodexTrustedPath } from "./codex-trust.js";
 import type { PitchConfig, RepoConfig } from "./config.js";
 import {
-  buildVmAgentHostMarkerPath,
   deriveAgentPaneProcess,
+  isVmAgentActiveOnHost,
   resolveExecutionEnvironment,
   resolveWorkspacePaths,
 } from "./execution-environment.js";
@@ -193,15 +192,6 @@ const SHELL_COMMANDS = new Set([
   "zsh",
 ]);
 
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function tryGracefulAgentShutdown(
   workspace: WorkspaceRecord,
   dependencies: WorkspaceLifecycleDependencies,
@@ -232,11 +222,7 @@ async function tryGracefulAgentShutdown(
 
   if (
     workspace.environment_kind === "vm-ssh" &&
-    !(
-      await pathExists(
-        buildVmAgentHostMarkerPath(workspace.worktree_path, workspace.name),
-      )
-    )
+    !(await isVmAgentActiveOnHost(workspace.worktree_path, workspace.name))
   ) {
     return;
   }
@@ -262,13 +248,7 @@ async function tryGracefulAgentShutdown(
       });
 
       if (workspace.environment_kind === "vm-ssh") {
-        if (
-          !(
-            await pathExists(
-              buildVmAgentHostMarkerPath(workspace.worktree_path, workspace.name),
-            )
-          )
-        ) {
+        if (!(await isVmAgentActiveOnHost(workspace.worktree_path, workspace.name))) {
           return;
         }
       } else if (SHELL_COMMANDS.has(updatedPaneInfo.current_command)) {

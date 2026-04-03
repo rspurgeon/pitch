@@ -1,3 +1,5 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { BuiltAgentCommand } from "../agent-launcher.js";
 import type { EnsureCodexTrustedPathInput } from "../codex-trust.js";
@@ -621,6 +623,72 @@ describe("resume workspace", () => {
     expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
     expect(workspace).toEqual(originalWorkspace);
     expect(dependencies.runGitHubLifecycle).not.toHaveBeenCalled();
+  });
+
+  it("treats the legacy vm agent marker as an active running agent", async () => {
+    const worktreePath = await mkdtemp(
+      join(process.cwd(), ".tmp-resume-workspace-legacy-vm-agent-"),
+    );
+    const legacyMarkerPath = join(worktreePath, ".pitch", "vm-agent-active");
+    await mkdir(dirname(legacyMarkerPath), { recursive: true });
+    await writeFile(legacyMarkerPath, "active");
+
+    const config = makeConfig();
+    config.environments["sandbox-vm"] = {
+      kind: "vm-ssh",
+      ssh_host: "sandbox.internal",
+      ssh_user: "pitch",
+      ssh_options: [],
+      guest_workspace_root: "/srv/pitch/workspaces",
+      shared_paths: [],
+      bootstrap: {
+        mise_install: true,
+      },
+    };
+
+    const originalWorkspace = makeWorkspaceRecord({
+      agent_name: "codex",
+      agent_type: "codex",
+      agent_sessions: [],
+      environment_name: "sandbox-vm",
+      environment_kind: "vm-ssh",
+      worktree_path: worktreePath,
+      guest_worktree_path: "/srv/pitch/workspaces/gh-42-fix-bug",
+      agent_pane_process: "ssh",
+    });
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () => originalWorkspace),
+      restoreWorktree: vi.fn(async () => ({
+        branch: "gh-42-fix-bug",
+        worktree_path: worktreePath,
+      })),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%1",
+            current_command: "ssh",
+            current_path: worktreePath,
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.buildAgentResumeCommand).not.toHaveBeenCalled();
+    expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
+    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
+    expect(workspace).toEqual(originalWorkspace);
+
+    await rm(worktreePath, {
+      recursive: true,
+      force: true,
+    });
   });
 
   it("reuses an existing ssh pane for a vm-backed fresh launch", async () => {

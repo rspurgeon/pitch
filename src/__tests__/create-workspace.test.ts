@@ -1,3 +1,5 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { BuiltAgentCommand } from "../agent-launcher.js";
 import type { EnsureCodexTrustedPathInput } from "../codex-trust.js";
@@ -1228,6 +1230,78 @@ describe("create workspace", () => {
       repo: "kong/kongctl",
       source_kind: "issue",
       source_number: 42,
+    });
+  });
+
+  it("adopts an existing vm agent window when only the legacy marker exists", async () => {
+    const worktreePath = await mkdtemp(
+      join(process.cwd(), ".tmp-create-workspace-legacy-vm-agent-"),
+    );
+    const legacyMarkerPath = join(worktreePath, ".pitch", "vm-agent-active");
+    await mkdir(dirname(legacyMarkerPath), { recursive: true });
+    await writeFile(legacyMarkerPath, "active");
+
+    const config = makeConfig();
+    config.environments["sandbox-vm"] = {
+      kind: "vm-ssh",
+      ssh_host: "sandbox.internal",
+      ssh_user: "pitch",
+      ssh_options: [],
+      guest_workspace_root: "/srv/pitch/workspaces",
+      shared_paths: [],
+      bootstrap: {
+        mise_install: true,
+      },
+    };
+
+    const dependencies = makeDependencies({
+      ensureWorkspaceWorktree: vi.fn(async () => ({
+        branch: "gh-42-fix-bug",
+        worktree_path: worktreePath,
+        adopted: false,
+      })),
+      buildAgentStartCommand: vi.fn(() => ({
+        agent_name: "codex",
+        agent_type: "codex",
+        runtime: "native",
+        environment_name: "sandbox-vm",
+        environment_kind: "vm-ssh",
+        command: ["ssh", "-tt", "pitch@sandbox.internal"],
+        env: {},
+        agent_env: {
+          CODEX_HOME: "~/.codex",
+        },
+        pane_process_name: "ssh",
+        warnings: [],
+      }) satisfies BuiltAgentCommand),
+      tmuxWindowExists: vi.fn(async () => true),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%9",
+            current_command: "ssh",
+            current_path: worktreePath,
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    const workspace = await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+        agent: "codex",
+        environment: "sandbox-vm",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
+    expect(workspace.agent_sessions).toEqual([]);
+
+    await rm(worktreePath, {
+      recursive: true,
+      force: true,
     });
   });
 

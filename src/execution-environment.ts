@@ -1,3 +1,4 @@
+import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import type {
@@ -40,8 +41,39 @@ export function buildVmAgentHostMarkerPath(
   );
 }
 
+export function buildLegacyVmAgentHostMarkerPath(worktreePath: string): string {
+  return join(worktreePath, ".pitch", "vm-agent-active");
+}
+
 function buildLegacyVmAgentGuestMarkerPath(worktreePath: string): string {
   return posix.join(worktreePath, ".pitch", "vm-agent-active");
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function isVmAgentActiveOnHost(
+  worktreePath: string,
+  workspaceName: string,
+): Promise<boolean> {
+  const markerPaths = [
+    buildVmAgentHostMarkerPath(worktreePath, workspaceName),
+    buildLegacyVmAgentHostMarkerPath(worktreePath),
+  ];
+
+  for (const markerPath of markerPaths) {
+    if (await pathExists(markerPath)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 export class ExecutionEnvironmentError extends Error {

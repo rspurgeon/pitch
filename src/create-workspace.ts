@@ -1,5 +1,4 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { access } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { z } from "zod";
 import {
@@ -20,7 +19,7 @@ import {
 import { runGitHubLifecycle } from "./github-lifecycle.js";
 import { readPullRequest } from "./github-pr.js";
 import {
-  buildVmAgentHostMarkerPath,
+  isVmAgentActiveOnHost,
   mapAdditionalPathsForEnvironment,
   mapPathForEnvironment,
   resolveExecutionEnvironment,
@@ -555,15 +554,6 @@ const SHELL_COMMANDS = new Set([
   "zsh",
 ]);
 
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function classifyExistingPane(
   currentCommand: string,
   agentCommand: BuiltAgentCommand,
@@ -576,10 +566,9 @@ async function classifyExistingPane(
 
   if (currentCommand === agentCommand.pane_process_name) {
     if (agentCommand.environment_kind === "vm-ssh") {
-      const markerPath =
-        agentCommand.host_marker_path ??
-        buildVmAgentHostMarkerPath(worktreePath, workspaceName);
-      return (await pathExists(markerPath)) ? "agent" : "connected-shell";
+      return (await isVmAgentActiveOnHost(worktreePath, workspaceName))
+        ? "agent"
+        : "connected-shell";
     }
 
     return "agent";
