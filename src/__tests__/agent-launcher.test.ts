@@ -309,6 +309,7 @@ describe("agent launcher", () => {
     const command = buildAgentResumeCommand({
       config,
       agent: "claude-enterprise",
+      workspace_name: "gh-565-fix-validation",
       session_id: "session-123",
     });
 
@@ -322,6 +323,7 @@ describe("agent launcher", () => {
     const command = buildAgentResumeCommand({
       config,
       agent: "codex",
+      workspace_name: "gh-565-fix-validation",
       session_id: "session-456",
     });
 
@@ -393,6 +395,7 @@ describe("agent launcher", () => {
       config,
       agent: "opencode",
       opencode_config_path: "/tmp/pitch-opencode/gh-565-fix-validation.json",
+      workspace_name: "gh-565-fix-validation",
       session_id: "ses_123",
       worktree_path: "/tmp/worktree",
     });
@@ -460,6 +463,7 @@ describe("agent launcher", () => {
     const command = buildAgentResumeCommand({
       config,
       agent: "opencode-attach",
+      workspace_name: "gh-565-fix-validation",
       session_id: "ses_123",
       worktree_path: "/tmp/worktree",
     });
@@ -501,6 +505,7 @@ describe("agent launcher", () => {
     const resumeCommand = buildAgentResumeCommand({
       config,
       agent: "opencode-attach-continue",
+      workspace_name: "gh-565-fix-validation",
       session_id: "ses_123",
       worktree_path: "/tmp/worktree",
     });
@@ -599,7 +604,7 @@ describe("agent launcher", () => {
     expect(command.pane_process_name).toBe("ssh");
     expect(command.pane_reuse_command).toContain("[pitch] Agent exited");
     expect(command.host_marker_path).toBe(
-      "/tmp/worktree/.pitch/vm-agent-active",
+      "/tmp/.pitch-state/gh-565-fix-validation/vm-agent-active",
     );
     expect(command.env).toEqual({});
     expect(command.agent_env).toEqual({
@@ -635,6 +640,7 @@ describe("agent launcher", () => {
     const command = buildAgentResumeCommand({
       config,
       agent: "claude-enterprise",
+      workspace_name: "gh-565-fix-validation",
       session_id: "resume-123",
       runtime: "docker",
     });
@@ -753,16 +759,19 @@ describe("agent launcher", () => {
     const claude = claudeLauncher.buildResumeCommand({
       config,
       agent: "claude-enterprise",
+      workspace_name: "gh-565-fix-validation",
       session_id: "claude-session",
     });
     const codex = codexLauncher.buildResumeCommand({
       config,
       agent: "codex",
+      workspace_name: "gh-565-fix-validation",
       session_id: "codex-session",
     });
     const opencode = opencodeLauncher.buildResumeCommand({
       config,
       agent: "opencode",
+      workspace_name: "gh-565-fix-validation",
       session_id: "ses_123",
       worktree_path: "/tmp/worktree",
     });

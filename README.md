@@ -38,19 +38,26 @@ want, use the direct CLI instead of routing through an
 agent prompt:
 
 ```bash
+npx tsx src/bin/pitch.ts --pr 700
 npx tsx src/bin/pitch.ts create --pr 700 --slug default-aas --skip-prompt
 npx tsx src/bin/pitch.ts list
 npx tsx src/bin/pitch.ts get pr-700-default-aas
 npx tsx src/bin/pitch.ts resume pr-700-default-aas
+npx tsx src/bin/pitch.ts resume pr-700-default-aas --sync
 npx tsx src/bin/pitch.ts close pr-700-default-aas
-npx tsx src/bin/pitch.ts delete pr-700-default-aas
+npx tsx src/bin/pitch.ts delete pr-700-default-aas --force
 npx tsx src/bin/pitch.ts completion zsh > ~/bin/functions/_pitch
 ```
 
 Top-level verbs are the primary interface. `workspace` is
 accepted as a compatibility alias, for example
 `npx tsx src/bin/pitch.ts workspace create ...`.
-`delete` is accepted as an alias for `close`.
+
+`close` is non-destructive: it tears down the tmux window
+and keeps the worktree as a tracked closed record.
+`delete` is destructive: it removes the workspace state
+file and, when applicable, the worktree. Dirty worktrees
+are refused unless `--force` is provided.
 
 The `completion zsh` command emits a zsh completion script
 with dynamic workspace-name completion for `get`,
@@ -169,6 +176,9 @@ defaults:
 repos:
   myorg/myrepo:
     main_worktree: ~/dev/myorg/myrepo
+    pane_commands:
+      top_right: nvim .
+      bottom_right: make build
 
 agents:
   codex:
@@ -188,6 +198,7 @@ With that config in place, the direct CLI can create a
 workspace with:
 
 ```bash
+npx tsx src/bin/pitch.ts --issue 42
 npx tsx src/bin/pitch.ts create --issue 42 --slug fix-bug
 ```
 
@@ -235,6 +246,7 @@ Each repo requires:
 | `tmux_session` | Optional explicit tmux session name for this repo |
 | `additional_paths` | Optional repo-wide extra directories Pitch translates per agent |
 | `bootstrap_prompts` | Optional repo-specific prompt template overrides for `issue` and `pr` |
+| `pane_commands` | Optional commands for the `top_right` and `bottom_right` tmux panes |
 | `agent_defaults` | Optional repo-wide agent args/env/runtime applied to every agent |
 | `agent_overrides` | Optional per-repo overrides keyed by configured agent name |
 
@@ -242,6 +254,11 @@ If `worktree_base` is omitted, Pitch derives it as
 `{defaults.worktree_root}/{owner}/{repo}`. If `tmux_session`
 is omitted, Pitch defaults it to the repo name segment
 (`kongctl` for `kong/kongctl`).
+
+If `pane_commands` are configured, Pitch sends them to the
+right-hand panes when it creates or recreates the tmux
+layout for that workspace. It does not re-run them against
+an existing live window.
 
 #### `agents`
 
@@ -404,7 +421,7 @@ Then create workspaces with the named agent entry:
 
 ```
 create_workspace \
-  --issue 42 --slug fix-bug --agent claude-personal
+  --issue 42 --agent claude-personal
 ```
 
 PR-backed workspaces use the same tool with `--pr` instead
@@ -412,14 +429,22 @@ of `--issue`:
 
 ```
 create_workspace \
-  --pr 543 --slug debug-ci --agent claude-enterprise
+  --pr 543 --agent claude-enterprise
 ```
 
 The direct CLI uses the same underlying implementation:
 
 ```bash
+npx tsx src/bin/pitch.ts --pr 543 --agent claude-enterprise
 npx tsx src/bin/pitch.ts create --pr 543 --slug debug-ci --agent claude-enterprise
 ```
+
+`slug` is optional for issue and PR creation. Without it,
+Pitch uses names like `gh-42` or `pr-543`. For PR-backed
+workspaces, the slug names the Pitch session and tmux
+window. Pitch keeps the real PR head branch checked out
+and reuses an existing tracked worktree on that branch
+when possible.
 
 ## Available Tools
 
@@ -439,12 +464,19 @@ npx tsx src/bin/pitch.ts create --pr 543 --slug debug-ci --agent claude-enterpri
 - **get_workspace** — Returns the full saved workspace
   record for a specific workspace name.
 - **resume_workspace** — Relaunches or resumes the
-  coding agent in an existing active workspace. True
-  resumes do not re-send bootstrap prompts or GitHub
-  lifecycle automation; fresh relaunches do.
-- **close_workspace** — Closes the tmux window and,
-  by default, removes the git worktree and workspace
-  state file.
+  coding agent in an existing workspace, including
+  previously closed workspaces. Resume never re-sends the
+  bootstrap prompt. With `sync: true`, PR workspaces may
+  be fast-forwarded to the latest upstream PR head before
+  the agent resumes. True resumes also skip GitHub
+  lifecycle automation; fresh relaunches may still run
+  it.
+- **close_workspace** — Closes the tmux window and marks
+  the workspace closed. The worktree and state file
+  remain so the workspace can be resumed later.
+- **delete_workspace** — Deletes a workspace by removing
+  its state file and, when applicable, its git worktree.
+  Dirty worktrees are refused unless `force` is set.
 
 ## Development
 

@@ -1,3 +1,5 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { BuiltAgentCommand } from "../agent-launcher.js";
 import type { EnsureCodexTrustedPathInput } from "../codex-trust.js";
@@ -83,6 +85,7 @@ function makeWorkspaceRecord(
 ): WorkspaceRecord {
   const workspace: WorkspaceRecord = {
     name: "gh-42-fix-bug",
+    worktree_name: "gh-42-fix-bug",
     repo: "kong/kongctl",
     source_kind: "issue",
     source_number: 42,
@@ -116,6 +119,9 @@ function makeWorkspaceRecord(
 
   if (overrides.guest_worktree_path === undefined) {
     workspace.guest_worktree_path = workspace.worktree_path;
+  }
+  if (overrides.worktree_name === undefined) {
+    workspace.worktree_name = workspace.name;
   }
   if (overrides.environment_name === undefined) {
     workspace.environment_name = null;
@@ -248,6 +254,8 @@ function makeDependencies(
       session_name: "kongctl",
       created: false,
     })),
+    fastForwardWorktree: vi.fn(async () => undefined),
+    fetchGitRef: vi.fn(async () => "refs/pitch/pr/42/head"),
     findCodexSessionForWorkspace: vi.fn(async () => null),
     findOpencodeSessionForWorkspace: vi.fn(async () => null),
     getTmuxWindowPaneInfo: vi.fn(
@@ -267,6 +275,18 @@ function makeDependencies(
           current_path: "/tmp/worktrees/gh-42-fix-bug",
         }) satisfies TmuxPaneInfo,
     ),
+    isWorktreeDirty: vi.fn(async () => false),
+    listWorktreesForBranch: vi.fn(async () => []),
+    readPullRequest: vi.fn(async () => ({
+      number: 42,
+      title: "Example PR",
+      state: "OPEN",
+      base_ref_name: "main",
+      head_ref_name: "feature/example",
+      head_ref_oid: "abc123",
+      is_cross_repository: false,
+      url: "https://github.com/example/repo/pull/42",
+    })),
     readWorkspaceRecord: vi.fn(async () => makeWorkspaceRecord()),
     restoreWorktree: vi.fn(async () => ({
       branch: "gh-42-fix-bug",
@@ -303,6 +323,7 @@ describe("resume workspace", () => {
       agent: "claude-enterprise",
       repo: "kong/kongctl",
       environment: undefined,
+      workspace_name: "gh-42-fix-bug",
       opencode_config_path: undefined,
       session_id: "claude-session-1",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
@@ -351,6 +372,187 @@ describe("resume workspace", () => {
     );
   });
 
+  it("restores a shared PR session using the underlying worktree name", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          name: "pr-690-e2e",
+          worktree_name: "gh-353-env-yaml-tag",
+          source_kind: "pr",
+          source_number: 690,
+          branch: "gh-353-env-yaml-tag",
+          worktree_path: "/tmp/worktrees/gh-353-env-yaml-tag",
+          tmux_window: "pr-690-e2e",
+        })),
+      restoreWorktree: vi.fn(async () => ({
+        branch: "gh-353-env-yaml-tag",
+        worktree_path: "/tmp/worktrees/gh-353-env-yaml-tag",
+      })),
+    });
+
+    await resumeWorkspace(
+      {
+        name: "pr-690-e2e",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.restoreWorktree).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      workspace_name: "gh-353-env-yaml-tag",
+      branch: "gh-353-env-yaml-tag",
+    });
+  });
+
+  it("syncs a PR workspace before resuming when requested", async () => {
+    const config = makeConfig();
+    const warnings: string[] = [];
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          name: "pr-42",
+          source_kind: "pr",
+          source_number: 42,
+          branch: "feature/example",
+          worktree_name: "pr-42",
+          worktree_path: "/tmp/worktrees/pr-42",
+          tmux_window: "pr-42",
+        }),
+      ),
+      restoreWorktree: vi.fn(async () => ({
+        branch: "feature/example",
+        worktree_path: "/tmp/worktrees/pr-42",
+      })),
+      listWorktreesForBranch: vi.fn(async () => [
+        {
+          branch: "feature/example",
+          worktree_path: "/tmp/worktrees/pr-42",
+        },
+        {
+          branch: "feature/example",
+          worktree_path: "/tmp/worktrees/gh-353-env-yaml-tag",
+        },
+      ]),
+    });
+
+    await resumeWorkspace(
+      {
+        name: "pr-42",
+        sync: true,
+      },
+      config,
+      {
+        ...dependencies,
+        reportWarning: (warning) => warnings.push(warning),
+      },
+    );
+
+    expect(dependencies.isWorktreeDirty).toHaveBeenCalledWith(
+      "/tmp/worktrees/pr-42",
+    );
+    expect(dependencies.readPullRequest).toHaveBeenCalledWith({
+      repo: "kong/kongctl",
+      pr_number: 42,
+    });
+    expect(dependencies.fetchGitRef).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      remote: "origin",
+      fallback_remote: "https://github.com/kong/kongctl.git",
+      source_ref: "refs/pull/42/head",
+      destination_ref: "refs/pitch/pr/42/head",
+    });
+    expect(dependencies.fastForwardWorktree).toHaveBeenCalledWith({
+      worktree_path: "/tmp/worktrees/pr-42",
+      target_ref: "refs/pitch/pr/42/head",
+    });
+    expect(warnings).toEqual([
+      "Syncing feature/example for pr-42 will also move the branch ref used by other worktrees: /tmp/worktrees/gh-353-env-yaml-tag.",
+    ]);
+  });
+
+  it("fails sync when the worktree is dirty", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          name: "pr-42",
+          source_kind: "pr",
+          source_number: 42,
+          branch: "feature/example",
+          worktree_name: "pr-42",
+          worktree_path: "/tmp/worktrees/pr-42",
+          tmux_window: "pr-42",
+        }),
+      ),
+      restoreWorktree: vi.fn(async () => ({
+        branch: "feature/example",
+        worktree_path: "/tmp/worktrees/pr-42",
+      })),
+      isWorktreeDirty: vi.fn(async () => true),
+    });
+
+    await expect(
+      resumeWorkspace(
+        {
+          name: "pr-42",
+          sync: true,
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow(
+      "Cannot sync pr-42: worktree /tmp/worktrees/pr-42 contains modified or untracked files.",
+    );
+    expect(dependencies.fetchGitRef).not.toHaveBeenCalled();
+    expect(dependencies.buildAgentResumeCommand).not.toHaveBeenCalled();
+  });
+
+  it("fails sync when a compatible agent pane is already running", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          name: "pr-42",
+          source_kind: "pr",
+          source_number: 42,
+          branch: "feature/example",
+          worktree_name: "pr-42",
+          worktree_path: "/tmp/worktrees/pr-42",
+          tmux_window: "pr-42",
+          agent_sessions: [],
+        }),
+      ),
+      restoreWorktree: vi.fn(async () => ({
+        branch: "feature/example",
+        worktree_path: "/tmp/worktrees/pr-42",
+      })),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%1",
+            current_command: "claude",
+            current_path: "/tmp/worktrees/pr-42",
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    await expect(
+      resumeWorkspace(
+        {
+          name: "pr-42",
+          sync: true,
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow(
+      "Cannot sync pr-42 while a compatible agent pane is already running; use normal git commands inside the workspace instead.",
+    );
+    expect(dependencies.isWorktreeDirty).not.toHaveBeenCalled();
+  });
+
   it("launches fresh when there is no resumable session id", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
@@ -385,7 +587,7 @@ describe("resume workspace", () => {
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
-      initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
+      initial_prompt: undefined,
     });
     expect(workspace.agent_sessions.at(-1)).toEqual({
       id: "claude-session-2",
@@ -421,6 +623,72 @@ describe("resume workspace", () => {
     expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
     expect(workspace).toEqual(originalWorkspace);
     expect(dependencies.runGitHubLifecycle).not.toHaveBeenCalled();
+  });
+
+  it("treats the legacy vm agent marker as an active running agent", async () => {
+    const worktreePath = await mkdtemp(
+      join(process.cwd(), ".tmp-resume-workspace-legacy-vm-agent-"),
+    );
+    const legacyMarkerPath = join(worktreePath, ".pitch", "vm-agent-active");
+    await mkdir(dirname(legacyMarkerPath), { recursive: true });
+    await writeFile(legacyMarkerPath, "active");
+
+    const config = makeConfig();
+    config.environments["sandbox-vm"] = {
+      kind: "vm-ssh",
+      ssh_host: "sandbox.internal",
+      ssh_user: "pitch",
+      ssh_options: [],
+      guest_workspace_root: "/srv/pitch/workspaces",
+      shared_paths: [],
+      bootstrap: {
+        mise_install: true,
+      },
+    };
+
+    const originalWorkspace = makeWorkspaceRecord({
+      agent_name: "codex",
+      agent_type: "codex",
+      agent_sessions: [],
+      environment_name: "sandbox-vm",
+      environment_kind: "vm-ssh",
+      worktree_path: worktreePath,
+      guest_worktree_path: "/srv/pitch/workspaces/gh-42-fix-bug",
+      agent_pane_process: "ssh",
+    });
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () => originalWorkspace),
+      restoreWorktree: vi.fn(async () => ({
+        branch: "gh-42-fix-bug",
+        worktree_path: worktreePath,
+      })),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%1",
+            current_command: "ssh",
+            current_path: worktreePath,
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.buildAgentResumeCommand).not.toHaveBeenCalled();
+    expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
+    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
+    expect(workspace).toEqual(originalWorkspace);
+
+    await rm(worktreePath, {
+      recursive: true,
+      force: true,
+    });
   });
 
   it("reuses an existing ssh pane for a vm-backed fresh launch", async () => {
@@ -462,7 +730,8 @@ describe("resume workspace", () => {
         pane_process_name: "ssh",
         pane_reuse_command:
           "env CODEX_HOME=~/.codex codex --cd /srv/pitch/workspaces/gh-42-fix-bug",
-        host_marker_path: "/tmp/worktrees/gh-42-fix-bug/.pitch/vm-agent-active",
+        host_marker_path:
+          "/tmp/worktrees/.pitch-state/gh-42-fix-bug/vm-agent-active",
         warnings: [],
       }) satisfies BuiltAgentCommand),
       getTmuxWindowPaneInfo: vi.fn(
@@ -561,6 +830,7 @@ describe("resume workspace", () => {
       agent: "codex",
       repo: "kong/kongctl",
       environment: undefined,
+      workspace_name: "gh-42-fix-bug",
       opencode_config_path: undefined,
       session_id: "codex-session-1",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
@@ -643,6 +913,7 @@ describe("resume workspace", () => {
       agent: "codex",
       repo: "kong/kongctl",
       environment: undefined,
+      workspace_name: "gh-42-fix-bug",
       opencode_config_path: undefined,
       session_id: "codex-session-new",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
@@ -725,7 +996,7 @@ describe("resume workspace", () => {
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
-      initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
+      initial_prompt: undefined,
     });
     expect(workspace.agent_sessions).toEqual([
       {
@@ -802,7 +1073,7 @@ describe("resume workspace", () => {
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
-      initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
+      initial_prompt: undefined,
     });
     expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
       repo: "kong/kongctl",
@@ -882,6 +1153,43 @@ describe("resume workspace", () => {
     expect(dependencies.getTmuxWindowPane).not.toHaveBeenCalled();
   });
 
+  it("runs configured pane commands when resume recreates the tmux layout", async () => {
+    const config = makeConfig();
+    config.repos["kong/kongctl"].pane_commands = {
+      top_right: "nvim .",
+      bottom_right: "make build",
+    };
+    const dependencies = makeDependencies({
+      tmuxWindowExists: vi
+        .fn()
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false),
+    });
+
+    await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(1, {
+      pane_id: "%1",
+      command:
+        "CLAUDE_CONFIG_DIR=~/.claude command -- 'claude' '--resume' " +
+        "'claude-session-1'",
+    });
+    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(2, {
+      pane_id: "%2",
+      command: "nvim .",
+    });
+    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(3, {
+      pane_id: "%3",
+      command: "make build",
+    });
+  });
+
   it("starts fresh when overriding to a different agent", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies();
@@ -905,7 +1213,7 @@ describe("resume workspace", () => {
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
-      initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
+      initial_prompt: undefined,
     });
     expect(dependencies.findCodexSessionForWorkspace).not.toHaveBeenCalled();
     expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
@@ -938,7 +1246,7 @@ describe("resume workspace", () => {
       workspace_name: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
-      initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
+      initial_prompt: undefined,
     });
     expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
       repo: "kong/kongctl",
@@ -979,7 +1287,7 @@ describe("resume workspace", () => {
     ).rejects.toThrow("Workspace not found: gh-404-missing");
   });
 
-  it("errors when the workspace is not active", async () => {
+  it("reopens a closed workspace on resume", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
       readWorkspaceRecord: vi.fn(async () =>
@@ -989,15 +1297,43 @@ describe("resume workspace", () => {
       ),
     });
 
-    await expect(
-      resumeWorkspace(
-        {
-          name: "gh-42-fix-bug",
-        },
-        config,
-        dependencies,
-      ),
-    ).rejects.toThrow("Workspace is not active: gh-42-fix-bug");
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.buildAgentResumeCommand).toHaveBeenCalledWith({
+      config,
+      agent: "claude-enterprise",
+      repo: "kong/kongctl",
+      environment: undefined,
+      workspace_name: "gh-42-fix-bug",
+      opencode_config_path: undefined,
+      session_id: "claude-session-1",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+    });
+    expect(workspace).toEqual(
+      makeWorkspaceRecord({
+        status: "active",
+        agent_sessions: [
+          {
+            id: "claude-session-1",
+            started_at: "2026-03-22T20:30:00.000Z",
+            status: "active",
+          },
+          {
+            id: "claude-session-1",
+            started_at: "2026-03-23T04:00:00.000Z",
+            status: "active",
+          },
+        ],
+        updated_at: "2026-03-23T04:00:00.000Z",
+      }),
+    );
   });
 
   it("errors when the tmux window is missing", async () => {
@@ -1079,6 +1415,7 @@ describe("resume workspace", () => {
       agent: "opencode",
       repo: "kong/kongctl",
       environment: undefined,
+      workspace_name: "gh-42-fix-bug",
       opencode_config_path: undefined,
       session_id: "ses_123",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
@@ -1207,7 +1544,7 @@ describe("resume workspace", () => {
     );
   });
 
-  it("sends a deferred bootstrap prompt for a fresh attach-mode OpenCode launch", async () => {
+  it("does not send a deferred bootstrap prompt for a fresh attach-mode OpenCode launch", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
       readWorkspaceRecord: vi.fn(async () =>
@@ -1246,8 +1583,6 @@ describe("resume workspace", () => {
           OPENCODE_SERVER_PASSWORD: "secret",
         },
         pane_process_name: "opencode",
-        post_launch_prompt:
-          "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
         warnings: [],
       }) satisfies BuiltAgentCommand),
     });
@@ -1266,15 +1601,9 @@ describe("resume workspace", () => {
         "OPENCODE_SERVER_PASSWORD='secret' command -- 'opencode' " +
         "'attach' 'http://localhost:4096' '--dir' '/tmp/worktrees/gh-42-fix-bug'",
     });
-    expect(dependencies.getTmuxPaneInfo).toHaveBeenCalledWith({
-      pane_id: "%1",
-    });
-    expect(dependencies.sleep).toHaveBeenCalledWith(10000);
-    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(2, {
-      pane_id: "%1",
-      command: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
-      literal: true,
-    });
+    expect(dependencies.getTmuxPaneInfo).not.toHaveBeenCalled();
+    expect(dependencies.sleep).not.toHaveBeenCalled();
+    expect(dependencies.sendKeysToPane).toHaveBeenCalledTimes(1);
   });
 
   it("wraps tmux pane lookup failures", async () => {

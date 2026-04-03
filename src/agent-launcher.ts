@@ -45,6 +45,7 @@ export interface BuildResumeCommandInput {
   repo?: string;
   opencode_config_path?: string;
   environment?: string;
+  workspace_name: string;
   session_id: string;
   worktree_path?: string;
   host_worktree_path?: string;
@@ -320,6 +321,7 @@ function wrapExecutionEnvironmentCommand(
   environment: ResolvedExecutionEnvironment,
   runtimeCommand: RuntimeWrappedCommand,
   agentEnv: Record<string, string>,
+  workspaceName: string,
   workspacePaths: ResolvedWorkspacePaths | null,
   runBootstrap: boolean,
 ): {
@@ -345,6 +347,7 @@ function wrapExecutionEnvironmentCommand(
 
   const vmCommand = buildVmSshCommand({
     environment: environment.config as VmSshExecutionEnvironmentConfig,
+    workspace_name: workspaceName,
     workspace_paths: workspacePaths,
     agent_command: runtimeCommand.command,
     agent_env: agentEnv,
@@ -392,6 +395,7 @@ function buildClaudeStartCommand(
     environment,
     runtimeCommand,
     agentEnv,
+    input.workspace_name,
     workspacePaths,
     true,
   );
@@ -429,6 +433,7 @@ function buildClaudeResumeCommand(
     environment,
     runtimeCommand,
     agentEnv,
+    input.workspace_name,
     workspacePaths,
     false,
   );
@@ -479,6 +484,7 @@ function buildCodexStartCommand(
     environment,
     runtimeCommand,
     agentEnv,
+    input.workspace_name,
     workspacePaths,
     true,
   );
@@ -515,6 +521,7 @@ function buildCodexResumeCommand(
     environment,
     runtimeCommand,
     agentEnv,
+    input.workspace_name,
     workspacePaths,
     false,
   );
@@ -586,6 +593,7 @@ function buildOpencodeStartCommand(
     environment,
     runtimeCommand,
     agentEnv,
+    input.workspace_name,
     workspacePaths,
     true,
   );
@@ -665,6 +673,7 @@ function buildOpencodeResumeCommand(
     environment,
     runtimeCommand,
     agentEnv,
+    input.workspace_name,
     workspacePaths,
     false,
   );

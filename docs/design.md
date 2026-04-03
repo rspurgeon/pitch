@@ -18,9 +18,9 @@ agent; it is a deterministic automation layer.
 
 ### What Pitch Does
 
-When a user says "create workspace for issue 565 with slug
-fix-validation" or "create workspace for PR 543 with slug
-debug-ci", Pitch:
+When a user says "create workspace for issue 565",
+"create workspace for PR 543", or adds an optional slug
+such as `fix-validation` or `debug-ci`, Pitch:
 
 1. Resolves the source work item (issue or PR)
 2. Creates or adopts the git worktree at the configured
@@ -41,11 +41,14 @@ control when the operator already knows the desired
 workspace action:
 
 ```bash
+pitch --issue 565
+pitch --pr 543
 pitch create --issue 565 --slug fix-validation
 pitch create --pr 543 --slug debug-ci
 pitch list
 pitch get pr-543-debug-ci
 pitch resume pr-543-debug-ci
+pitch resume pr-543-debug-ci --sync
 pitch close pr-543-debug-ci
 pitch delete pr-543-debug-ci
 pitch completion zsh > ~/bin/functions/_pitch
@@ -55,7 +58,6 @@ Top-level verbs are the primary interface. `pitch
 workspace <command> ...` may exist as a compatibility
 alias, but workspace lifecycle remains the default command
 surface because workspace is Pitch's primary entity.
-`delete` may exist as an alias for `close`.
 
 Shell completion may be exposed from the CLI itself,
 including dynamic completion of existing workspace names
@@ -77,9 +79,9 @@ for commands that target a workspace.
 ### Workspace
 
 A workspace is Pitch's primary entity. It represents a
-single unit of code work — one checked-out branch, one
-worktree, one tmux window, one or more sequential coding
-agent sessions.
+single unit of code work — one tmux window and one or
+more sequential coding agent sessions, backed by a
+checked-out branch and worktree.
 
 A workspace is identified by its **workspace name** (for
 example `gh-565-fix-validation` or `pr-543-debug-ci`).
@@ -98,9 +100,10 @@ work. Pitch stores the source as:
 | Relationship | Cardinality | Notes |
 |---|---|---|
 | Issue → Workspace | 1:many | Separate slugs can produce multiple workspaces |
-| PR → Workspace | 1:1 | Pitch tracks one workspace per PR |
-| Workspace → Branch | 1:1 | PR workspaces may use a branch name different from the workspace name |
+| PR → Workspace | 1:many | Multiple PR sessions may share one checkout |
+| Workspace → Branch | many:1 | PR sessions share the PR head branch |
 | Branch → Worktree | 1:1 | Git enforces this |
+| Workspace → Worktree | many:1 | PR sessions may reuse one shared checkout |
 | Workspace → tmux window | 1:1 | Window named after workspace |
 | tmux session → Repo | 1:1 | User convention, configured in Pitch |
 | Workspace → Agent sessions | 1:many | Serial — one active at a time, history tracked |
@@ -109,20 +112,19 @@ work. Pitch stores the source as:
 
 Pitch uses safe workspace names:
 
-- Issue workspace: `gh-{issue_number}-{slug}`
-- PR workspace: `pr-{pr_number}-{slug}`
+- Issue workspace: `gh-{issue_number}` or `gh-{issue_number}-{slug}`
+- PR workspace: `pr-{pr_number}` or `pr-{pr_number}-{slug}`
 
 This string is used as:
-- Worktree directory name
 - tmux window name
 - Workspace identifier in Pitch's state
 
 For issue workspaces, the git branch usually matches the
-workspace name. For PR workspaces, Pitch prefers the
-actual PR head branch name when it is not already checked
-out elsewhere. If that branch is already in use by another
-worktree, Pitch falls back to a workspace-local branch
-name so workspace creation can still proceed.
+workspace name. For PR workspaces, the slug names the
+Pitch session, while the checkout uses the actual PR head
+branch name. PR sessions may reuse an existing tracked
+worktree on that branch or create a canonical PR-scoped
+worktree such as `pr-543`.
 
 ---
 
@@ -133,7 +135,7 @@ name so workspace creation can still proceed.
 Inputs:
 - **repo** (optional, defaults from config) — e.g. `kong/kongctl`
 - **issue** or **pr** (exactly one required) — GitHub issue or PR number
-- **slug** (required) — human-provided descriptive text
+- **slug** (optional) — human-provided descriptive text
 - **base_branch** (optional, issue workspaces only, defaults to `main`)
 - **agent** (optional, defaults from config) — configured agent name such as
   `claude-enterprise`, `codex`, or `opencode`
@@ -141,22 +143,29 @@ Inputs:
 Steps:
 1. Resolve repo config (main worktree, worktree base, tmux session name)
 2. Construct workspace name:
-   `gh-{issue}-{slug}` or `pr-{pr}-{slug}`
+   `gh-{issue}` / `gh-{issue}-{slug}` or
+   `pr-{pr}` / `pr-{pr}-{slug}`
 3. Resolve the git start point:
    issue workspace from `base_branch`, or PR workspace by
    fetching `refs/pull/{pr}/head`
-4. Run `git worktree add` from the main worktree,
+4. Resolve the checkout identity:
+   issue workspaces use the workspace name; PR workspaces
+   reuse an existing tracked checkout on the PR branch
+   when available, otherwise they use a canonical
+   PR-scoped worktree name such as `pr-{pr}`
+5. Run `git worktree add` from the main worktree,
    creating or adopting the branch and worktree
-5. Check if the tmux session exists; create if not
-6. Create a tmux window named after the workspace
-7. Split into three-pane layout (agent left, empty
+6. Check if the tmux session exists; create if not
+7. Create a tmux window named after the workspace
+8. Split into three-pane layout (agent left, empty
    top-right, shell bottom-right)
-8. `cd` all panes to the worktree path
-9. Launch the coding agent in the left pane via the agent
+9. `cd` all panes to the worktree path
+10. Launch the coding agent in the left pane via the
+    agent
    launcher
-10. Persist agent session state (pre-generated for Claude,
+11. Persist agent session state (pre-generated for Claude,
     pending for Codex and OpenCode until a later backfill)
-11. Write workspace record to
+12. Write workspace record to
     `~/.pitch/workspaces/{workspace_name}.yaml`
 
 ### List
@@ -172,12 +181,29 @@ Returns full detail for a specific workspace.
 
 Relaunches the coding agent in an existing workspace's
 tmux pane, using the most recent stored session ID for the
-agent's resume command.
+agent's resume command. Closed workspaces remain tracked
+and can be resumed later.
+
+When `--sync` is requested for a PR workspace, Pitch
+fetches the latest PR head and fast-forwards the local
+branch before resuming. This is intentionally conservative:
+Pitch refuses to sync if the worktree is dirty, if a
+compatible agent pane is already running, or if the
+workspace is not PR-backed.
 
 ### Close
 
-Closes the tmux window and, by default, removes the git
-worktree and deletes the workspace state file.
+Closes the tmux window and marks the workspace closed. The
+worktree and state file remain so the workspace can be
+resumed later.
+
+### Delete
+
+Deletes a workspace record and, when applicable, its git
+worktree. Dirty worktrees are refused unless `--force` is
+set. If multiple Pitch workspaces share one PR checkout,
+Pitch deletes only the targeted workspace record and keeps
+the shared worktree.
 
 ---
 
@@ -209,8 +235,10 @@ Fixed three-pane layout per workspace:
 ```
 
 - Left pane (tall): coding agent runs here
-- Top-right: user opens nvim or whatever they want
-- Bottom-right: ad hoc command line
+- Top-right: user shell, optionally seeded by
+  `repos.<repo>.pane_commands.top_right`
+- Bottom-right: user shell, optionally seeded by
+  `repos.<repo>.pane_commands.bottom_right`
 
 All three panes `cd` to the worktree path on creation.
 
@@ -223,7 +251,7 @@ Pitch calls `git worktree add` directly. It does not depend on external worktree
 Worktree path convention:
 
 ```
-{worktree_base}/{workspace_name}
+{worktree_base}/{worktree_name}
 ```
 
 Example:
@@ -233,8 +261,10 @@ Example:
 ```
 
 The `worktree_base` is configured or derived per repo. The
-worktree path is always based on the workspace name, not
-the checked-out branch name.
+worktree path is based on the checkout identity
+(`worktree_name`), which matches the workspace name for
+issue workspaces but may be shared across multiple PR
+sessions.
 
 ---
 
@@ -396,6 +426,9 @@ repos:
   kong/kongctl:
     default_agent: claude-enterprise
     main_worktree: ~/dev/kong/kongctl
+    pane_commands:
+      top_right: nvim .
+      bottom_right: make build
     additional_paths:
       - /home/rspurgeon/go
     bootstrap_prompts:
@@ -469,6 +502,10 @@ Bootstrap prompt templates resolve in this order:
 2. top-level `bootstrap_prompts.<issue|pr>`
 3. Pitch built-in default prompt
 
+Repo pane commands run only when Pitch creates or
+recreates the tmux layout for a workspace. Pitch does not
+re-send them into an already-live window.
+
 ---
 
 ## Workspace State
@@ -477,6 +514,7 @@ Stored at `~/.pitch/workspaces/{workspace_name}.yaml`:
 
 ```yaml
 name: gh-565-fix-validation
+worktree_name: gh-565-fix-validation
 repo: kong/kongctl
 source_kind: issue
 source_number: 565
@@ -513,9 +551,11 @@ state persistence.
 
 If no workspace state file exists but the expected
 branch, worktree path, or tmux window already exists for
-the derived workspace name, Pitch adopts those matching
-resources instead of failing. Existing tracked workspaces
-are still rejected.
+the derived checkout identity, Pitch adopts those matching
+resources instead of failing. For PR workspaces, Pitch may
+also reuse an existing tracked worktree on the PR head
+branch and create an additional tmux-backed session that
+points at that shared checkout.
 
 When Pitch launches a fresh agent process, it also:
 - best-effort assigns the source issue or PR to the
@@ -534,7 +574,7 @@ bootstrap prompt into that live session.
 - exactly one of:
   - `issue` (number)
   - `pr` (number)
-- `slug` (string, required) — descriptive text for naming
+- `slug` (string, optional) — descriptive suffix for naming
 - `base_branch` (string, optional) — branch to create
   from for issue workspaces, defaults to `main`
 - `agent` (string, optional) — configured agent name like `codex`,
@@ -569,31 +609,54 @@ Returns full detail for a specific workspace.
 Relaunches the coding agent in an existing workspace, using the most recent
 session ID. For native Codex workspaces whose latest session is still pending,
 Pitch may recover the real session ID from the local Codex session store before
-falling back to a fresh launch.
+falling back to a fresh launch. Previously closed
+workspaces can also be resumed.
 
-On a true session resume, Pitch does not re-run GitHub
-lifecycle automation or re-send the bootstrap prompt. On
-a fresh relaunch fallback, it does both.
+Resume never re-sends the bootstrap prompt. On a true
+session resume, Pitch also skips GitHub lifecycle
+automation. On a fresh relaunch fallback, it may still
+re-run GitHub lifecycle automation.
+
+When `sync` is set for a PR workspace, Pitch fetches the
+latest PR head and fast-forwards the existing branch before
+resuming. Sync is refused when the worktree is dirty or a
+compatible agent pane is already running.
 
 **Parameters:**
 - `name` (string, required) — workspace name
 - `agent` (string, optional) — override agent type for this resumption
+- `environment` (string, optional) — override execution environment
+- `sync` (boolean, optional) — fast-forward a PR workspace to the latest
+  upstream PR head before resuming
 
 **Returns:** Updated workspace record with new agent session entry
 
 ### `close_workspace`
 
-Closes a workspace by tearing down its tmux window. By
-default it also removes the git worktree and deletes the
-workspace state file.
+Closes a workspace by tearing down its tmux window and
+marking it closed. The worktree and state file remain so
+the workspace can be resumed later or explicitly deleted.
 
 **Parameters:**
 - `name` (string, required) — workspace name
-- `cleanup_worktree` (boolean, optional) — if `false`,
-  keep the workspace state file and worktree as a closed
-  record; defaults to `true`
 
 **Returns:** Updated workspace record
+
+### `delete_workspace`
+
+Deletes a workspace by removing its state file and, when
+applicable, its git worktree. If the worktree is dirty,
+Pitch fails before tearing down the workspace unless
+`force` is set. If multiple Pitch workspaces share the
+same underlying checkout, Pitch only deletes the targeted
+workspace record and leaves the shared worktree in place.
+
+**Parameters:**
+- `name` (string, required) — workspace name
+- `force` (boolean, optional) — remove a dirty worktree
+  anyway
+
+**Returns:** Final closed workspace record
 
 ---
 

@@ -51,6 +51,7 @@ function makeWorkspaceRecord(
 ): WorkspaceRecord {
   const workspace: WorkspaceRecord = {
     name: "pr-700-default-aas",
+    worktree_name: "pr-700-default-aas",
     repo: "kong/kongctl",
     source_kind: "pr",
     source_number: 700,
@@ -84,6 +85,9 @@ function makeWorkspaceRecord(
 
   if (overrides.guest_worktree_path === undefined) {
     workspace.guest_worktree_path = workspace.worktree_path;
+  }
+  if (overrides.worktree_name === undefined) {
+    workspace.worktree_name = workspace.name;
   }
   if (overrides.environment_kind === undefined) {
     workspace.environment_kind = "host";
@@ -128,6 +132,7 @@ function makeDependencies(
     getWorkspace: vi.fn(async () => makeWorkspaceRecord()),
     resumeWorkspace: vi.fn(async () => makeWorkspaceRecord()),
     closeWorkspace: vi.fn(async () => makeWorkspaceRecord({ status: "closed" })),
+    deleteWorkspace: vi.fn(async () => makeWorkspaceRecord({ status: "closed" })),
     stdout: {
       write(chunk: string) {
         stdoutBuffer.push(chunk);
@@ -175,6 +180,114 @@ describe("runCli", () => {
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "name: pr-700-default-aas",
+    );
+  });
+
+  it("dispatches top-level create without a slug", async () => {
+    const dependencies = makeDependencies({
+      createWorkspace: vi.fn(async () =>
+        makeWorkspaceRecord({
+          name: "pr-700",
+          worktree_name: "pr-700",
+          worktree_path: "/tmp/worktrees/pr-700",
+          guest_worktree_path: "/tmp/worktrees/pr-700",
+          tmux_window: "pr-700",
+        })),
+    });
+
+    const exitCode = await runCli(
+      ["create", "--pr", "700"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.createWorkspace).toHaveBeenCalledWith(
+      {
+        repo: undefined,
+        issue: undefined,
+        pr: 700,
+        slug: undefined,
+        base_branch: undefined,
+        agent: undefined,
+        environment: undefined,
+        skip_prompt: undefined,
+        runtime: undefined,
+        model: undefined,
+      },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "name: pr-700",
+    );
+  });
+
+  it("implies create when only create-shape flags are provided", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["--pr", "700", "--slug", "default-aas", "--skip-prompt"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.createWorkspace).toHaveBeenCalledWith(
+      {
+        repo: undefined,
+        issue: undefined,
+        pr: 700,
+        slug: "default-aas",
+        base_branch: undefined,
+        agent: undefined,
+        environment: undefined,
+        skip_prompt: true,
+        runtime: undefined,
+        model: undefined,
+      },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
+  it("implies create when only --pr is provided", async () => {
+    const dependencies = makeDependencies({
+      createWorkspace: vi.fn(async () =>
+        makeWorkspaceRecord({
+          name: "pr-700",
+          worktree_name: "pr-700",
+          worktree_path: "/tmp/worktrees/pr-700",
+          guest_worktree_path: "/tmp/worktrees/pr-700",
+          tmux_window: "pr-700",
+        })),
+    });
+
+    const exitCode = await runCli(
+      ["--pr", "700"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.createWorkspace).toHaveBeenCalledWith(
+      {
+        repo: undefined,
+        issue: undefined,
+        pr: 700,
+        slug: undefined,
+        base_branch: undefined,
+        agent: undefined,
+        environment: undefined,
+        skip_prompt: undefined,
+        runtime: undefined,
+        model: undefined,
+      },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
     );
   });
 
@@ -265,6 +378,7 @@ describe("runCli", () => {
         name: "pr-700-default-aas",
         agent: "codex",
         environment: undefined,
+        sync: undefined,
       },
       makeConfig(),
       {
@@ -273,11 +387,34 @@ describe("runCli", () => {
     );
   });
 
-  it("supports keep-worktree for close", async () => {
+  it("passes sync through resume", async () => {
     const dependencies = makeDependencies();
 
     const exitCode = await runCli(
-      ["close", "pr-700-default-aas", "--keep-worktree"],
+      ["resume", "pr-700-default-aas", "--sync"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.resumeWorkspace).toHaveBeenCalledWith(
+      {
+        name: "pr-700-default-aas",
+        agent: undefined,
+        environment: undefined,
+        sync: true,
+      },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
+  it("closes a workspace without delete flags", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["close", "pr-700-default-aas"],
       dependencies,
     );
 
@@ -285,25 +422,24 @@ describe("runCli", () => {
     expect(dependencies.closeWorkspace).toHaveBeenCalledWith(
       {
         name: "pr-700-default-aas",
-        cleanup_worktree: false,
       },
       makeConfig(),
     );
   });
 
-  it("accepts delete as an alias for close", async () => {
+  it("dispatches delete separately and supports force", async () => {
     const dependencies = makeDependencies();
 
     const exitCode = await runCli(
-      ["delete", "pr-700-default-aas"],
+      ["delete", "pr-700-default-aas", "--force"],
       dependencies,
     );
 
     expect(exitCode).toBe(0);
-    expect(dependencies.closeWorkspace).toHaveBeenCalledWith(
+    expect(dependencies.deleteWorkspace).toHaveBeenCalledWith(
       {
         name: "pr-700-default-aas",
-        cleanup_worktree: undefined,
+        force: true,
       },
       makeConfig(),
     );
@@ -333,17 +469,17 @@ describe("runCli", () => {
     );
   });
 
-  it("rejects the removed cleanup-worktree flag", async () => {
+  it("rejects the removed keep-worktree flag", async () => {
     const dependencies = makeDependencies();
 
     const exitCode = await runCli(
-      ["close", "pr-700-default-aas", "--cleanup-worktree"],
+      ["close", "pr-700-default-aas", "--keep-worktree"],
       dependencies,
     );
 
     expect(exitCode).toBe(1);
     expect(dependencies.stderrBuffer.join("")).toContain(
-      "pitch: Unknown option: --cleanup-worktree",
+      "pitch: Unknown option: --keep-worktree",
     );
   });
 
@@ -354,7 +490,10 @@ describe("runCli", () => {
 
     expect(exitCode).toBe(0);
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch create (--issue N | --pr N) --slug SLUG [options]",
+      "pitch [create] (--issue N | --pr N) [--slug SLUG] [options]",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "If --issue or --pr is provided without an explicit command, create is",
     );
   });
 
@@ -372,13 +511,25 @@ describe("runCli", () => {
       "'delete[Delete a workspace]'",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "close|delete)",
+      "    close)",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "    delete)",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "_pitch_complete_workspace_target",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "_pitch_dispatch \"${words[2]}\" 2",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "if [[ \"${words[2]}\" == --* ]]; then",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "_pitch_dispatch \"create\" 1",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "if [[ \"${words[3]}\" == --* ]]; then",
     );
   });
 

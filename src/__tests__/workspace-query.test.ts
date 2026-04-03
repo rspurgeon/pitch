@@ -10,8 +10,9 @@ import type { WorkspaceRecord } from "../workspace-state.js";
 function makeWorkspaceRecord(
   overrides: Partial<WorkspaceRecord> = {},
 ): WorkspaceRecord {
-  return {
+  const workspace: WorkspaceRecord = {
     name: "gh-42-fix-bug",
+    worktree_name: "gh-42-fix-bug",
     repo: "kong/kongctl",
     source_kind: "issue",
     source_number: 42,
@@ -38,6 +39,12 @@ function makeWorkspaceRecord(
     updated_at: "2026-03-22T20:30:00.000Z",
     ...overrides,
   };
+
+  if (overrides.worktree_name === undefined) {
+    workspace.worktree_name = workspace.name;
+  }
+
+  return workspace;
 }
 
 function makeDependencies(
