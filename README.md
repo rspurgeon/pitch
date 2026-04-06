@@ -46,6 +46,7 @@ npx tsx src/bin/pitch.ts resume pr-700-default-aas
 npx tsx src/bin/pitch.ts resume pr-700-default-aas --sync
 npx tsx src/bin/pitch.ts close pr-700-default-aas
 npx tsx src/bin/pitch.ts delete pr-700-default-aas --force
+npx tsx src/bin/pitch.ts delete spike-auth -d
 npx tsx src/bin/pitch.ts completion zsh > ~/bin/functions/_pitch
 ```
 
@@ -57,7 +58,10 @@ accepted as a compatibility alias, for example
 and keeps the worktree as a tracked closed record.
 `delete` is destructive: it removes the workspace state
 file and, when applicable, the worktree. Dirty worktrees
-are refused unless `--force` is provided.
+are refused unless `--force` is provided. If
+`-d` / `--delete-branch-if-empty` is set, Pitch also deletes the
+local branch for non-PR workspaces when it has no commits
+outside `base_branch` and no remote-tracking ref.
 
 The `completion zsh` command emits a zsh completion script
 with dynamic workspace-name completion for `get`,
@@ -183,7 +187,6 @@ repos:
 agents:
   codex:
     type: codex
-    runtime: native
 ```
 
 This is enough to start creating workspaces. `defaults.agent`
@@ -244,10 +247,11 @@ Each repo requires:
 | `main_worktree` | Path to the repo's primary checkout |
 | `worktree_base` | Optional explicit worktree directory for this repo |
 | `tmux_session` | Optional explicit tmux session name for this repo |
+| `sandbox` | Optional named outer sandbox preset for this repo |
 | `additional_paths` | Optional repo-wide extra directories Pitch translates per agent |
 | `bootstrap_prompts` | Optional repo-specific prompt template overrides for `issue` and `pr` |
 | `pane_commands` | Optional commands for the `top_right` and `bottom_right` tmux panes |
-| `agent_defaults` | Optional repo-wide agent args/env/runtime applied to every agent |
+| `agent_defaults` | Optional repo-wide agent args/env applied to every agent |
 | `agent_overrides` | Optional per-repo overrides keyed by configured agent name |
 
 If `worktree_base` is omitted, Pitch derives it as
@@ -270,13 +274,12 @@ These keys are used everywhere Pitch asks for an agent:
 
 Multiple entries can use the same underlying agent type.
 For example, `claude-enterprise` and `claude-personal`
-can both have `type: claude` with different `env`,
-`args`, or `runtime` settings.
+can both have `type: claude` with different `env` and
+`args` settings.
 
 | Field | Description |
 |---|---|
 | `type` | `claude`, `codex`, or `opencode` |
-| `runtime` | `native` (run directly) or `docker` (via `agent-en-place` for Claude/Codex) |
 | `args` | Ordered CLI arguments appended exactly as written |
 | `env` | Environment variables set when launching the agent |
 
@@ -286,7 +289,6 @@ Example with multiple named agents:
 agents:
   codex:
     type: codex
-    runtime: native
     args:
       - --sandbox
       - workspace-write
@@ -297,13 +299,11 @@ agents:
 
   claude-enterprise:
     type: claude
-    runtime: native
     env:
       CLAUDE_CONFIG_DIR: ~/.claude
 
   claude-personal:
     type: claude
-    runtime: native
     args:
       - --model
       - opus
@@ -312,7 +312,6 @@ agents:
 
   opencode:
     type: opencode
-    runtime: native
     args:
       - --agent
       - build
@@ -324,7 +323,6 @@ Use `args` whenever you need repeatable flags such as
 `--add-dir`, bare flags such as `--search`, or precise
 argument ordering.
 
-OpenCode currently supports the `native` runtime only.
 For attach-mode OpenCode setups, configure `args` with
 `attach <url> --dir` and Pitch will supply the workspace
 path for `--dir` on both create and resume. When an
@@ -332,6 +330,46 @@ OpenCode workspace also needs repo `additional_paths`,
 Pitch generates a user-local config file at
 `~/.pitch/opencode/{workspace_name}.json` and launches
 OpenCode with `OPENCODE_CONFIG` pointing at that file.
+
+#### `sandboxes`
+
+`sandboxes` defines reusable outer sandbox presets. Pitch
+currently supports `nono` and wraps agent launches with
+`nono run` when a repo selects one of these presets.
+
+| Field | Description |
+|---|---|
+| `provider` | Must be `nono` |
+| `profile` | Optional explicit nono profile name or path |
+| `profiles` | Optional per-agent-type profile overrides (`claude`, `codex`, `opencode`) |
+| `network_profile` | Optional nono network profile name |
+| `capability_elevation` | Optional nono capability-elevation flag |
+| `rollback` | Optional nono rollback flag |
+
+Pitch resolves nono profiles in this order:
+
+1. `profiles.<agent-type>`
+2. `profile`
+3. built-in agent default (`codex`, `claude-code`, or
+   `opencode`)
+
+When sandboxing is active, Pitch always passes
+`--workdir <workspace>` and `--allow-cwd`.
+
+Example:
+
+```yaml
+sandboxes:
+  kongctl:
+    provider: nono
+    profiles:
+      codex: /home/rspurgeon/.pitch/nono/profiles/kongctl-codex.json
+    capability_elevation: true
+
+repos:
+  kong/kongctl:
+    sandbox: kongctl
+```
 
 #### `repos.<repo>.additional_paths`
 
@@ -365,7 +403,6 @@ selected for that repo.
 
 | Field | Description |
 |---|---|
-| `runtime` | Optional repo-wide runtime override |
 | `args` | Additional ordered CLI args for every agent in this repo |
 | `env` | Additional env vars for every agent in this repo |
 
@@ -388,7 +425,6 @@ behavior to a repo. Override keys must match names under
 
 | Field | Description |
 |---|---|
-| `runtime` | Optional repo-specific runtime override |
 | `args` | Additional ordered CLI args for this repo |
 | `env` | Additional env vars for this repo |
 
@@ -399,12 +435,11 @@ Go and `kongctl` config:
 repos:
   kong/kongctl:
     default_agent: claude-enterprise
+    sandbox: kongctl
     main_worktree: ~/dev/kong/kongctl
     additional_paths:
       - /home/rspurgeon/go
     agent_overrides:
-      claude-enterprise:
-        runtime: docker
       codex:
         args:
           - --add-dir

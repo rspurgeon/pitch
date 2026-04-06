@@ -12,7 +12,6 @@ repos:
 agents:
   codex:
     type: codex
-    runtime: native
     defaults:
       model: gpt-5.4
       sandbox: workspace-write

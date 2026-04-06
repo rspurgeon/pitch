@@ -7,7 +7,7 @@ const defaultExecFileAsync = promisify(execFile);
 export interface RunGitHubLifecycleInput {
   repo: string;
   source_kind: WorkspaceSourceKind;
-  source_number: number;
+  source_number: number | null;
 }
 
 export interface GitHubLifecycleDependencies {
@@ -308,6 +308,16 @@ export async function runGitHubLifecycle(
 ): Promise<string[]> {
   const execFileAsync = dependencies.execFileAsync ?? defaultExecFileAsync;
   const warnings: string[] = [];
+
+  if (input.source_kind === "adhoc") {
+    return warnings;
+  }
+
+  if (input.source_number === null) {
+    throw new Error(
+      `GitHub lifecycle requires a source number for ${input.source_kind} workspaces`,
+    );
+  }
 
   if (input.source_kind === "issue") {
     try {

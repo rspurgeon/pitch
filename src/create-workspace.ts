@@ -59,6 +59,15 @@ export const CreateWorkspaceInputSchema = z
     repo: z.string().trim().min(1).optional(),
     issue: z.number().int().positive().optional(),
     pr: z.number().int().positive().optional(),
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .regex(
+        /^[a-z0-9][a-z0-9-]*$/,
+        "Name must use lowercase letters, numbers, and hyphens",
+      )
+      .optional(),
     slug: z
       .string()
       .trim()
@@ -68,20 +77,26 @@ export const CreateWorkspaceInputSchema = z
         "Slug must use lowercase letters, numbers, and hyphens",
       )
       .optional(),
+    branch: z.string().trim().min(1).optional(),
     base_branch: z.string().trim().min(1).optional(),
     agent: z.string().trim().min(1).optional(),
     environment: z.string().trim().min(1).optional(),
     skip_prompt: z.boolean().optional(),
-    runtime: z.enum(["native", "docker"]).optional(),
     model: z.string().trim().min(1).optional(),
   })
   .strict()
   .superRefine((input, ctx) => {
-    if ((input.issue === undefined) === (input.pr === undefined)) {
+    const sourceSelectors = [
+      input.issue !== undefined,
+      input.pr !== undefined,
+      input.name !== undefined,
+    ].filter(Boolean).length;
+
+    if (sourceSelectors !== 1) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["issue"],
-        message: "Provide exactly one of issue or pr",
+        message: "Provide exactly one of issue, pr, or name",
       });
     }
 
@@ -89,7 +104,37 @@ export const CreateWorkspaceInputSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["base_branch"],
-        message: "base_branch is only supported for issue workspaces",
+        message: "base_branch is only supported for issue and ad hoc workspaces",
+      });
+    }
+
+    if (input.branch !== undefined && input.name === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["name"],
+        message: "branch is only supported when name is provided",
+      });
+    }
+
+    if (
+      input.branch !== undefined &&
+      (input.issue !== undefined || input.pr !== undefined)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["branch"],
+        message: "branch is only supported for ad hoc workspaces",
+      });
+    }
+
+    if (
+      input.slug !== undefined &&
+      input.name !== undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["slug"],
+        message: "slug cannot be used with ad hoc workspaces",
       });
     }
   });
@@ -156,7 +201,7 @@ type ExistingPaneState =
 
 interface ResolvedWorkspaceSource {
   source_kind: WorkspaceRecord["source_kind"];
-  source_number: number;
+  source_number: number | null;
   workspace_name: string;
   branch: string;
   base_branch: string;
@@ -288,7 +333,11 @@ function buildRequestedWorkspaceName(input: CreateWorkspaceInput): string {
     return buildPullRequestWorkspaceName(input.pr, input.slug);
   }
 
-  throw new CreateWorkspaceError("Provide exactly one of issue or pr");
+  if (input.name !== undefined) {
+    return input.name;
+  }
+
+  throw new CreateWorkspaceError("Provide exactly one of issue, pr, or name");
 }
 
 function matchesReusablePullRequestCheckout(
@@ -363,6 +412,12 @@ async function resolveWorktreeName(
     };
   }
 
+  if (source.source_number === null) {
+    throw new CreateWorkspaceError(
+      `PR workspace ${source.workspace_name} is missing its source number`,
+    );
+  }
+
   return {
     worktree_name: buildPullRequestWorktreeName(source.source_number),
   };
@@ -389,8 +444,21 @@ async function resolveWorkspaceSource(
     };
   }
 
+  if (input.name !== undefined) {
+    const baseBranch = input.base_branch ?? config.defaults.base_branch;
+
+    return {
+      source_kind: "adhoc",
+      source_number: null,
+      workspace_name: input.name,
+      branch: input.branch ?? input.name,
+      base_branch: baseBranch,
+      start_point: baseBranch,
+    };
+  }
+
   if (input.pr === undefined) {
-    throw new CreateWorkspaceError("Provide exactly one of issue or pr");
+    throw new CreateWorkspaceError("Provide exactly one of issue, pr, or name");
   }
 
   let pullRequest;
@@ -732,6 +800,7 @@ export async function createWorkspace(
       config,
       agent: agentName,
       repo: repoName,
+      ...(repoConfig.sandbox === undefined ? {} : { sandbox: repoConfig.sandbox }),
       environment: environment.name,
       opencode_config_path: opencodeConfigPath,
       workspace_name: workspaceName,
@@ -739,7 +808,6 @@ export async function createWorkspace(
       host_worktree_path: workspacePaths.host_worktree_path,
       initial_prompt: initialPrompt,
       override_args: buildAgentOverrides(input),
-      runtime: input.runtime,
     });
 
     if (agentCommand.agent_type === "claude") {
@@ -846,7 +914,7 @@ export async function createWorkspace(
       tmux_window: workspaceName,
       agent_name: agentCommand.agent_name,
       agent_type: agentCommand.agent_type,
-      agent_runtime: agentCommand.runtime,
+      ...(repoConfig.sandbox === undefined ? {} : { sandbox_name: repoConfig.sandbox }),
       environment_name: environment.name ?? null,
       environment_kind: environment.kind,
       agent_pane_process: agentCommand.pane_process_name,
@@ -909,14 +977,16 @@ export async function createWorkspace(
     }
 
     try {
-      reportWarnings(
-        dependencies.reportWarning,
-        await dependencies.runGitHubLifecycle({
-          repo: repoName,
-          source_kind: source.source_kind,
-          source_number: source.source_number,
-        }),
-      );
+      if (source.source_kind !== "adhoc" && source.source_number !== null) {
+        reportWarnings(
+          dependencies.reportWarning,
+          await dependencies.runGitHubLifecycle({
+            repo: repoName,
+            source_kind: source.source_kind,
+            source_number: source.source_number,
+          }),
+        );
+      }
     } catch (error: unknown) {
       reportWarnings(dependencies.reportWarning, [
         `Failed to apply GitHub lifecycle automation for ${workspaceName}: ${formatError(error)}`,

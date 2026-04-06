@@ -36,7 +36,6 @@ function makeConfig(): PitchConfig {
           pr: "Read repo PR #{pr_number} in {repo} on {branch} and wait.",
         },
         agent_defaults: {
-          runtime: undefined,
           args: [],
           env: {},
         },
@@ -44,10 +43,10 @@ function makeConfig(): PitchConfig {
       },
     },
     environments: {},
+    sandboxes: {},
     agents: {
       "claude-enterprise": {
         type: "claude",
-        runtime: "native",
         args: ["--model", "sonnet"],
         env: {
           CLAUDE_CONFIG_DIR: "~/.claude",
@@ -55,7 +54,6 @@ function makeConfig(): PitchConfig {
       },
       codex: {
         type: "codex",
-        runtime: "native",
         args: ["--model", "gpt-5.4"],
         env: {
           CODEX_HOME: "~/.codex",
@@ -63,7 +61,6 @@ function makeConfig(): PitchConfig {
       },
       "codex-api": {
         type: "codex",
-        runtime: "docker",
         args: [],
         env: {
           CODEX_HOME: "~/.codex-api",
@@ -72,7 +69,6 @@ function makeConfig(): PitchConfig {
       },
       opencode: {
         type: "opencode",
-        runtime: "native",
         args: ["--agent", "build"],
         env: {
           OPENCODE_CONFIG_DIR: "~/.config/opencode",
@@ -99,7 +95,6 @@ function makeWorkspaceRecord(
     tmux_window: "gh-42-fix-bug",
     agent_name: "claude-enterprise",
     agent_type: "claude",
-    agent_runtime: "native",
     environment_name: null,
     environment_kind: "host",
     agent_pane_process: "claude",
@@ -135,9 +130,7 @@ function makeWorkspaceRecord(
     workspace.agent_pane_process =
       workspace.environment_kind === "vm-ssh"
         ? "ssh"
-        : workspace.agent_runtime === "docker"
-          ? "agent-en-place"
-          : workspace.agent_type;
+        : workspace.agent_type;
   }
 
   return workspace;
@@ -147,7 +140,6 @@ function makeClaudeCommand(): BuiltAgentCommand {
   return {
     agent_name: "claude-enterprise",
     agent_type: "claude",
-    runtime: "native",
     environment_name: undefined,
     environment_kind: "host",
     command: [
@@ -175,14 +167,10 @@ function makeCodexCommand(): BuiltAgentCommand {
   return {
     agent_name: "codex-api",
     agent_type: "codex",
-    runtime: "docker",
     environment_name: undefined,
     environment_kind: "host",
     command: [
-      "agent-en-place",
       "codex",
-      "--model",
-      "gpt-5.4",
       "--cd",
       "/tmp/worktrees/gh-42-fix-bug",
     ],
@@ -194,7 +182,7 @@ function makeCodexCommand(): BuiltAgentCommand {
       CODEX_HOME: "~/.codex-api",
       OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
     },
-    pane_process_name: "agent-en-place",
+    pane_process_name: "codex",
     warnings: [],
   };
 }
@@ -207,7 +195,6 @@ function makeOpencodeCommand(
   return {
     agent_name: "opencode",
     agent_type: "opencode",
-    runtime: "native",
     environment_name: undefined,
     environment_kind: "host",
     command: [
@@ -329,7 +316,6 @@ describe("create workspace", () => {
       host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
       override_args: ["--model", "opus"],
-      runtime: undefined,
     });
     expect(dependencies.ensureWorkspaceWorktree).toHaveBeenCalledWith({
       repo: config.repos["kong/kongctl"],
@@ -366,6 +352,45 @@ describe("create workspace", () => {
       dependencies.sendKeysToPane,
     ).mock.invocationCallOrder[0];
     expect(writeCallOrder).toBeLessThan(sendCallOrder);
+  });
+
+  it("stores the selected repo sandbox on create", async () => {
+    const config = makeConfig();
+    config.repos["kong/kongctl"].sandbox = "kongctl";
+    config.sandboxes.kongctl = {
+      provider: "nono",
+      capability_elevation: true,
+      rollback: false,
+    };
+    const dependencies = makeDependencies();
+
+    const workspace = await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith({
+      config,
+      agent: "claude-enterprise",
+      repo: "kong/kongctl",
+      sandbox: "kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
+      workspace_name: "gh-42-fix-bug",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      initial_prompt: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
+      override_args: undefined,
+    });
+    expect(workspace).toEqual(
+      makeWorkspaceRecord({
+        sandbox_name: "kongctl",
+      }),
+    );
   });
 
   it("runs configured pane commands when creating a new tmux layout", async () => {
@@ -460,8 +485,76 @@ describe("create workspace", () => {
       host_worktree_path: "/tmp/worktrees/gh-42",
       initial_prompt: "Read issue #42 in kong/kongctl on gh-42 and wait.",
       override_args: undefined,
-      runtime: undefined,
     });
+  });
+
+  it("creates an ad hoc workspace without running GitHub lifecycle automation", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      ensureWorkspaceWorktree: vi.fn(async () => ({
+        branch: "feature/auth",
+        worktree_path: "/tmp/worktrees/spike-auth",
+        adopted: false,
+      })),
+      buildAgentStartCommand: vi.fn(
+        (): BuiltAgentCommand => ({
+          ...makeClaudeCommand(),
+          command: [
+            "claude",
+            "--model",
+            "sonnet",
+            "--session-id",
+            "claude-session",
+            "--name",
+            "spike-auth",
+          ],
+        }),
+      ),
+    });
+
+    const workspace = await createWorkspace(
+      {
+        name: "spike-auth",
+        branch: "feature/auth",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(workspace).toEqual(
+      makeWorkspaceRecord({
+        name: "spike-auth",
+        worktree_name: "spike-auth",
+        source_kind: "adhoc",
+        source_number: null,
+        branch: "feature/auth",
+        worktree_path: "/tmp/worktrees/spike-auth",
+        guest_worktree_path: "/tmp/worktrees/spike-auth",
+        tmux_window: "spike-auth",
+      }),
+    );
+    expect(dependencies.ensureWorkspaceWorktree).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      workspace_name: "spike-auth",
+      branch: "feature/auth",
+      start_point: "main",
+    });
+    expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith({
+      config,
+      agent: "claude-enterprise",
+      repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
+      workspace_name: "spike-auth",
+      worktree_path: "/tmp/worktrees/spike-auth",
+      host_worktree_path: "/tmp/worktrees/spike-auth",
+      initial_prompt:
+        "Inspect the current repo state on branch feature/auth in kong/kongctl and wait for the next instruction. Do not make changes yet.",
+      override_args: undefined,
+    });
+    expect(dependencies.readPullRequest).not.toHaveBeenCalled();
+    expect(dependencies.fetchGitRef).not.toHaveBeenCalled();
+    expect(dependencies.runGitHubLifecycle).not.toHaveBeenCalled();
   });
 
   it("skips the bootstrap prompt when skip_prompt is true", async () => {
@@ -489,7 +582,6 @@ describe("create workspace", () => {
       host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       initial_prompt: undefined,
       override_args: undefined,
-      runtime: undefined,
     });
   });
 
@@ -505,7 +597,6 @@ describe("create workspace", () => {
         (): BuiltAgentCommand => ({
           agent_name: "claude-enterprise",
           agent_type: "claude",
-          runtime: "native",
           environment_name: undefined,
           environment_kind: "host",
           command: [
@@ -583,7 +674,6 @@ describe("create workspace", () => {
       host_worktree_path: "/tmp/worktrees/pr-123",
       initial_prompt: "Read repo PR #123 in kong/kongctl on feature/example and wait.",
       override_args: undefined,
-      runtime: undefined,
     });
     expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
       repo: "kong/kongctl",
@@ -654,7 +744,6 @@ describe("create workspace", () => {
       host_worktree_path: "/tmp/worktrees/pr-123",
       initial_prompt: "Read repo PR #123 in kong/kongctl on feature/example and wait.",
       override_args: undefined,
-      runtime: undefined,
     });
   });
 
@@ -807,7 +896,6 @@ describe("create workspace", () => {
         issue: 42,
         slug: "fix-bug",
         agent: "codex-api",
-        runtime: "docker",
       },
       config,
       dependencies,
@@ -817,7 +905,6 @@ describe("create workspace", () => {
       makeWorkspaceRecord({
         agent_name: "codex-api",
         agent_type: "codex",
-        agent_runtime: "docker",
         agent_env: {
           CODEX_HOME: "~/.codex-api",
           OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
@@ -835,7 +922,7 @@ describe("create workspace", () => {
       pane_id: "%1",
       command:
         "CODEX_HOME=~/.codex-api OPENAI_API_KEY=${OPENAI_API_KEY_SECONDARY} " +
-        "command -- 'agent-en-place' 'codex' '--model' 'gpt-5.4' '--cd' " +
+        "command -- 'codex' '--cd' " +
         "'/tmp/worktrees/gh-42-fix-bug'",
     });
   });
@@ -860,7 +947,6 @@ describe("create workspace", () => {
       makeWorkspaceRecord({
         agent_name: "opencode",
         agent_type: "opencode",
-        agent_runtime: "native",
         agent_env: {
           OPENCODE_CONFIG_DIR: "~/.config/opencode",
         },
@@ -966,7 +1052,6 @@ describe("create workspace", () => {
         (): BuiltAgentCommand => ({
           agent_name: "opencode",
           agent_type: "opencode",
-          runtime: "native",
           environment_name: undefined,
           environment_kind: "host",
           command: [
@@ -1036,7 +1121,6 @@ describe("create workspace", () => {
         (): BuiltAgentCommand => ({
           agent_name: "codex",
           agent_type: "codex",
-          runtime: "native",
           environment_name: "sandbox-vm",
           environment_kind: "vm-ssh",
           command: [
@@ -1263,7 +1347,6 @@ describe("create workspace", () => {
       buildAgentStartCommand: vi.fn(() => ({
         agent_name: "codex",
         agent_type: "codex",
-        runtime: "native",
         environment_name: "sandbox-vm",
         environment_kind: "vm-ssh",
         command: ["ssh", "-tt", "pitch@sandbox.internal"],
@@ -1333,7 +1416,7 @@ describe("create workspace", () => {
     );
   });
 
-  it("adopts an existing docker wrapper pane as a running agent", async () => {
+  it("adopts an existing Codex pane as a running agent", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
       buildAgentStartCommand: vi.fn(() => makeCodexCommand()),
@@ -1342,7 +1425,7 @@ describe("create workspace", () => {
         async () =>
           ({
             pane_id: "%9",
-            current_command: "agent-en-place",
+            current_command: "codex",
             current_path: "/tmp/worktrees/gh-42-fix-bug",
           }) satisfies TmuxPaneInfo,
       ),
@@ -1353,7 +1436,6 @@ describe("create workspace", () => {
         issue: 42,
         slug: "fix-bug",
         agent: "codex-api",
-        runtime: "docker",
       },
       config,
       dependencies,

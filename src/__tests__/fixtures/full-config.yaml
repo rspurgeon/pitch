@@ -9,6 +9,7 @@ repos:
   kong/kongctl:
     default_agent: claude-enterprise
     default_environment: sandbox-vm
+    sandbox: kongctl
     main_worktree: ~/dev/kong/kongctl
     pane_commands:
       top_right: nvim .
@@ -30,7 +31,6 @@ environments:
 
   sandbox-vm:
     kind: vm-ssh
-    default_runtime: native
     ssh_host: sandbox.internal
     ssh_user: pitch
     ssh_port: 2222
@@ -45,10 +45,18 @@ environments:
     bootstrap:
       mise_install: true
 
+sandboxes:
+  kongctl:
+    provider: nono
+    profiles:
+      codex: /srv/nono/kongctl-codex.json
+    network_profile: docs-and-github
+    capability_elevation: true
+    rollback: true
+
 agents:
   codex:
     type: codex
-    runtime: native
     args:
       - --model
       - gpt-5.4
@@ -61,7 +69,6 @@ agents:
 
   claude-enterprise:
     type: claude
-    runtime: docker
     args:
       - --model
       - sonnet
@@ -72,7 +79,6 @@ agents:
 
   claude-personal:
     type: claude
-    runtime: native
     env:
       CLAUDE_CONFIG_DIR: ~/.claude-personal
     args:
@@ -81,14 +87,12 @@ agents:
 
   codex-api:
     type: codex
-    runtime: native
     env:
       CODEX_HOME: ~/.codex-api
       OPENAI_API_KEY: ${OPENAI_API_KEY_SECONDARY}
 
   opencode:
     type: opencode
-    runtime: native
     args:
       - --agent
       - build

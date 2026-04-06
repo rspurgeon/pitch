@@ -35,10 +35,10 @@ function makeConfig(): PitchConfig {
         kind: "host",
       },
     },
+    sandboxes: {},
     agents: {
       codex: {
         type: "codex",
-        runtime: "native",
         args: [],
         env: {},
       },
@@ -63,7 +63,6 @@ function makeWorkspaceRecord(
     tmux_window: "pr-700-default-aas",
     agent_name: "codex",
     agent_type: "codex",
-    agent_runtime: "native",
     environment_name: "host-local",
     environment_kind: "host",
     agent_pane_process: "codex",
@@ -170,7 +169,6 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         skip_prompt: true,
-        runtime: undefined,
         model: undefined,
       },
       makeConfig(),
@@ -181,6 +179,50 @@ describe("runCli", () => {
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "name: pr-700-default-aas",
     );
+  });
+
+  it("dispatches an ad hoc create with name and branch to createWorkspace", async () => {
+    const dependencies = makeDependencies({
+      createWorkspace: vi.fn(async () =>
+        makeWorkspaceRecord({
+          name: "spike-auth",
+          worktree_name: "spike-auth",
+          source_kind: "adhoc",
+          source_number: null,
+          branch: "feature/auth",
+          worktree_path: "/tmp/worktrees/spike-auth",
+          guest_worktree_path: "/tmp/worktrees/spike-auth",
+          tmux_window: "spike-auth",
+        })),
+    });
+
+    const exitCode = await runCli(
+      ["create", "--name", "spike-auth", "--branch", "feature/auth"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.createWorkspace).toHaveBeenCalledWith(
+      {
+        repo: undefined,
+        issue: undefined,
+        pr: undefined,
+        name: "spike-auth",
+        slug: undefined,
+        branch: "feature/auth",
+        base_branch: undefined,
+        agent: undefined,
+        environment: undefined,
+        skip_prompt: undefined,
+        model: undefined,
+      },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain("name: spike-auth");
+    expect(dependencies.stdoutBuffer.join("")).toContain("source: adhoc");
   });
 
   it("dispatches top-level create without a slug", async () => {
@@ -211,7 +253,6 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         skip_prompt: undefined,
-        runtime: undefined,
         model: undefined,
       },
       makeConfig(),
@@ -243,7 +284,6 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         skip_prompt: true,
-        runtime: undefined,
         model: undefined,
       },
       makeConfig(),
@@ -281,7 +321,6 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         skip_prompt: undefined,
-        runtime: undefined,
         model: undefined,
       },
       makeConfig(),
@@ -424,6 +463,9 @@ describe("runCli", () => {
         name: "pr-700-default-aas",
       },
       makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
     );
   });
 
@@ -440,11 +482,59 @@ describe("runCli", () => {
       {
         name: "pr-700-default-aas",
         force: true,
+        delete_branch_if_empty: undefined,
       },
       makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "status: closed",
+    );
+  });
+
+  it("passes delete-branch-if-empty to deleteWorkspace", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["delete", "spike-auth", "--delete-branch-if-empty"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.deleteWorkspace).toHaveBeenCalledWith(
+      {
+        name: "spike-auth",
+        force: undefined,
+        delete_branch_if_empty: true,
+      },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
+  it("supports -d as a short alias for delete-branch-if-empty", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["delete", "spike-auth", "-d"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.deleteWorkspace).toHaveBeenCalledWith(
+      {
+        name: "spike-auth",
+        force: undefined,
+        delete_branch_if_empty: true,
+      },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
     );
   });
 
@@ -493,7 +583,13 @@ describe("runCli", () => {
       "pitch [create] (--issue N | --pr N) [--slug SLUG] [options]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "If --issue or --pr is provided without an explicit command, create is",
+      "pitch [create] --name NAME [--branch BRANCH] [options]",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "pitch delete <name> [--force] [-d|--delete-branch-if-empty]",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "If --issue, --pr, or --name is provided without an explicit command,",
     );
   });
 
@@ -530,6 +626,15 @@ describe("runCli", () => {
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "if [[ \"${words[3]}\" == --* ]]; then",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "'-d[Delete the local branch only when it is unchanged from base and not pushed]'",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "'--name[Ad hoc workspace name]:name:'",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "'--branch[Ad hoc git branch name]:branch:'",
     );
   });
 

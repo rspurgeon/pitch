@@ -23,7 +23,6 @@ function makeWorkspaceRecord(
     tmux_window: "gh-42-fix-bug",
     agent_name: "claude-enterprise",
     agent_type: "claude",
-    agent_runtime: "native",
     agent_env: {
       CLAUDE_CONFIG_DIR: "~/.claude",
     },

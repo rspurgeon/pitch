@@ -65,6 +65,7 @@ const defaultDependencies: CliDependencies = {
 };
 
 const BOOLEAN_FLAGS = new Set([
+  "delete-branch-if-empty",
   "help",
   "json",
   "skip-prompt",
@@ -75,15 +76,19 @@ const BOOLEAN_FLAGS = new Set([
 const STRING_FLAGS = new Set([
   "agent",
   "base-branch",
+  "branch",
   "environment",
   "issue",
   "model",
   "name",
   "pr",
   "repo",
-  "runtime",
   "slug",
   "status",
+]);
+
+const SHORT_FLAG_ALIASES = new Map<string, string>([
+  ["d", "delete-branch-if-empty"],
 ]);
 
 function normalizeFlagName(flagName: string): string {
@@ -101,8 +106,9 @@ function setFlag(
 function hasImplicitCreateFlags(flags: Map<string, FlagValue>): boolean {
   const hasIssue = typeof flags.get("issue") === "string";
   const hasPr = typeof flags.get("pr") === "string";
+  const hasName = typeof flags.get("name") === "string";
 
-  return hasIssue !== hasPr;
+  return hasIssue || hasPr || hasName;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -114,6 +120,16 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (token === "--") {
       positionals.push(...argv.slice(index + 1));
       break;
+    }
+
+    if (token.startsWith("-") && !token.startsWith("--")) {
+      const shortFlag = token.slice(1);
+      if (shortFlag.length !== 1 || !SHORT_FLAG_ALIASES.has(shortFlag)) {
+        throw new Error(`Unknown option: ${token}`);
+      }
+
+      setFlag(flags, SHORT_FLAG_ALIASES.get(shortFlag)!, true);
+      continue;
     }
 
     if (!token.startsWith("--")) {
@@ -321,17 +337,31 @@ function buildCreateInput(flags: Map<string, FlagValue>): CreateWorkspaceInput {
     repo: readStringFlag(flags, "repo"),
     issue: readNumberFlag(flags, "issue"),
     pr: readNumberFlag(flags, "pr"),
+    name: readStringFlag(flags, "name"),
     slug: readStringFlag(flags, "slug"),
+    branch: readStringFlag(flags, "branch"),
     base_branch: readStringFlag(flags, "base-branch"),
     agent: readStringFlag(flags, "agent"),
     environment: readStringFlag(flags, "environment"),
     skip_prompt: readBooleanFlag(flags, "skip-prompt"),
-    runtime:
-      readStringFlag(flags, "runtime") === undefined
-        ? undefined
-        : (readStringFlag(flags, "runtime") as "native" | "docker"),
     model: readStringFlag(flags, "model"),
   };
+}
+
+function formatWorkspaceSource(
+  workspace: Pick<WorkspaceRecord, "source_kind" | "source_number">,
+): string {
+  return workspace.source_number === null
+    ? workspace.source_kind
+    : `${workspace.source_kind} #${workspace.source_number}`;
+}
+
+function formatWorkspaceSourceCell(
+  workspace: Pick<WorkspaceSummary, "source_kind" | "source_number">,
+): string {
+  return workspace.source_number === null
+    ? workspace.source_kind
+    : `${workspace.source_kind}#${workspace.source_number}`;
 }
 
 function buildListInput(flags: Map<string, FlagValue>): ListWorkspacesInput {
@@ -381,6 +411,7 @@ function buildDeleteInput(
   return {
     name: resolveWorkspaceName(flags, positionals),
     force: readBooleanFlag(flags, "force"),
+    delete_branch_if_empty: readBooleanFlag(flags, "delete-branch-if-empty"),
   };
 }
 
@@ -389,9 +420,9 @@ function formatWorkspaceSummary(workspace: WorkspaceRecord): string {
     `name: ${workspace.name}`,
     `repo: ${workspace.repo}`,
     `status: ${workspace.status}`,
-    `source: ${workspace.source_kind} #${workspace.source_number}`,
+    `source: ${formatWorkspaceSource(workspace)}`,
     `branch: ${workspace.branch}`,
-    `agent: ${workspace.agent_name} (${workspace.agent_type}, ${workspace.agent_runtime})`,
+    `agent: ${workspace.agent_name} (${workspace.agent_type})`,
     `environment: ${workspace.environment_name ?? workspace.environment_kind ?? "host"}`,
     `worktree: ${workspace.worktree_path}`,
     `tmux: ${workspace.tmux_session}:${workspace.tmux_window}`,
@@ -427,7 +458,7 @@ function formatWorkspaceList(workspaces: WorkspaceSummary[]): string {
     workspaces.map((workspace) => [
       workspace.name,
       workspace.repo,
-      `${workspace.source_kind}#${workspace.source_number}`,
+      formatWorkspaceSourceCell(workspace),
       workspace.status,
       workspace.agent_name,
       `${workspace.tmux_session}:${workspace.tmux_window}`,
@@ -439,11 +470,12 @@ function buildHelpText(): string {
   return [
     "Usage:",
     "  pitch [create] (--issue N | --pr N) [--slug SLUG] [options]",
+    "  pitch [create] --name NAME [--branch BRANCH] [options]",
     "  pitch list [--repo REPO] [--status active|closed|all]",
     "  pitch get <name>",
     "  pitch resume <name> [--agent AGENT] [--environment ENV] [--sync]",
     "  pitch close <name>",
-    "  pitch delete <name> [--force]",
+    "  pitch delete <name> [--force] [-d|--delete-branch-if-empty]",
     "  pitch completion zsh",
     "  pitch workspace <command> ...",
     "",
@@ -451,22 +483,23 @@ function buildHelpText(): string {
     "  --repo REPO",
     "  --issue N",
     "  --pr N",
+    "  --name NAME",
     "  --slug SLUG",
+    "  --branch BRANCH",
     "  --base-branch BRANCH",
     "  --agent AGENT",
     "  --environment ENV",
     "  --sync",
-    "  --runtime native|docker",
     "  --model MODEL",
     "  --skip-prompt",
     "  --force",
+    "  -d, --delete-branch-if-empty",
     "  --status active|closed|all",
-    "  --name NAME",
     "  --json",
     "  --help",
     "",
-    "If --issue or --pr is provided without an explicit command, create is",
-    "implied.",
+    "If --issue, --pr, or --name is provided without an explicit command,",
+    "create is implied.",
   ].join("\n");
 }
 
@@ -507,11 +540,12 @@ function buildZshCompletionScript(): string {
     "        '--repo[GitHub org/repo]:repo:' \\",
     "        '--issue[Issue number]:issue:' \\",
     "        '--pr[Pull request number]:pr:' \\",
+    "        '--name[Ad hoc workspace name]:name:' \\",
     "        '--slug[Optional workspace slug suffix]:slug:' \\",
+    "        '--branch[Ad hoc git branch name]:branch:' \\",
     "        '--base-branch[Base branch]:branch:' \\",
     "        '--agent[Configured agent]:agent:' \\",
     "        '--environment[Execution environment]:environment:' \\",
-    "        '--runtime[Agent runtime]:runtime:(native docker)' \\",
     "        '--model[Model override]:model:' \\",
     "        '--skip-prompt[Skip bootstrap prompt]' \\",
     "        '--json[Emit JSON]' \\",
@@ -556,6 +590,8 @@ function buildZshCompletionScript(): string {
     "      _arguments -s -S \\",
     "        '--name[Workspace name]:workspace:_pitch_workspaces' \\",
     "        '--force[Delete even if the worktree has local changes]' \\",
+    "        '-d[Delete the local branch only when it is unchanged from base and not pushed]' \\",
+    "        '--delete-branch-if-empty[Delete the local branch only when it is unchanged from base and not pushed]' \\",
     "        '--json[Emit JSON]' \\",
     "        '--help[Show help]' \\",
     "        '1:workspace:_pitch_workspaces'",
@@ -679,24 +715,32 @@ async function executeCommand(
     }
     case "close": {
       const config = await dependencies.loadConfig();
+      const warnings: string[] = [];
       return {
         command: parsed.verb,
         result: await dependencies.closeWorkspace(
           buildCloseInput(parsed.flags, parsed.positionals),
           config,
+          {
+            reportWarning: (warning) => warnings.push(warning),
+          },
         ),
-        warnings: [],
+        warnings,
       };
     }
     case "delete": {
       const config = await dependencies.loadConfig();
+      const warnings: string[] = [];
       return {
         command: parsed.verb,
         result: await dependencies.deleteWorkspace(
           buildDeleteInput(parsed.flags, parsed.positionals),
           config,
+          {
+            reportWarning: (warning) => warnings.push(warning),
+          },
         ),
-        warnings: [],
+        warnings,
       };
     }
     case "completion":

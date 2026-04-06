@@ -283,7 +283,6 @@ async function isCompatibleRunningAgentPane(
     workspace.agent_pane_process ??
     deriveAgentPaneProcess(
       workspace.agent_type,
-      workspace.agent_runtime,
       workspace.environment_kind ?? "host",
     );
 
@@ -361,14 +360,21 @@ async function maybeSyncWorkspaceOnResume(
   }
 
   let pullRequest;
+  const sourceNumber = workspace.source_number;
+  if (sourceNumber === null) {
+    throw new ResumeWorkspaceError(
+      `PR workspace ${workspace.name} is missing its source number`,
+    );
+  }
+
   try {
     pullRequest = await dependencies.readPullRequest({
       repo: workspace.repo,
-      pr_number: workspace.source_number,
+      pr_number: sourceNumber,
     });
   } catch (error: unknown) {
     throw new ResumeWorkspaceError(
-      `Failed to resolve PR #${workspace.source_number} for ${workspace.name}: ${formatError(error)}`,
+      `Failed to resolve PR #${sourceNumber} for ${workspace.name}: ${formatError(error)}`,
     );
   }
 
@@ -399,13 +405,13 @@ async function maybeSyncWorkspaceOnResume(
     ]);
   }
 
-  const targetRef = `refs/pitch/pr/${workspace.source_number}/head`;
+  const targetRef = `refs/pitch/pr/${sourceNumber}/head`;
   try {
     await dependencies.fetchGitRef({
       repo: repoConfig,
       remote: "origin",
       fallback_remote: `${new URL(pullRequest.url).origin}/${workspace.repo}.git`,
-      source_ref: `refs/pull/${workspace.source_number}/head`,
+      source_ref: `refs/pull/${sourceNumber}/head`,
       destination_ref: targetRef,
     });
   } catch (error: unknown) {
@@ -638,7 +644,6 @@ export async function resumeWorkspace(
     trailingPendingSession &&
     latestSessionId === null &&
     workspace.agent_type === "codex" &&
-    workspace.agent_runtime === "native" &&
     environment.kind === "host"
   ) {
     const pendingSessionIndex = findLatestPendingSessionIndex(workspace);
@@ -675,7 +680,6 @@ export async function resumeWorkspace(
     trailingPendingSession &&
     latestSessionId === null &&
     workspace.agent_type === "opencode" &&
-    workspace.agent_runtime === "native" &&
     environment.kind === "host"
   ) {
     const pendingSessionIndex = findLatestPendingSessionIndex(workspace);
@@ -739,6 +743,7 @@ export async function resumeWorkspace(
 
   let command: BuiltAgentCommand;
   let isFreshLaunch = false;
+  const sandboxName = workspace.sandbox_name ?? repoConfig.sandbox;
   try {
     const generatedOpencodeConfigPath = await maybeEnsureOpencodeConfig(
       config,
@@ -762,6 +767,7 @@ export async function resumeWorkspace(
         config,
         agent: agentName,
         repo: workspace.repo,
+        ...(sandboxName === undefined ? {} : { sandbox: sandboxName }),
         environment: environment.name,
         opencode_config_path: opencodeConfigPath,
         workspace_name: workspace.name,
@@ -774,6 +780,7 @@ export async function resumeWorkspace(
         config,
         agent: agentName,
         repo: workspace.repo,
+        ...(sandboxName === undefined ? {} : { sandbox: sandboxName }),
         environment: environment.name,
         workspace_name: workspace.name,
         opencode_config_path: opencodeConfigPath,
@@ -876,7 +883,7 @@ export async function resumeWorkspace(
     status: "active",
     agent_name: command.agent_name,
     agent_type: command.agent_type,
-    agent_runtime: command.runtime,
+    ...(sandboxName === undefined ? {} : { sandbox_name: sandboxName }),
     environment_name: environment.name ?? null,
     environment_kind: environment.kind,
     guest_worktree_path: workspacePaths.guest_worktree_path,
@@ -894,14 +901,19 @@ export async function resumeWorkspace(
 
     if (isFreshLaunch) {
       try {
-        reportWarnings(
-          dependencies.reportWarning,
-          await dependencies.runGitHubLifecycle({
-            repo: persistedWorkspace.repo,
-            source_kind: persistedWorkspace.source_kind,
-            source_number: persistedWorkspace.source_number,
-          }),
-        );
+        if (
+          persistedWorkspace.source_kind !== "adhoc" &&
+          persistedWorkspace.source_number !== null
+        ) {
+          reportWarnings(
+            dependencies.reportWarning,
+            await dependencies.runGitHubLifecycle({
+              repo: persistedWorkspace.repo,
+              source_kind: persistedWorkspace.source_kind,
+              source_number: persistedWorkspace.source_number,
+            }),
+          );
+        }
       } catch (error: unknown) {
         reportWarnings(dependencies.reportWarning, [
           `Failed to apply GitHub lifecycle automation for ${persistedWorkspace.name}: ${formatError(error)}`,

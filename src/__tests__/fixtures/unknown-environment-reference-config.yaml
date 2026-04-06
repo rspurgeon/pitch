@@ -17,4 +17,3 @@ environments:
 agents:
   claude-enterprise:
     type: claude
-    runtime: native

@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { dirname, isAbsolute } from "node:path";
 import type {
   AgentType,
   ExecutionEnvironmentKind,
   PitchConfig,
+  SandboxConfig,
   VmSshExecutionEnvironmentConfig,
 } from "./config.js";
 import {
@@ -16,7 +20,6 @@ import {
 } from "./execution-environment.js";
 
 export type SupportedAgentType = AgentType;
-export type SupportedRuntime = "native" | "docker";
 export type SupportedEnvironmentKind = ExecutionEnvironmentKind;
 
 export interface AgentLauncher {
@@ -28,6 +31,7 @@ export interface BuildStartCommandInput {
   config: PitchConfig;
   agent: string;
   repo?: string;
+  sandbox?: string;
   opencode_config_path?: string;
   environment?: string;
   workspace_name: string;
@@ -35,7 +39,6 @@ export interface BuildStartCommandInput {
   host_worktree_path?: string;
   initial_prompt?: string;
   override_args?: string[];
-  runtime?: SupportedRuntime;
   session_id?: string;
 }
 
@@ -43,19 +46,18 @@ export interface BuildResumeCommandInput {
   config: PitchConfig;
   agent: string;
   repo?: string;
+  sandbox?: string;
   opencode_config_path?: string;
   environment?: string;
   workspace_name: string;
   session_id: string;
   worktree_path?: string;
   host_worktree_path?: string;
-  runtime?: SupportedRuntime;
 }
 
 export interface BuiltAgentCommand {
   agent_name: string;
   agent_type: SupportedAgentType;
-  runtime: SupportedRuntime;
   environment_name?: string;
   environment_kind: SupportedEnvironmentKind;
   command: string[];
@@ -72,16 +74,22 @@ export interface BuiltAgentCommand {
 interface ResolvedAgentTarget {
   agent_name: string;
   agent_type: SupportedAgentType;
-  runtime: SupportedRuntime;
   args: string[];
   env: Record<string, string>;
   warnings: string[];
 }
 
-interface RuntimeWrappedCommand {
+interface BaseWrappedCommand {
   command: string[];
   pane_process_name: string;
 }
+
+interface SandboxWrappedCommand {
+  command: string[];
+  pane_process_name: string;
+}
+
+type ExecutableReadDirectoryResolver = (agentBinary: string) => string[];
 
 export function resolveAgentEnv(
   config: PitchConfig,
@@ -103,6 +111,55 @@ const AGENT_BINARIES: Record<SupportedAgentType, string> = {
   codex: "codex",
   opencode: "opencode",
 };
+
+function runPathLookup(command: string, args: string[]): string | null {
+  try {
+    const output = execFileSync(command, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+
+    return output.length === 0 ? null : output;
+  } catch {
+    return null;
+  }
+}
+
+function defaultExecutableReadDirectoryResolver(
+  agentBinary: string,
+): string[] {
+  const directories = new Set<string>();
+  const discoveredPaths = [
+    runPathLookup("mise", ["which", agentBinary]),
+    runPathLookup("which", [agentBinary]),
+  ];
+
+  for (const executablePath of discoveredPaths) {
+    if (executablePath === null || !isAbsolute(executablePath)) {
+      continue;
+    }
+
+    directories.add(dirname(executablePath));
+
+    try {
+      directories.add(dirname(realpathSync(executablePath)));
+    } catch {
+      // Keep the original path when the symlink target cannot be resolved.
+    }
+  }
+
+  return [...directories];
+}
+
+let executableReadDirectoryResolver: ExecutableReadDirectoryResolver =
+  defaultExecutableReadDirectoryResolver;
+
+export function setExecutableReadDirectoryResolverForTests(
+  resolver: ExecutableReadDirectoryResolver | null,
+): void {
+  executableReadDirectoryResolver =
+    resolver ?? defaultExecutableReadDirectoryResolver;
+}
 
 function withoutReservedArgs(
   args: string[],
@@ -154,6 +211,28 @@ function resolveRepoConfig(
   return repoConfig;
 }
 
+function resolveSandboxConfig(
+  config: PitchConfig,
+  repo: string | undefined,
+  requestedSandbox?: string,
+): SandboxConfig | null {
+  const repoConfig = resolveRepoConfig(config, repo);
+  const sandboxName = requestedSandbox ?? repoConfig?.sandbox;
+
+  if (sandboxName === undefined) {
+    return null;
+  }
+
+  const sandboxConfig = config.sandboxes[sandboxName];
+  if (sandboxConfig === undefined) {
+    throw new AgentLauncherError(
+      `Sandbox is not configured: ${sandboxName}`,
+    );
+  }
+
+  return sandboxConfig;
+}
+
 export function getAdditionalPathWarnings(
   agentType: SupportedAgentType,
   additionalPaths: string[],
@@ -178,41 +257,142 @@ function buildAdditionalPathArgs(
   return [];
 }
 
-function wrapRuntimeCommand(
+function wrapBaseCommand(
   agentType: SupportedAgentType,
-  runtime: SupportedRuntime,
   command: string[],
-): RuntimeWrappedCommand {
-  if (runtime === "native") {
-    return {
-      command,
-      pane_process_name: AGENT_BINARIES[agentType],
-    };
-  }
-
+): BaseWrappedCommand {
   return {
-    command: ["agent-en-place", agentType, ...command.slice(1)],
-    pane_process_name: "agent-en-place",
+    command,
+    pane_process_name: AGENT_BINARIES[agentType],
   };
 }
 
-function assertSupportedRuntime(
+function resolveNonoProfile(
   agentType: SupportedAgentType,
-  runtime: SupportedRuntime,
+  sandbox: SandboxConfig,
+): string {
+  const agentSpecificProfile = sandbox.profiles?.[agentType];
+  if (agentSpecificProfile !== undefined) {
+    return agentSpecificProfile;
+  }
+
+  if (sandbox.profile !== undefined) {
+    return sandbox.profile;
+  }
+
+  if (agentType === "claude") {
+    return "claude-code";
+  }
+
+  if (agentType === "codex") {
+    return "codex";
+  }
+
+  return "opencode";
+}
+
+function hasArgWithValue(
+  args: string[],
+  flag: string,
+  value: string,
+): boolean {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === undefined) {
+      continue;
+    }
+
+    if (arg === `${flag}=${value}`) {
+      return true;
+    }
+
+    if (arg === flag && args[index + 1] === value) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function validateSandboxCompatibility(
+  agentType: SupportedAgentType,
+  args: string[],
+  sandbox: SandboxConfig | null,
 ): void {
-  if (agentType === "opencode" && runtime === "docker") {
+  if (sandbox === null) {
+    return;
+  }
+
+  if (
+    agentType === "claude" &&
+    hasArgWithValue(args, "--permission-mode", "bypassPermissions")
+  ) {
     throw new AgentLauncherError(
-      "OpenCode does not support the docker runtime yet",
+      "Claude cannot use --permission-mode bypassPermissions when sandboxing is enabled",
     );
   }
+}
+
+function wrapSandboxCommand(
+  agentType: SupportedAgentType,
+  args: string[],
+  sandbox: SandboxConfig | null,
+  worktreePath: string | undefined,
+  readablePaths: string[],
+  command: BaseWrappedCommand,
+): SandboxWrappedCommand {
+  if (sandbox === null) {
+    return command;
+  }
+
+  if (worktreePath === undefined) {
+    throw new AgentLauncherError(
+      `${sandbox.provider} sandboxing requires a worktree path`,
+    );
+  }
+
+  validateSandboxCompatibility(agentType, args, sandbox);
+
+  const wrappedCommand = [
+    sandbox.provider,
+    "run",
+    "--profile",
+    resolveNonoProfile(agentType, sandbox),
+    "--workdir",
+    worktreePath,
+    "--allow-cwd",
+    ...readablePaths.flatMap((path) => ["--read", path]),
+    ...(sandbox.network_profile === undefined
+      ? []
+      : ["--network-profile", sandbox.network_profile]),
+    ...(sandbox.capability_elevation ? ["--capability-elevation"] : []),
+    ...(sandbox.rollback ? ["--rollback"] : []),
+    "--",
+    ...command.command,
+  ];
+
+  return {
+    command: wrappedCommand,
+    pane_process_name: sandbox.provider,
+  };
+}
+
+function resolveSandboxReadablePaths(
+  agentType: SupportedAgentType,
+  environment: ResolvedExecutionEnvironment,
+  sandbox: SandboxConfig | null,
+): string[] {
+  if (sandbox === null || environment.kind !== "host") {
+    return [];
+  }
+
+  return executableReadDirectoryResolver(AGENT_BINARIES[agentType]);
 }
 
 function resolveAgentTarget(
   config: PitchConfig,
   agentName: string,
   repo: string | undefined,
-  runtimeOverride?: SupportedRuntime,
-  environmentDefaultRuntime?: SupportedRuntime,
   additionalPaths?: string[],
 ): ResolvedAgentTarget {
   const repoConfig = resolveRepoConfig(config, repo);
@@ -235,12 +415,6 @@ function resolveAgentTarget(
   return {
     agent_name: agentName,
     agent_type: agentConfig.type,
-    runtime:
-      runtimeOverride ??
-      environmentDefaultRuntime ??
-      repoOverride?.runtime ??
-      repoDefaults?.runtime ??
-      agentConfig.runtime,
     args: [
       ...agentConfig.args,
       ...additionalPathArgs,
@@ -260,6 +434,7 @@ function resolveStartEnvironment(
   input: BuildStartCommandInput,
 ): {
   environment: ResolvedExecutionEnvironment;
+  sandbox: SandboxConfig | null;
   workspace_paths: ResolvedWorkspacePaths;
   additional_paths: string[];
 } {
@@ -267,6 +442,11 @@ function resolveStartEnvironment(
     input.config,
     input.repo,
     input.environment,
+  );
+  const sandbox = resolveSandboxConfig(
+    input.config,
+    input.repo,
+    input.sandbox,
   );
   const hostWorktreePath = input.host_worktree_path ?? input.worktree_path;
   const workspacePaths: ResolvedWorkspacePaths = {
@@ -278,6 +458,7 @@ function resolveStartEnvironment(
 
   return {
     environment,
+    sandbox,
     workspace_paths: workspacePaths,
     additional_paths: mapAdditionalPathsForEnvironment(
       repoConfig?.additional_paths ?? [],
@@ -291,6 +472,7 @@ function resolveResumeEnvironment(
   input: BuildResumeCommandInput,
 ): {
   environment: ResolvedExecutionEnvironment;
+  sandbox: SandboxConfig | null;
   workspace_paths: ResolvedWorkspacePaths | null;
 } {
   const environment = resolveExecutionEnvironment(
@@ -298,16 +480,23 @@ function resolveResumeEnvironment(
     input.repo,
     input.environment,
   );
+  const sandbox = resolveSandboxConfig(
+    input.config,
+    input.repo,
+    input.sandbox,
+  );
 
   if (input.worktree_path === undefined && input.host_worktree_path === undefined) {
     return {
       environment,
+      sandbox,
       workspace_paths: null,
     };
   }
 
   return {
     environment,
+    sandbox,
     workspace_paths: {
       host_worktree_path:
         input.host_worktree_path ?? input.worktree_path ?? "",
@@ -319,7 +508,7 @@ function resolveResumeEnvironment(
 
 function wrapExecutionEnvironmentCommand(
   environment: ResolvedExecutionEnvironment,
-  runtimeCommand: RuntimeWrappedCommand,
+  baseCommand: BaseWrappedCommand,
   agentEnv: Record<string, string>,
   workspaceName: string,
   workspacePaths: ResolvedWorkspacePaths | null,
@@ -333,9 +522,9 @@ function wrapExecutionEnvironmentCommand(
 } {
   if (environment.kind !== "vm-ssh") {
     return {
-      command: runtimeCommand.command,
+      command: baseCommand.command,
       env: agentEnv,
-      pane_process_name: runtimeCommand.pane_process_name,
+      pane_process_name: baseCommand.pane_process_name,
     };
   }
 
@@ -349,7 +538,7 @@ function wrapExecutionEnvironmentCommand(
     environment: environment.config as VmSshExecutionEnvironmentConfig,
     workspace_name: workspaceName,
     workspace_paths: workspacePaths,
-    agent_command: runtimeCommand.command,
+    agent_command: baseCommand.command,
     agent_env: agentEnv,
     run_bootstrap: runBootstrap,
   });
@@ -367,6 +556,7 @@ function buildClaudeStartCommand(
   input: BuildStartCommandInput,
   resolved: ResolvedAgentTarget,
   environment: ResolvedExecutionEnvironment,
+  sandbox: SandboxConfig | null,
   workspacePaths: ResolvedWorkspacePaths,
 ): BuiltAgentCommand {
   const sessionId = input.session_id ?? randomUUID();
@@ -390,10 +580,23 @@ function buildClaudeStartCommand(
     ...(input.initial_prompt === undefined ? [] : [input.initial_prompt]),
   ];
 
-  const runtimeCommand = wrapRuntimeCommand("claude", resolved.runtime, command);
+  const baseCommand = wrapBaseCommand("claude", command);
+  const sandboxReadablePaths = resolveSandboxReadablePaths(
+    "claude",
+    environment,
+    sandbox,
+  );
+  const sandboxCommand = wrapSandboxCommand(
+    "claude",
+    resolved.args,
+    sandbox,
+    input.worktree_path,
+    sandboxReadablePaths,
+    baseCommand,
+  );
   const executionCommand = wrapExecutionEnvironmentCommand(
     environment,
-    runtimeCommand,
+    sandboxCommand,
     agentEnv,
     input.workspace_name,
     workspacePaths,
@@ -403,7 +606,6 @@ function buildClaudeStartCommand(
   return {
     agent_name: resolved.agent_name,
     agent_type: "claude",
-    runtime: resolved.runtime,
     environment_name: environment.name,
     environment_kind: environment.kind,
     command: executionCommand.command,
@@ -421,6 +623,7 @@ function buildClaudeResumeCommand(
   input: BuildResumeCommandInput,
   resolved: ResolvedAgentTarget,
   environment: ResolvedExecutionEnvironment,
+  sandbox: SandboxConfig | null,
   workspacePaths: ResolvedWorkspacePaths | null,
 ): BuiltAgentCommand {
   const command = [AGENT_BINARIES.claude, "--resume", input.session_id];
@@ -428,10 +631,23 @@ function buildClaudeResumeCommand(
     workspacePaths === null
       ? resolved.env
       : mapAgentEnvForEnvironment(resolved.env, environment, workspacePaths);
-  const runtimeCommand = wrapRuntimeCommand("claude", resolved.runtime, command);
+  const baseCommand = wrapBaseCommand("claude", command);
+  const sandboxReadablePaths = resolveSandboxReadablePaths(
+    "claude",
+    environment,
+    sandbox,
+  );
+  const sandboxCommand = wrapSandboxCommand(
+    "claude",
+    resolved.args,
+    sandbox,
+    input.worktree_path,
+    sandboxReadablePaths,
+    baseCommand,
+  );
   const executionCommand = wrapExecutionEnvironmentCommand(
     environment,
-    runtimeCommand,
+    sandboxCommand,
     agentEnv,
     input.workspace_name,
     workspacePaths,
@@ -441,7 +657,6 @@ function buildClaudeResumeCommand(
   return {
     agent_name: resolved.agent_name,
     agent_type: "claude",
-    runtime: resolved.runtime,
     environment_name: environment.name,
     environment_kind: environment.kind,
     command: executionCommand.command,
@@ -459,6 +674,7 @@ function buildCodexStartCommand(
   input: BuildStartCommandInput,
   resolved: ResolvedAgentTarget,
   environment: ResolvedExecutionEnvironment,
+  sandbox: SandboxConfig | null,
   workspacePaths: ResolvedWorkspacePaths,
 ): BuiltAgentCommand {
   const agentEnv = mapAgentEnvForEnvironment(
@@ -468,7 +684,7 @@ function buildCodexStartCommand(
   );
   const layeredArgs = withoutReservedArgs(
     [...resolved.args, ...(input.override_args ?? [])],
-    ["--cd", "-C"],
+    sandbox === null ? ["--cd", "-C"] : ["--cd", "-C", "--sandbox"],
   );
 
   const command = [
@@ -479,10 +695,23 @@ function buildCodexStartCommand(
     ...(input.initial_prompt === undefined ? [] : [input.initial_prompt]),
   ];
 
-  const runtimeCommand = wrapRuntimeCommand("codex", resolved.runtime, command);
+  const baseCommand = wrapBaseCommand("codex", command);
+  const sandboxReadablePaths = resolveSandboxReadablePaths(
+    "codex",
+    environment,
+    sandbox,
+  );
+  const sandboxCommand = wrapSandboxCommand(
+    "codex",
+    resolved.args,
+    sandbox,
+    input.worktree_path,
+    sandboxReadablePaths,
+    baseCommand,
+  );
   const executionCommand = wrapExecutionEnvironmentCommand(
     environment,
-    runtimeCommand,
+    sandboxCommand,
     agentEnv,
     input.workspace_name,
     workspacePaths,
@@ -492,7 +721,6 @@ function buildCodexStartCommand(
   return {
     agent_name: resolved.agent_name,
     agent_type: "codex",
-    runtime: resolved.runtime,
     environment_name: environment.name,
     environment_kind: environment.kind,
     command: executionCommand.command,
@@ -509,6 +737,7 @@ function buildCodexResumeCommand(
   input: BuildResumeCommandInput,
   resolved: ResolvedAgentTarget,
   environment: ResolvedExecutionEnvironment,
+  sandbox: SandboxConfig | null,
   workspacePaths: ResolvedWorkspacePaths | null,
 ): BuiltAgentCommand {
   const command = [AGENT_BINARIES.codex, "resume", input.session_id];
@@ -516,10 +745,23 @@ function buildCodexResumeCommand(
     workspacePaths === null
       ? resolved.env
       : mapAgentEnvForEnvironment(resolved.env, environment, workspacePaths);
-  const runtimeCommand = wrapRuntimeCommand("codex", resolved.runtime, command);
+  const baseCommand = wrapBaseCommand("codex", command);
+  const sandboxReadablePaths = resolveSandboxReadablePaths(
+    "codex",
+    environment,
+    sandbox,
+  );
+  const sandboxCommand = wrapSandboxCommand(
+    "codex",
+    resolved.args,
+    sandbox,
+    input.worktree_path,
+    sandboxReadablePaths,
+    baseCommand,
+  );
   const executionCommand = wrapExecutionEnvironmentCommand(
     environment,
-    runtimeCommand,
+    sandboxCommand,
     agentEnv,
     input.workspace_name,
     workspacePaths,
@@ -529,7 +771,6 @@ function buildCodexResumeCommand(
   return {
     agent_name: resolved.agent_name,
     agent_type: "codex",
-    runtime: resolved.runtime,
     environment_name: environment.name,
     environment_kind: environment.kind,
     command: executionCommand.command,
@@ -547,10 +788,9 @@ function buildOpencodeStartCommand(
   input: BuildStartCommandInput,
   resolved: ResolvedAgentTarget,
   environment: ResolvedExecutionEnvironment,
+  sandbox: SandboxConfig | null,
   workspacePaths: ResolvedWorkspacePaths,
 ): BuiltAgentCommand {
-  assertSupportedRuntime("opencode", resolved.runtime);
-
   const argsWithoutBooleanFlags = withoutStandaloneFlags(
     [...resolved.args, ...(input.override_args ?? [])],
     ["--continue", "-c"],
@@ -584,14 +824,23 @@ function buildOpencodeStartCommand(
     environment,
     workspacePaths,
   );
-  const runtimeCommand = wrapRuntimeCommand(
+  const baseCommand = wrapBaseCommand("opencode", command);
+  const sandboxReadablePaths = resolveSandboxReadablePaths(
     "opencode",
-    resolved.runtime,
-    command,
+    environment,
+    sandbox,
+  );
+  const sandboxCommand = wrapSandboxCommand(
+    "opencode",
+    resolved.args,
+    sandbox,
+    input.worktree_path,
+    sandboxReadablePaths,
+    baseCommand,
   );
   const executionCommand = wrapExecutionEnvironmentCommand(
     environment,
-    runtimeCommand,
+    sandboxCommand,
     agentEnv,
     input.workspace_name,
     workspacePaths,
@@ -601,7 +850,6 @@ function buildOpencodeStartCommand(
   return {
     agent_name: resolved.agent_name,
     agent_type: "opencode",
-    runtime: resolved.runtime,
     environment_name: environment.name,
     environment_kind: environment.kind,
     command: executionCommand.command,
@@ -619,10 +867,9 @@ function buildOpencodeResumeCommand(
   input: BuildResumeCommandInput,
   resolved: ResolvedAgentTarget,
   environment: ResolvedExecutionEnvironment,
+  sandbox: SandboxConfig | null,
   workspacePaths: ResolvedWorkspacePaths | null,
 ): BuiltAgentCommand {
-  assertSupportedRuntime("opencode", resolved.runtime);
-
   const attachMode = resolved.args[0] === "attach";
   const argsWithoutBooleanFlags = withoutStandaloneFlags(
     resolved.args,
@@ -664,14 +911,23 @@ function buildOpencodeResumeCommand(
           environment,
           workspacePaths,
         );
-  const runtimeCommand = wrapRuntimeCommand(
+  const baseCommand = wrapBaseCommand("opencode", command);
+  const sandboxReadablePaths = resolveSandboxReadablePaths(
     "opencode",
-    resolved.runtime,
-    command,
+    environment,
+    sandbox,
+  );
+  const sandboxCommand = wrapSandboxCommand(
+    "opencode",
+    resolved.args,
+    sandbox,
+    input.worktree_path,
+    sandboxReadablePaths,
+    baseCommand,
   );
   const executionCommand = wrapExecutionEnvironmentCommand(
     environment,
-    runtimeCommand,
+    sandboxCommand,
     agentEnv,
     input.workspace_name,
     workspacePaths,
@@ -681,7 +937,6 @@ function buildOpencodeResumeCommand(
   return {
     agent_name: resolved.agent_name,
     agent_type: "opencode",
-    runtime: resolved.runtime,
     environment_name: environment.name,
     environment_kind: environment.kind,
     command: executionCommand.command,
@@ -697,14 +952,12 @@ function buildOpencodeResumeCommand(
 
 class ClaudeLauncher implements AgentLauncher {
   buildStartCommand(input: BuildStartCommandInput): BuiltAgentCommand {
-    const { environment, workspace_paths, additional_paths } =
+    const { environment, sandbox, workspace_paths, additional_paths } =
       resolveStartEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
-      input.runtime,
-      environment.default_runtime,
       additional_paths,
     );
     const mappedResolved = {
@@ -725,18 +978,18 @@ class ClaudeLauncher implements AgentLauncher {
       input,
       mappedResolved,
       environment,
+      sandbox,
       workspace_paths,
     );
   }
 
   buildResumeCommand(input: BuildResumeCommandInput): BuiltAgentCommand {
-    const { environment, workspace_paths } = resolveResumeEnvironment(input);
+    const { environment, sandbox, workspace_paths } =
+      resolveResumeEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
-      input.runtime,
-      environment.default_runtime,
     );
     const mappedResolved = {
       ...resolved,
@@ -759,6 +1012,7 @@ class ClaudeLauncher implements AgentLauncher {
       input,
       mappedResolved,
       environment,
+      sandbox,
       workspace_paths,
     );
   }
@@ -766,14 +1020,12 @@ class ClaudeLauncher implements AgentLauncher {
 
 class CodexLauncher implements AgentLauncher {
   buildStartCommand(input: BuildStartCommandInput): BuiltAgentCommand {
-    const { environment, workspace_paths, additional_paths } =
+    const { environment, sandbox, workspace_paths, additional_paths } =
       resolveStartEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
-      input.runtime,
-      environment.default_runtime,
       additional_paths,
     );
     const mappedResolved = {
@@ -794,18 +1046,18 @@ class CodexLauncher implements AgentLauncher {
       input,
       mappedResolved,
       environment,
+      sandbox,
       workspace_paths,
     );
   }
 
   buildResumeCommand(input: BuildResumeCommandInput): BuiltAgentCommand {
-    const { environment, workspace_paths } = resolveResumeEnvironment(input);
+    const { environment, sandbox, workspace_paths } =
+      resolveResumeEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
-      input.runtime,
-      environment.default_runtime,
     );
     const mappedResolved = {
       ...resolved,
@@ -828,6 +1080,7 @@ class CodexLauncher implements AgentLauncher {
       input,
       mappedResolved,
       environment,
+      sandbox,
       workspace_paths,
     );
   }
@@ -835,14 +1088,12 @@ class CodexLauncher implements AgentLauncher {
 
 class OpencodeLauncher implements AgentLauncher {
   buildStartCommand(input: BuildStartCommandInput): BuiltAgentCommand {
-    const { environment, workspace_paths, additional_paths } =
+    const { environment, sandbox, workspace_paths, additional_paths } =
       resolveStartEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
-      input.runtime,
-      environment.default_runtime,
       additional_paths,
     );
     const mappedResolved = {
@@ -863,18 +1114,18 @@ class OpencodeLauncher implements AgentLauncher {
       input,
       mappedResolved,
       environment,
+      sandbox,
       workspace_paths,
     );
   }
 
   buildResumeCommand(input: BuildResumeCommandInput): BuiltAgentCommand {
-    const { environment, workspace_paths } = resolveResumeEnvironment(input);
+    const { environment, sandbox, workspace_paths } =
+      resolveResumeEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
-      input.runtime,
-      environment.default_runtime,
     );
     const mappedResolved = {
       ...resolved,
@@ -897,6 +1148,7 @@ class OpencodeLauncher implements AgentLauncher {
       input,
       mappedResolved,
       environment,
+      sandbox,
       workspace_paths,
     );
   }

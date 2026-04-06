@@ -15,7 +15,5 @@ repos:
 agents:
   codex:
     type: codex
-    runtime: native
   claude-enterprise:
     type: claude
-    runtime: native

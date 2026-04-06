@@ -33,7 +33,6 @@ function makeConfig(): PitchConfig {
         additional_paths: [],
         bootstrap_prompts: {},
         agent_defaults: {
-          runtime: undefined,
           args: [],
           env: {},
         },
@@ -41,10 +40,10 @@ function makeConfig(): PitchConfig {
       },
     },
     environments: {},
+    sandboxes: {},
     agents: {
       codex: {
         type: "codex",
-        runtime: "native",
         args: [],
         env: {},
       },
@@ -68,7 +67,6 @@ function makeWorkspaceRecord(
     tmux_window: "gh-42-fix-bug",
     agent_name: "codex",
     agent_type: "codex",
-    agent_runtime: "native",
     agent_env: {},
     agent_sessions: [
       {
@@ -94,6 +92,9 @@ function makeDependencies(
   overrides: Partial<WorkspaceLifecycleDependencies> = {},
 ): WorkspaceLifecycleDependencies {
   return {
+    deleteBranchIfEmpty: vi.fn(async () => ({
+      deleted: false,
+    })),
     deleteOpencodeConfig: vi.fn(async () => undefined),
     deleteWorkspaceRecord: vi.fn(async () => true),
     getTmuxWindowPaneInfo: vi.fn(
@@ -362,6 +363,7 @@ describe("delete workspace", () => {
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       force: undefined,
     });
+    expect(dependencies.deleteBranchIfEmpty).not.toHaveBeenCalled();
     expect(dependencies.removeCodexTrustedPath).toHaveBeenCalled();
     expect(dependencies.deleteOpencodeConfig).toHaveBeenCalledWith(
       "gh-42-fix-bug",
@@ -499,6 +501,116 @@ describe("delete workspace", () => {
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       force: true,
     });
+  });
+
+  it("deletes a local branch when requested and it is safely empty", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          name: "spike-auth",
+          source_kind: "adhoc",
+          source_number: null,
+          branch: "feature/auth",
+          base_branch: "main",
+          worktree_path: "/tmp/worktrees/spike-auth",
+          tmux_window: "spike-auth",
+        }),
+      ),
+      deleteBranchIfEmpty: vi.fn(async () => ({
+        deleted: true,
+      })),
+    });
+
+    await deleteWorkspace(
+      {
+        name: "spike-auth",
+        delete_branch_if_empty: true,
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.deleteBranchIfEmpty).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      branch: "feature/auth",
+      base_branch: "main",
+    });
+  });
+
+  it("warns and preserves the branch when delete-branch-if-empty is not safe", async () => {
+    const config = makeConfig();
+    const warnings: string[] = [];
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          name: "spike-auth",
+          source_kind: "adhoc",
+          source_number: null,
+          branch: "feature/auth",
+          base_branch: "main",
+          worktree_path: "/tmp/worktrees/spike-auth",
+          tmux_window: "spike-auth",
+        }),
+      ),
+      deleteBranchIfEmpty: vi.fn(async () => ({
+        deleted: false,
+        reason:
+          "Skipping local branch deletion for feature/auth: branch has commits not contained in main.",
+      })),
+    });
+
+    await deleteWorkspace(
+      {
+        name: "spike-auth",
+        delete_branch_if_empty: true,
+      },
+      config,
+      {
+        ...dependencies,
+        reportWarning: (warning) => warnings.push(warning),
+      },
+    );
+
+    expect(warnings).toEqual([
+      "Skipping local branch deletion for feature/auth: branch has commits not contained in main.",
+    ]);
+    expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith("spike-auth");
+  });
+
+  it("warns and skips branch deletion for PR workspaces", async () => {
+    const config = makeConfig();
+    const warnings: string[] = [];
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          name: "pr-700-default-aas",
+          worktree_name: "pr-700",
+          source_kind: "pr",
+          source_number: 700,
+          branch: "feature/default-aas",
+          worktree_path: "/tmp/worktrees/pr-700",
+          tmux_window: "pr-700-default-aas",
+        }),
+      ),
+    });
+
+    await deleteWorkspace(
+      {
+        name: "pr-700-default-aas",
+        delete_branch_if_empty: true,
+      },
+      config,
+      {
+        ...dependencies,
+        reportWarning: (warning) => warnings.push(warning),
+      },
+    );
+
+    expect(dependencies.deleteBranchIfEmpty).not.toHaveBeenCalled();
+    expect(warnings).toEqual([
+      "Skipping local branch deletion for feature/default-aas: PR workspaces do not delete branches automatically.",
+    ]);
   });
 
   it("treats a missing worktree as already cleaned up", async () => {

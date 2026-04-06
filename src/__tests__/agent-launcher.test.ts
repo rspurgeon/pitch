@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { PitchConfig } from "../config.js";
 import {
   AgentLauncherError,
@@ -7,6 +7,7 @@ import {
   claudeLauncher,
   codexLauncher,
   opencodeLauncher,
+  setExecutableReadDirectoryResolverForTests,
 } from "../agent-launcher.js";
 
 function makeConfig(): PitchConfig {
@@ -21,13 +22,13 @@ function makeConfig(): PitchConfig {
     repos: {
       "kong/kongctl": {
         default_agent: "claude-enterprise",
+        sandbox: undefined,
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
         additional_paths: ["/home/rspurgeon/go"],
         bootstrap_prompts: {},
         agent_defaults: {
-          runtime: undefined,
           args: [],
           env: {
             GO_SRC: "/home/rspurgeon/go",
@@ -35,7 +36,6 @@ function makeConfig(): PitchConfig {
         },
         agent_overrides: {
           codex: {
-            runtime: undefined,
             args: [
               "--add-dir",
               "/home/rspurgeon/.config/kongctl",
@@ -45,12 +45,10 @@ function makeConfig(): PitchConfig {
             },
           },
           "claude-personal": {
-            runtime: undefined,
             args: [],
             env: {},
           },
           "codex-api": {
-            runtime: undefined,
             args: ["--search"],
             env: {
               OPENAI_BASE_URL: "https://api.example.invalid",
@@ -62,7 +60,6 @@ function makeConfig(): PitchConfig {
     environments: {
       "sandbox-vm": {
         kind: "vm-ssh",
-        default_runtime: "native",
         ssh_host: "sandbox.internal",
         ssh_user: "pitch",
         ssh_port: 2222,
@@ -85,10 +82,29 @@ function makeConfig(): PitchConfig {
         },
       },
     },
+    sandboxes: {
+      kongctl: {
+        provider: "nono",
+        profiles: {
+          codex: "/srv/nono/kongctl-codex.json",
+        },
+        network_profile: "docs-and-github",
+        capability_elevation: true,
+        rollback: true,
+      },
+      locked: {
+        provider: "nono",
+        profile: "/srv/nono/kongctl.toml",
+        profiles: {
+          codex: "/srv/nono/kongctl-codex.toml",
+        },
+        capability_elevation: false,
+        rollback: false,
+      },
+    },
     agents: {
       "claude-enterprise": {
         type: "claude",
-        runtime: "native",
         args: [
           "--model",
           "sonnet",
@@ -101,7 +117,6 @@ function makeConfig(): PitchConfig {
       },
       "claude-personal": {
         type: "claude",
-        runtime: "docker",
         args: ["--model", "opus"],
         env: {
           CLAUDE_CONFIG_DIR: "~/.claude-personal",
@@ -109,7 +124,6 @@ function makeConfig(): PitchConfig {
       },
       codex: {
         type: "codex",
-        runtime: "native",
         args: [
           "--model",
           "gpt-5.4",
@@ -124,7 +138,6 @@ function makeConfig(): PitchConfig {
       },
       "codex-api": {
         type: "codex",
-        runtime: "native",
         args: [],
         env: {
           CODEX_HOME: "~/.codex-api",
@@ -133,7 +146,6 @@ function makeConfig(): PitchConfig {
       },
       opencode: {
         type: "opencode",
-        runtime: "native",
         args: ["--agent", "build"],
         env: {
           OPENCODE_CONFIG_DIR: "~/.config/opencode",
@@ -141,7 +153,6 @@ function makeConfig(): PitchConfig {
       },
       "opencode-attach": {
         type: "opencode",
-        runtime: "native",
         args: [
           "attach",
           "http://localhost:4096",
@@ -154,7 +165,6 @@ function makeConfig(): PitchConfig {
       },
       "opencode-attach-continue": {
         type: "opencode",
-        runtime: "native",
         args: [
           "attach",
           "http://localhost:4096",
@@ -173,6 +183,10 @@ function makeConfig(): PitchConfig {
 }
 
 describe("agent launcher", () => {
+  afterEach(() => {
+    setExecutableReadDirectoryResolverForTests(null);
+  });
+
   it("builds a Claude start command with generated session id", () => {
     const config = makeConfig();
 
@@ -185,7 +199,6 @@ describe("agent launcher", () => {
 
     expect(command.agent_name).toBe("claude-enterprise");
     expect(command.agent_type).toBe("claude");
-    expect(command.runtime).toBe("native");
     expect(command.command).toEqual([
       "claude",
       "--model",
@@ -249,7 +262,6 @@ describe("agent launcher", () => {
     });
 
     expect(command.agent_type).toBe("codex");
-    expect(command.runtime).toBe("native");
     expect(command.command).toEqual([
       "codex",
       "--model",
@@ -349,7 +361,6 @@ describe("agent launcher", () => {
     });
 
     expect(command.agent_type).toBe("opencode");
-    expect(command.runtime).toBe("native");
     expect(command.command).toEqual([
       "opencode",
       "--agent",
@@ -537,9 +548,7 @@ describe("agent launcher", () => {
 
     expect(command.agent_name).toBe("claude-personal");
     expect(command.agent_type).toBe("claude");
-    expect(command.runtime).toBe("docker");
     expect(command.command).toEqual([
-      "agent-en-place",
       "claude",
       "--model",
       "opus",
@@ -556,7 +565,7 @@ describe("agent launcher", () => {
     });
   });
 
-  it("forwards selected agent env into docker-wrapped Codex commands", () => {
+  it("forwards selected agent env into Codex commands", () => {
     const config = makeConfig();
 
     const command = buildAgentStartCommand({
@@ -565,13 +574,10 @@ describe("agent launcher", () => {
       repo: "kong/kongctl",
       workspace_name: "gh-565-fix-validation",
       worktree_path: "/tmp/worktree",
-      runtime: "docker",
     });
 
     expect(command.agent_type).toBe("codex");
-    expect(command.runtime).toBe("docker");
     expect(command.command).toEqual([
-      "agent-en-place",
       "codex",
       "--add-dir",
       "/home/rspurgeon/go",
@@ -634,24 +640,154 @@ describe("agent launcher", () => {
     expect(command.pane_reuse_command).toContain("clear &&");
   });
 
-  it("supports explicit runtime overrides", () => {
+  it("wraps host Codex commands with nono when a sandbox is selected", () => {
     const config = makeConfig();
+    setExecutableReadDirectoryResolverForTests(() => [
+      "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
+    ]);
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "codex",
+      repo: "kong/kongctl",
+      sandbox: "kongctl",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.pane_process_name).toBe("nono");
+    expect(command.command).toEqual([
+      "nono",
+      "run",
+      "--profile",
+      "/srv/nono/kongctl-codex.json",
+      "--workdir",
+      "/tmp/worktree",
+      "--allow-cwd",
+      "--read",
+      "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
+      "--network-profile",
+      "docs-and-github",
+      "--capability-elevation",
+      "--rollback",
+      "--",
+      "codex",
+      "--model",
+      "gpt-5.4",
+      "--ask-for-approval",
+      "on-request",
+      "--add-dir",
+      "/home/rspurgeon/go",
+      "--add-dir",
+      "/home/rspurgeon/.config/kongctl",
+      "--cd",
+      "/tmp/worktree",
+    ]);
+  });
+
+  it("uses explicit sandbox profiles verbatim", () => {
+    const config = makeConfig();
+    setExecutableReadDirectoryResolverForTests(() => [
+      "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
+    ]);
 
     const command = buildAgentResumeCommand({
       config,
-      agent: "claude-enterprise",
+      agent: "codex",
+      repo: "kong/kongctl",
+      sandbox: "locked",
       workspace_name: "gh-565-fix-validation",
-      session_id: "resume-123",
-      runtime: "docker",
+      session_id: "session-123",
+      worktree_path: "/tmp/worktree",
     });
 
-    expect(command.runtime).toBe("docker");
     expect(command.command).toEqual([
-      "agent-en-place",
-      "claude",
-      "--resume",
-      "resume-123",
+      "nono",
+      "run",
+      "--profile",
+      "/srv/nono/kongctl-codex.toml",
+      "--workdir",
+      "/tmp/worktree",
+      "--allow-cwd",
+      "--read",
+      "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
+      "--",
+      "codex",
+      "resume",
+      "session-123",
     ]);
+  });
+
+  it("falls back to sandbox.profile when no agent-specific profile exists", () => {
+    const config = makeConfig();
+    setExecutableReadDirectoryResolverForTests(() => [
+      "/home/rspurgeon/.local/share/mise/installs/opencode/1.3.0",
+    ]);
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "opencode",
+      repo: "kong/kongctl",
+      sandbox: "locked",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.command.slice(0, 6)).toEqual([
+      "nono",
+      "run",
+      "--profile",
+      "/srv/nono/kongctl.toml",
+      "--workdir",
+      "/tmp/worktree",
+    ]);
+  });
+
+  it("wraps guest agent commands with nono inside vm-ssh sessions", () => {
+    const config = makeConfig();
+    setExecutableReadDirectoryResolverForTests(() => [
+      "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
+    ]);
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "codex",
+      repo: "kong/kongctl",
+      sandbox: "kongctl",
+      environment: "sandbox-vm",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/srv/pitch/workspaces/gh-565-fix-validation",
+      host_worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.pane_process_name).toBe("ssh");
+    expect(command.command[7]).toContain("env CODEX_HOME");
+    expect(command.command[7]).toContain("'\"'\"'nono'\"'\"' '\"'\"'run'\"'\"'");
+    expect(command.command[7]).toContain(
+      "'\"'\"'--profile'\"'\"' '\"'\"'/srv/nono/kongctl-codex.json'\"'\"'",
+    );
+    expect(command.command[7]).toContain(
+      "'\"'\"'--workdir'\"'\"' '\"'\"'/srv/pitch/workspaces/gh-565-fix-validation'\"'\"'",
+    );
+    expect(command.command[7]).not.toContain(
+      "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
+    );
+  });
+
+  it("rejects Claude bypassPermissions when sandboxing is enabled", () => {
+    const config = makeConfig();
+
+    expect(() =>
+      buildAgentStartCommand({
+        config,
+        agent: "claude-enterprise",
+        sandbox: "kongctl",
+        workspace_name: "gh-565-fix-validation",
+        worktree_path: "/tmp/worktree",
+      }),
+    ).toThrow(
+      "Claude cannot use --permission-mode bypassPermissions when sandboxing is enabled",
+    );
   });
 
   it("does not let Claude overrides replace required workspace flags", () => {
@@ -690,20 +826,6 @@ describe("agent launcher", () => {
       "--name",
       "gh-565-fix-validation",
     ]);
-  });
-
-  it("throws when OpenCode is configured with the docker runtime", () => {
-    const config = makeConfig();
-
-    expect(() =>
-      buildAgentStartCommand({
-        config,
-        agent: "opencode",
-        workspace_name: "gh-565-fix-validation",
-        worktree_path: "/tmp/worktree",
-        runtime: "docker",
-      }),
-    ).toThrow("OpenCode does not support the docker runtime yet");
   });
 
   it("does not warn for OpenCode repo additional_paths", () => {

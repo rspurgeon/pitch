@@ -30,10 +30,9 @@ const TimestampSchema = z.preprocess(
   z.string(),
 );
 
-export const AgentRuntimeSchema = z.enum(["native", "docker"]);
 export const ExecutionEnvironmentKindSchema = z.enum(["host", "vm-ssh"]);
 export const WorkspaceStatusSchema = z.enum(["active", "closed"]);
-export const WorkspaceSourceKindSchema = z.enum(["issue", "pr"]);
+export const WorkspaceSourceKindSchema = z.enum(["issue", "pr", "adhoc"]);
 
 export const AgentSessionSchema = z.object({
   id: z.string(),
@@ -46,7 +45,7 @@ export const WorkspaceRecordSchema = z.object({
   worktree_name: WorkspaceNameSchema.optional(),
   repo: z.string(),
   source_kind: WorkspaceSourceKindSchema,
-  source_number: z.number().int().positive(),
+  source_number: z.number().int().positive().nullable(),
   branch: z.string(),
   worktree_path: z.string(),
   base_branch: z.string(),
@@ -54,7 +53,7 @@ export const WorkspaceRecordSchema = z.object({
   tmux_window: z.string(),
   agent_name: z.string(),
   agent_type: z.string(),
-  agent_runtime: AgentRuntimeSchema,
+  sandbox_name: z.string().optional(),
   environment_name: z.string().nullable().optional(),
   environment_kind: ExecutionEnvironmentKindSchema.optional(),
   guest_worktree_path: z.string().optional(),
@@ -64,7 +63,26 @@ export const WorkspaceRecordSchema = z.object({
   status: WorkspaceStatusSchema,
   created_at: TimestampSchema,
   updated_at: TimestampSchema,
-}).strict();
+}).strict().superRefine((workspace, ctx) => {
+  if (
+    (workspace.source_kind === "issue" || workspace.source_kind === "pr") &&
+    workspace.source_number === null
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["source_number"],
+      message: "Issue and PR workspaces require a source_number",
+    });
+  }
+
+  if (workspace.source_kind === "adhoc" && workspace.source_number !== null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["source_number"],
+      message: "Ad hoc workspaces must not set source_number",
+    });
+  }
+});
 
 const ListWorkspacesOptionsSchema = z.object({
   status: z.enum(["active", "closed", "all"]).optional(),

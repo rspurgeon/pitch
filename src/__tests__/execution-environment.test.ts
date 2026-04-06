@@ -56,10 +56,10 @@ function makeConfig(): PitchConfig {
         },
       },
     },
+    sandboxes: {},
     agents: {
       codex: {
         type: "codex",
-        runtime: "native",
         args: [],
         env: {},
       },

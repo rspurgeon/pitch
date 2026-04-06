@@ -70,7 +70,7 @@ for commands that target a workspace.
 - **Transport:** stdio (spawned by MCP client as child
   process)
 - **State storage:** YAML files in `~/.pitch/`
-- **External dependencies:** `git`, `tmux`, optionally `agent-en-place` for Docker
+- **External dependencies:** `git`, `tmux`, and optional `nono` sandboxing
 
 ---
 
@@ -203,7 +203,10 @@ Deletes a workspace record and, when applicable, its git
 worktree. Dirty worktrees are refused unless `--force` is
 set. If multiple Pitch workspaces share one PR checkout,
 Pitch deletes only the targeted workspace record and keeps
-the shared worktree.
+the shared worktree. If `delete_branch_if_empty` is set,
+Pitch also deletes the local branch for non-PR workspaces
+only when the branch has no commits outside `base_branch`
+and no remote-tracking ref.
 
 ---
 
@@ -270,7 +273,7 @@ sessions.
 
 ## Agent Launcher Abstraction
 
-Pitch separates agent concerns into three layers:
+Pitch separates agent concerns into four layers:
 
 ### 1. Agent Type
 
@@ -280,22 +283,30 @@ Each agent (Claude Code, Codex) has its own CLI interface, flag format, and sess
 - Build a resume command with a session ID
 - Discover or assign a session ID
 
-### 2. Runtime
+### 2. Execution Environment
 
-The runtime determines _where_ the agent process runs:
+The execution environment determines _where_ the agent
+process runs:
 
-- **Native:** Agent runs directly on the host machine
-- **Docker:** Agent runs inside a Docker container via `agent-en-place`
+- **Host:** Agent runs directly on the local machine
+- **vm-ssh:** Agent runs in the guest through the existing
+  SSH transport
 
-Docker provides a sandbox: the agent can run with maximum permissions (`--dangerously-skip-permissions` for Claude, `--dangerously-bypass-approvals-and-sandbox` for Codex) because the container is the real security boundary.
+### 3. Outer Sandbox
 
-### 3. Configuration Layering
+Pitch can optionally wrap the selected agent command in
+`nono run`. This is the only outer sandbox layer. Agent
+approval prompts remain enabled, but agent-native sandbox
+flags are stripped or rejected when they conflict with the
+outer sandbox.
+
+### 4. Configuration Layering
 
 Command args and env are assembled from four sources, in
 priority order:
 
-1. **Selected agent config** — args/env/runtime from the
-   named entry under `agents`
+1. **Selected agent config** — args/env from the named
+   entry under `agents`
 2. **Repo agent overrides** — repo-specific args/env for
    that same named agent
 3. **Workspace overrides** — per-workspace settings from
@@ -365,19 +376,29 @@ already defines `OPENCODE_CONFIG`, Pitch merges that base
 config into the generated workspace file before launch so
 existing custom settings are preserved.
 
-### Docker via agent-en-place
+### Sandbox via nono
 
-When runtime is `docker`, Pitch delegates container management to `agent-en-place`:
+When a repo selects a sandbox preset, Pitch wraps the
+agent command with `nono run` and passes the resolved
+workspace root with `--workdir` and `--allow-cwd`.
 
-- `agent-en-place` builds a Docker image with the right tool versions (via mise)
-- Mounts the worktree as `/workdir`
-- Mounts agent config directories for session persistence
-- Forwards credentials (API keys, git config, SSH keys)
-- Runs the agent with full permissions inside the container
+Pitch resolves the nono profile in this order:
 
-Pitch passes the agent type to `agent-en-place` and appends its own flags. Pitch
-does not need to understand Docker internals. OpenCode support is native-only
-for now.
+1. `sandbox.profiles.<agent-type>`
+2. `sandbox.profile`
+3. the built-in nono profile that matches the selected
+   agent type
+
+The built-in fallback mapping is:
+
+- `codex` → `codex`
+- `claude` → `claude-code`
+- `opencode` → `opencode`
+
+Repo-specific extra path access is still handled by
+Pitch's existing `additional_paths` behavior. Capability
+elevation is currently the escape hatch for everything the
+nono profile does not already allow.
 
 ### Multi-Account Agent Support
 
@@ -388,7 +409,7 @@ Coding agents don't natively support multiple accounts, but their behavior can b
 
 Pitch supports this through named entries under `agents`.
 Multiple entries can share the same underlying `type`
-while using different `env`, `args`, or `runtime`
+while using different `env` and `args`
 settings. When creating a workspace, you select one of
 those named entries directly:
 
@@ -425,6 +446,7 @@ bootstrap_prompts:
 repos:
   kong/kongctl:
     default_agent: claude-enterprise
+    sandbox: kongctl
     main_worktree: ~/dev/kong/kongctl
     pane_commands:
       top_right: nvim .
@@ -434,17 +456,21 @@ repos:
     bootstrap_prompts:
       pr: Read repo PR #{pr_number} in {repo} on {branch} and wait.
     agent_overrides:
-      claude-enterprise:
-        runtime: docker
       codex:
         args:
           - --add-dir
           - /home/rspurgeon/.config/kongctl
 
+sandboxes:
+  kongctl:
+    provider: nono
+    profiles:
+      codex: /home/rspurgeon/.pitch/nono/profiles/kongctl-codex.json
+    capability_elevation: true
+
 agents:
   codex:
     type: codex
-    runtime: native
     args:
       - --model
       - gpt-5.4
@@ -457,7 +483,6 @@ agents:
 
   claude-enterprise:
     type: claude
-    runtime: native
     args:
       - --model
       - sonnet
@@ -468,7 +493,6 @@ agents:
 
   claude-personal:
     type: claude
-    runtime: native
     env:
       CLAUDE_CONFIG_DIR: ~/.claude-personal
     args:
@@ -477,7 +501,6 @@ agents:
 
   codex-api:
     type: codex
-    runtime: native
     env:
       CODEX_HOME: ~/.codex-api
       OPENAI_API_KEY: ${OPENAI_API_KEY_SECONDARY}
@@ -525,7 +548,6 @@ tmux_session: kongctl
 tmux_window: gh-565-fix-validation
 agent_name: codex
 agent_type: codex
-agent_runtime: native
 agent_env:
   CODEX_HOME: ~/.codex
 agent_sessions:
@@ -579,7 +601,6 @@ bootstrap prompt into that live session.
   from for issue workspaces, defaults to `main`
 - `agent` (string, optional) — configured agent name like `codex`,
   `claude-enterprise`, or `claude-personal`, defaults from config
-- `runtime` (string, optional) — `native` or `docker`, defaults from agent config
 - `model` (string, optional) — override default model for this workspace
 
 **Returns:** Workspace record
@@ -655,6 +676,9 @@ workspace record and leaves the shared worktree in place.
 - `name` (string, required) — workspace name
 - `force` (boolean, optional) — remove a dirty worktree
   anyway
+- `delete_branch_if_empty` (boolean, optional) — delete
+  the local branch only when it is unchanged from
+  `base_branch` and appears unpushed
 
 **Returns:** Final closed workspace record
 
@@ -664,9 +688,13 @@ workspace record and leaves the shared worktree in place.
 
 Pitch runs locally, bound to stdio. There is no network exposure.
 
-The primary security consideration is Docker sandboxing for agents. When running in Docker via `agent-en-place`, agents get full permissions inside the container but can only access mounted paths. This is the recommended approach for autonomous agent work.
+The primary security boundary is the optional outer
+`nono` sandbox. When enabled, Pitch launches the agent
+under `nono run` and leaves the agent's own approval
+workflow enabled for interactive permission requests.
 
-Native runtime trusts the agent's own permission model or the user's judgment.
+Without a configured sandbox, Pitch trusts the agent's own
+permission model or the user's judgment.
 
 ---
 

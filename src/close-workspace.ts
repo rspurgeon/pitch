@@ -10,6 +10,7 @@ import {
   resolveWorkspacePaths,
 } from "./execution-environment.js";
 import {
+  deleteBranchIfEmpty,
   GitWorktreeError,
   isWorktreeDirty,
   removeWorktree,
@@ -29,6 +30,7 @@ import {
   type WorkspaceRecord,
 } from "./workspace-state.js";
 import { deleteOpencodeConfig } from "./opencode-config.js";
+import { buildWorkspaceToolResponse } from "./workspace-tool-response.js";
 
 export const CloseWorkspaceInputSchema = z.object({
   name: z.string().trim().min(1),
@@ -37,12 +39,14 @@ export const CloseWorkspaceInputSchema = z.object({
 export const DeleteWorkspaceInputSchema = z.object({
   name: z.string().trim().min(1),
   force: z.boolean().optional(),
+  delete_branch_if_empty: z.boolean().optional(),
 }).strict();
 
 export type CloseWorkspaceInput = z.infer<typeof CloseWorkspaceInputSchema>;
 export type DeleteWorkspaceInput = z.infer<typeof DeleteWorkspaceInputSchema>;
 
 export interface WorkspaceLifecycleDependencies {
+  deleteBranchIfEmpty: typeof deleteBranchIfEmpty;
   deleteOpencodeConfig: typeof deleteOpencodeConfig;
   deleteWorkspaceRecord: typeof deleteWorkspaceRecord;
   getTmuxWindowPaneInfo: typeof getTmuxWindowPaneInfo;
@@ -56,12 +60,14 @@ export interface WorkspaceLifecycleDependencies {
   writeWorkspaceRecord: typeof writeWorkspaceRecord;
   sleep: (milliseconds: number) => Promise<void>;
   now: () => Date;
+  reportWarning?: (warning: string) => void;
 }
 
 export type CloseWorkspaceDependencies = WorkspaceLifecycleDependencies;
 export type DeleteWorkspaceDependencies = WorkspaceLifecycleDependencies;
 
 const defaultDependencies: WorkspaceLifecycleDependencies = {
+  deleteBranchIfEmpty,
   deleteOpencodeConfig,
   deleteWorkspaceRecord,
   getTmuxWindowPaneInfo,
@@ -105,6 +111,19 @@ function formatError(error: unknown): string {
   }
 
   return String(error);
+}
+
+function reportWarnings(
+  reportWarning: ((warning: string) => void) | undefined,
+  warnings: string[],
+): void {
+  if (reportWarning === undefined) {
+    return;
+  }
+
+  for (const warning of warnings) {
+    reportWarning(warning);
+  }
 }
 
 function validateCloseInput(params: CloseWorkspaceInput): CloseWorkspaceInput {
@@ -212,7 +231,6 @@ async function tryGracefulAgentShutdown(
     workspace.agent_pane_process ??
     deriveAgentPaneProcess(
       workspace.agent_type,
-      workspace.agent_runtime,
       workspace.environment_kind ?? "host",
     );
 
@@ -421,6 +439,54 @@ async function deleteWorkspaceState(
   }
 }
 
+async function maybeDeleteWorkspaceBranch(
+  workspace: WorkspaceRecord,
+  input: DeleteWorkspaceInput,
+  repoConfig: RepoConfig | null,
+  hasSharedReferences: boolean,
+  dependencies: WorkspaceLifecycleDependencies,
+): Promise<void> {
+  if (input.delete_branch_if_empty !== true) {
+    return;
+  }
+
+  if (workspace.source_kind === "pr") {
+    reportWarnings(dependencies.reportWarning, [
+      `Skipping local branch deletion for ${workspace.branch}: PR workspaces do not delete branches automatically.`,
+    ]);
+    return;
+  }
+
+  if (hasSharedReferences) {
+    reportWarnings(dependencies.reportWarning, [
+      `Skipping local branch deletion for ${workspace.branch}: another workspace still references this checkout.`,
+    ]);
+    return;
+  }
+
+  if (repoConfig === null) {
+    reportWarnings(dependencies.reportWarning, [
+      `Skipping local branch deletion for ${workspace.branch}: repo configuration is unavailable.`,
+    ]);
+    return;
+  }
+
+  try {
+    const result = await dependencies.deleteBranchIfEmpty({
+      repo: repoConfig,
+      branch: workspace.branch,
+      base_branch: workspace.base_branch,
+    });
+    if (!result.deleted && result.reason !== undefined) {
+      reportWarnings(dependencies.reportWarning, [result.reason]);
+    }
+  } catch (error: unknown) {
+    reportWarnings(dependencies.reportWarning, [
+      `Failed to evaluate local branch deletion for ${workspace.branch}: ${formatError(error)}`,
+    ]);
+  }
+}
+
 export async function deleteWorkspace(
   params: DeleteWorkspaceInput,
   config: PitchConfig,
@@ -488,6 +554,13 @@ export async function deleteWorkspace(
   }
 
   if (hasSharedReferences) {
+    await maybeDeleteWorkspaceBranch(
+      existingWorkspace,
+      input,
+      null,
+      true,
+      dependencies,
+    );
     await deleteWorkspaceState(existingWorkspace.name, dependencies);
     return closedWorkspace;
   }
@@ -515,6 +588,14 @@ export async function deleteWorkspace(
       );
     }
   }
+
+  await maybeDeleteWorkspaceBranch(
+    existingWorkspace,
+    input,
+    repoConfig,
+    false,
+    dependencies,
+  );
 
   await deleteWorkspaceState(existingWorkspace.name, dependencies);
   return closedWorkspace;
@@ -557,11 +638,12 @@ export function registerDeleteWorkspaceTool(
       outputSchema: WorkspaceRecordSchema,
     },
     async (args) => {
-      const workspace = await deleteWorkspace(args, config, dependencies);
-      return {
-        content: [{ type: "text", text: JSON.stringify(workspace) }],
-        structuredContent: workspace,
-      };
+      const warnings: string[] = [];
+      const workspace = await deleteWorkspace(args, config, {
+        ...dependencies,
+        reportWarning: (warning) => warnings.push(warning),
+      });
+      return buildWorkspaceToolResponse(workspace, warnings);
     },
   );
 }

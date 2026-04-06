@@ -11,8 +11,8 @@ import {
 export const WorkspaceSummarySchema = z.object({
   name: z.string(),
   repo: z.string(),
-  source_kind: z.enum(["issue", "pr"]),
-  source_number: z.number().int().positive(),
+  source_kind: z.enum(["issue", "pr", "adhoc"]),
+  source_number: z.number().int().positive().nullable(),
   status: z.enum(["active", "closed"]),
   agent_name: z.string(),
   agent_type: z.string(),

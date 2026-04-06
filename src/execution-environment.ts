@@ -2,7 +2,6 @@ import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import type {
-  AgentRuntime,
   ExecutionEnvironmentConfig,
   ExecutionEnvironmentKind,
   PitchConfig,
@@ -14,7 +13,6 @@ import { formatEnvAssignment, shellEscape } from "./shell.js";
 export interface ResolvedExecutionEnvironment {
   name?: string;
   kind: ExecutionEnvironmentKind;
-  default_runtime?: AgentRuntime;
   config?: ExecutionEnvironmentConfig;
 }
 
@@ -175,7 +173,6 @@ export function resolveExecutionEnvironment(
   return {
     name: environmentName,
     kind: environmentConfig.kind,
-    default_runtime: environmentConfig.default_runtime,
     config: environmentConfig,
   };
 }
@@ -457,15 +454,10 @@ export function buildVmSshCommand(
 
 export function deriveAgentPaneProcess(
   agentType: string,
-  agentRuntime: AgentRuntime,
   environmentKind: ExecutionEnvironmentKind,
 ): string {
   if (environmentKind === "vm-ssh") {
     return "ssh";
-  }
-
-  if (agentRuntime === "docker") {
-    return "agent-en-place";
   }
 
   return agentType;

@@ -31,13 +31,12 @@ const AgentEnvSchema = z.preprocess(
 );
 
 const AgentTypeSchema = z.enum(["claude", "codex", "opencode"]);
-const AgentRuntimeSchema = z.enum(["native", "docker"]);
 const ExecutionEnvironmentKindSchema = z.enum(["host", "vm-ssh"]);
+const SandboxProviderSchema = z.enum(["nono"]);
 
 const AgentConfigSchema = z
   .object({
     type: AgentTypeSchema,
-    runtime: AgentRuntimeSchema,
     args: AgentArgListSchema,
     env: AgentEnvSchema,
   })
@@ -45,7 +44,6 @@ const AgentConfigSchema = z
 
 const AgentOverrideSchema = z
   .object({
-    runtime: AgentRuntimeSchema.optional(),
     args: AgentArgListSchema,
     env: AgentEnvSchema,
   })
@@ -55,6 +53,7 @@ const BootstrapPromptTemplatesSchema = z
   .object({
     issue: z.preprocess(nullToUndefined, z.string().optional()),
     pr: z.preprocess(nullToUndefined, z.string().optional()),
+    adhoc: z.preprocess(nullToUndefined, z.string().optional()),
   })
   .strict();
 
@@ -82,12 +81,10 @@ const EnvironmentBootstrapSchema = z.object({
 
 const HostExecutionEnvironmentConfigSchema = z.object({
   kind: z.literal("host"),
-  default_runtime: AgentRuntimeSchema.optional(),
 }).strict();
 
 const VmSshExecutionEnvironmentConfigSchema = z.object({
   kind: z.literal("vm-ssh"),
-  default_runtime: AgentRuntimeSchema.optional(),
   ssh_host: NonEmptyTrimmedStringSchema,
   ssh_user: z.preprocess(nullToUndefined, NonEmptyTrimmedStringSchema.optional()),
   ssh_port: z.preprocess(
@@ -119,10 +116,40 @@ const ExecutionEnvironmentConfigSchema = z.discriminatedUnion("kind", [
   VmSshExecutionEnvironmentConfigSchema,
 ]);
 
+const SandboxProfilesSchema = z
+  .object({
+    claude: z.preprocess(
+      nullToUndefined,
+      NonEmptyTrimmedStringSchema.optional(),
+    ),
+    codex: z.preprocess(
+      nullToUndefined,
+      NonEmptyTrimmedStringSchema.optional(),
+    ),
+    opencode: z.preprocess(
+      nullToUndefined,
+      NonEmptyTrimmedStringSchema.optional(),
+    ),
+  })
+  .strict();
+
+const SandboxConfigSchema = z.object({
+  provider: SandboxProviderSchema,
+  profile: z.preprocess(nullToUndefined, NonEmptyTrimmedStringSchema.optional()),
+  profiles: z.preprocess(nullToUndefined, SandboxProfilesSchema.optional()),
+  network_profile: z.preprocess(
+    nullToUndefined,
+    NonEmptyTrimmedStringSchema.optional(),
+  ),
+  capability_elevation: z.boolean().default(false),
+  rollback: z.boolean().default(false),
+}).strict();
+
 const RepoConfigSchema = z
   .object({
     default_agent: z.preprocess(nullToUndefined, z.string().optional()),
     default_environment: z.preprocess(nullToUndefined, z.string().optional()),
+    sandbox: z.preprocess(nullToUndefined, z.string().optional()),
     main_worktree: z.string(),
     worktree_base: z.preprocess(nullToUndefined, z.string().optional()),
     tmux_session: z.preprocess(nullToUndefined, z.string().optional()),
@@ -163,6 +190,10 @@ export const PitchConfigSchema = z.object({
     nullToUndefined,
     z.record(z.string(), ExecutionEnvironmentConfigSchema).default({}),
   ),
+  sandboxes: z.preprocess(
+    nullToUndefined,
+    z.record(z.string(), SandboxConfigSchema).default({}),
+  ),
   agents: z.preprocess(
     nullToUndefined,
     z.record(z.string(), AgentConfigSchema).default({}),
@@ -170,6 +201,7 @@ export const PitchConfigSchema = z.object({
 }).superRefine((config, ctx) => {
   const configuredAgents = new Set(Object.keys(config.agents));
   const configuredEnvironments = new Set(Object.keys(config.environments));
+  const configuredSandboxes = new Set(Object.keys(config.sandboxes));
 
   function addUnknownAgentIssue(path: (string | number)[], agentName: string): void {
     ctx.addIssue({
@@ -187,6 +219,17 @@ export const PitchConfigSchema = z.object({
       code: z.ZodIssueCode.custom,
       path,
       message: `Unknown environment reference: ${environmentName}`,
+    });
+  }
+
+  function addUnknownSandboxIssue(
+    path: (string | number)[],
+    sandboxName: string,
+  ): void {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path,
+      message: `Unknown sandbox reference: ${sandboxName}`,
     });
   }
 
@@ -228,6 +271,16 @@ export const PitchConfigSchema = z.object({
       );
     }
 
+    if (
+      repoConfig.sandbox !== undefined &&
+      !configuredSandboxes.has(repoConfig.sandbox)
+    ) {
+      addUnknownSandboxIssue(
+        ["repos", repoName, "sandbox"],
+        repoConfig.sandbox,
+      );
+    }
+
     for (const agentName of Object.keys(repoConfig.agent_overrides)) {
       if (!configuredAgents.has(agentName)) {
         addUnknownAgentIssue(
@@ -256,6 +309,7 @@ export interface Defaults {
 export interface RepoConfig {
   default_agent?: string;
   default_environment?: string;
+  sandbox?: string;
   main_worktree: string;
   worktree_base: string;
   tmux_session: string;
@@ -269,6 +323,7 @@ export interface RepoConfig {
 export interface BootstrapPromptTemplates {
   issue?: string;
   pr?: string;
+  adhoc?: string;
 }
 
 export interface PaneCommands {
@@ -278,9 +333,17 @@ export interface PaneCommands {
 
 export interface AgentConfig {
   type: AgentType;
-  runtime: AgentRuntime;
   args: string[];
   env: Record<string, string>;
+}
+
+export interface SandboxConfig {
+  provider: SandboxProvider;
+  profile?: string;
+  profiles?: Partial<Record<AgentType, string>>;
+  network_profile?: string;
+  capability_elevation: boolean;
+  rollback: boolean;
 }
 
 export interface SharedPathConfig {
@@ -295,12 +358,10 @@ export interface EnvironmentBootstrapConfig {
 
 export interface HostExecutionEnvironmentConfig {
   kind: "host";
-  default_runtime?: AgentRuntime;
 }
 
 export interface VmSshExecutionEnvironmentConfig {
   kind: "vm-ssh";
-  default_runtime?: AgentRuntime;
   ssh_host: string;
   ssh_user?: string;
   ssh_port?: number;
@@ -317,7 +378,6 @@ export type ExecutionEnvironmentConfig =
   | VmSshExecutionEnvironmentConfig;
 
 export interface AgentOverride {
-  runtime?: AgentRuntime;
   args: string[];
   env: Record<string, string>;
 }
@@ -327,14 +387,15 @@ export interface PitchConfig {
   bootstrap_prompts: BootstrapPromptTemplates;
   repos: Record<string, RepoConfig>;
   environments: Record<string, ExecutionEnvironmentConfig>;
+  sandboxes: Record<string, SandboxConfig>;
   agents: Record<string, AgentConfig>;
 }
 
 export type AgentType = z.infer<typeof AgentTypeSchema>;
-export type AgentRuntime = z.infer<typeof AgentRuntimeSchema>;
 export type ExecutionEnvironmentKind = z.infer<
   typeof ExecutionEnvironmentKindSchema
 >;
+export type SandboxProvider = z.infer<typeof SandboxProviderSchema>;
 
 // --- Error class ---
 
@@ -366,6 +427,7 @@ function normalizeRepoConfig(
   return {
     default_agent: repoConfig.default_agent,
     default_environment: repoConfig.default_environment,
+    sandbox: repoConfig.sandbox,
     main_worktree: repoConfig.main_worktree,
     worktree_base:
       repoConfig.worktree_base ?? join(defaults.worktree_root, repoName),
@@ -395,6 +457,7 @@ function normalizeConfig(raw: RawPitchConfig): PitchConfig {
       ]),
     ),
     environments: raw.environments,
+    sandboxes: raw.sandboxes,
     agents: raw.agents,
   };
 }

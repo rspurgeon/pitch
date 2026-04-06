@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildWorktreePath,
   createWorktree,
+  deleteBranchIfEmpty,
   ensureWorkspaceWorktree,
   fastForwardWorktree,
   fetchGitRef,
@@ -337,6 +338,81 @@ describe("git worktree management", () => {
       branch: "feature/example",
       worktree_path: join(repo.worktree_base, "gh-353-env-yaml-tag"),
     });
+  });
+
+  it("deletes a local branch that has no unique commits and no remote-tracking ref", async () => {
+    await git(["branch", "spike-auth"], repo.main_worktree);
+
+    await expect(
+      deleteBranchIfEmpty({
+        repo,
+        branch: "spike-auth",
+        base_branch: "main",
+      }),
+    ).resolves.toEqual({
+      deleted: true,
+    });
+
+    await expect(
+      git(["branch", "--list", "spike-auth"], repo.main_worktree),
+    ).resolves.toBe("");
+  });
+
+  it("preserves a local branch when it has unique commits relative to base", async () => {
+    const created = await createWorktree({
+      repo,
+      workspace_name: "spike-auth",
+      branch: "spike-auth",
+      start_point: "main",
+    });
+    await writeFile(join(created.worktree_path, "feature.txt"), "hello\n", "utf-8");
+    await git(["add", "feature.txt"], created.worktree_path);
+    await git(["commit", "-m", "Feature work"], created.worktree_path);
+    await removeWorktree({
+      repo,
+      workspace_name: "spike-auth",
+    });
+
+    await expect(
+      deleteBranchIfEmpty({
+        repo,
+        branch: "spike-auth",
+        base_branch: "main",
+      }),
+    ).resolves.toEqual({
+      deleted: false,
+      reason:
+        "Skipping local branch deletion for spike-auth: branch has commits not contained in main.",
+    });
+
+    await expect(
+      git(["branch", "--list", "spike-auth"], repo.main_worktree),
+    ).resolves.toContain("spike-auth");
+  });
+
+  it("preserves a local branch when a remote-tracking ref exists", async () => {
+    await git(["branch", "spike-auth"], repo.main_worktree);
+    const mainRef = await git(["rev-parse", "main"], repo.main_worktree);
+    await git(
+      ["update-ref", "refs/remotes/origin/spike-auth", mainRef],
+      repo.main_worktree,
+    );
+
+    await expect(
+      deleteBranchIfEmpty({
+        repo,
+        branch: "spike-auth",
+        base_branch: "main",
+      }),
+    ).resolves.toEqual({
+      deleted: false,
+      reason:
+        "Skipping local branch deletion for spike-auth: a remote-tracking ref exists, so the branch may have been pushed.",
+    });
+
+    await expect(
+      git(["branch", "--list", "spike-auth"], repo.main_worktree),
+    ).resolves.toContain("spike-auth");
   });
 
   it("lists all worktrees currently checking out a branch", async () => {

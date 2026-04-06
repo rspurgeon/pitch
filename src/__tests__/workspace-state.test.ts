@@ -28,7 +28,6 @@ function makeWorkspace(
     tmux_window: "gh-565-fix-validation",
     agent_name: "codex",
     agent_type: "codex",
-    agent_runtime: "native",
     agent_env: { CODEX_HOME: "~/.codex" },
     agent_sessions: [
       {
@@ -188,6 +187,38 @@ describe("workspace state", () => {
     expect(updated.agent_sessions).toHaveLength(2);
     await expect(readWorkspaceRecord(workspace.name, workspacesDir)).resolves.toEqual(
       updated,
+    );
+  });
+
+  it("writes and reads ad hoc workspace records with a null source number", async () => {
+    const workspace = makeWorkspace({
+      name: "spike-auth",
+      source_kind: "adhoc",
+      source_number: null,
+      branch: "feature/auth",
+      worktree_path: "~/.local/share/worktrees/kong/kongctl/spike-auth",
+      tmux_window: "spike-auth",
+    });
+
+    await writeWorkspaceRecord(workspace, workspacesDir);
+
+    await expect(readWorkspaceRecord(workspace.name, workspacesDir)).resolves.toEqual(
+      workspace,
+    );
+  });
+
+  it("rejects ad hoc workspace records that set a source number", async () => {
+    const workspace = makeWorkspace({
+      name: "spike-auth",
+      source_kind: "adhoc",
+      source_number: 42,
+      branch: "feature/auth",
+      worktree_path: "~/.local/share/worktrees/kong/kongctl/spike-auth",
+      tmux_window: "spike-auth",
+    });
+
+    await expect(writeWorkspaceRecord(workspace, workspacesDir)).rejects.toThrow(
+      "Ad hoc workspaces must not set source_number",
     );
   });
 

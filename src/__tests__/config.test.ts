@@ -21,6 +21,7 @@ describe("loadConfig", () => {
       expect(config.defaults.environment).toBeUndefined();
       expect(config.repos).toEqual({});
       expect(config.environments).toEqual({});
+      expect(config.sandboxes).toEqual({});
       expect(config.agents).toEqual({});
       expect(config.bootstrap_prompts).toEqual({});
     });
@@ -31,6 +32,7 @@ describe("loadConfig", () => {
       expect(config.defaults.worktree_root).toBe("~/.local/share/worktrees");
       expect(config.repos).toEqual({});
       expect(config.environments).toEqual({});
+      expect(config.sandboxes).toEqual({});
       expect(config.agents).toEqual({});
       expect(config.bootstrap_prompts).toEqual({});
     });
@@ -52,6 +54,7 @@ describe("loadConfig", () => {
       expect(config.defaults.worktree_root).toBe("~/.local/share/worktrees");
       expect(config.repos).toEqual({});
       expect(config.environments).toEqual({});
+      expect(config.sandboxes).toEqual({});
       expect(config.agents).toEqual({});
     });
   });
@@ -70,6 +73,7 @@ describe("loadConfig", () => {
       expect(config.repos["kong/kongctl"]).toEqual({
         default_agent: "claude-enterprise",
         default_environment: "sandbox-vm",
+        sandbox: "kongctl",
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
@@ -103,7 +107,6 @@ describe("loadConfig", () => {
         },
         "sandbox-vm": {
           kind: "vm-ssh",
-          default_runtime: "native",
           ssh_host: "sandbox.internal",
           ssh_user: "pitch",
           ssh_port: 2222,
@@ -124,9 +127,21 @@ describe("loadConfig", () => {
         },
       });
 
+      expect(config.sandboxes).toEqual({
+        kongctl: {
+          provider: "nono",
+          profile: undefined,
+          profiles: {
+            codex: "/srv/nono/kongctl-codex.json",
+          },
+          network_profile: "docs-and-github",
+          capability_elevation: true,
+          rollback: true,
+        },
+      });
+
       expect(config.agents["codex"]).toEqual({
         type: "codex",
-        runtime: "native",
         args: [
           "--model",
           "gpt-5.4",
@@ -140,7 +155,6 @@ describe("loadConfig", () => {
 
       expect(config.agents["claude-enterprise"]).toEqual({
         type: "claude",
-        runtime: "docker",
         args: [
           "--model",
           "sonnet",
@@ -152,14 +166,12 @@ describe("loadConfig", () => {
 
       expect(config.agents["claude-personal"]).toEqual({
         type: "claude",
-        runtime: "native",
         env: { CLAUDE_CONFIG_DIR: "~/.claude-personal" },
         args: ["--model", "opus"],
       });
 
       expect(config.agents["codex-api"]).toEqual({
         type: "codex",
-        runtime: "native",
         env: {
           CODEX_HOME: "~/.codex-api",
           OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
@@ -169,7 +181,6 @@ describe("loadConfig", () => {
 
       expect(config.agents["opencode"]).toEqual({
         type: "opencode",
-        runtime: "native",
         env: {
           OPENCODE_CONFIG_DIR: "~/.config/opencode",
         },
@@ -183,6 +194,7 @@ describe("loadConfig", () => {
       expect(config.repos["kong/kongctl"]).toEqual({
         default_agent: "claude-enterprise",
         default_environment: undefined,
+        sandbox: undefined,
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
         tmux_session: "kongctl",
@@ -222,6 +234,7 @@ describe("loadConfig", () => {
       expect(config.defaults.environment).toBeUndefined();
       expect(config.repos).toEqual({});
       expect(config.environments).toEqual({});
+      expect(config.sandboxes).toEqual({});
       expect(config.agents).toEqual({});
     });
   });
@@ -251,6 +264,15 @@ describe("loadConfig", () => {
       await expect(
         loadConfig(fixture("unknown-environment-reference-config.yaml")),
       ).rejects.toThrow(/Unknown environment reference: missing-environment/);
+    });
+
+    it("rejects unknown sandbox references in repos", async () => {
+      await expect(
+        loadConfig(fixture("unknown-sandbox-reference-config.yaml")),
+      ).rejects.toThrow(ConfigError);
+      await expect(
+        loadConfig(fixture("unknown-sandbox-reference-config.yaml")),
+      ).rejects.toThrow(/Unknown sandbox reference: missing-sandbox/);
     });
 
     it("throws ConfigError for invalid field types", async () => {

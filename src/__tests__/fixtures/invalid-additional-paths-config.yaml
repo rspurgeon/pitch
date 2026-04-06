@@ -8,4 +8,3 @@ repos:
 agents:
   opencode:
     type: opencode
-    runtime: native

@@ -61,7 +61,8 @@ The codebase is organized around independent subsystems wired together by MCP to
 - **Workspace state** — YAML CRUD layer at `~/.pitch/workspaces/{name}.yaml`
 - **Git** — Thin wrapper around `git worktree add/remove` shell commands
 - **tmux** — Thin wrapper around `tmux` commands for session/window/pane management
-- **Agent launcher** — Builds start/resume command arrays per agent type (Claude, Codex) and runtime (native, Docker via `agent-en-place`)
+- **Agent launcher** — Builds start/resume command arrays per agent type and
+  optionally wraps them in the configured outer sandbox
 - **MCP tools** — Tool handlers that orchestrate the subsystems:
   `create_workspace`, `list_workspaces`, `get_workspace`,
   `resume_workspace`, `close_workspace`
@@ -84,8 +85,7 @@ requirements (e.g. `--cd` for worktree path).
 **Named agents:** The keys under `agents` are the
 user-facing launch targets. Multiple named entries can
 share the same underlying agent type (`claude`, `codex`,
-or `opencode`) while using different env vars, args, or
-runtimes.
+or `opencode`) while using different env vars and args.
 
 **tmux layout:** Each workspace window has a fixed three-pane layout — left tall pane for the coding agent, top-right and bottom-right empty shells for the user.
 
@@ -104,4 +104,3 @@ See `docs/design.md` for the full YAML schemas for both files.
 
 - `git` — worktree management
 - `tmux` — window/pane orchestration
-- `agent-en-place` — optional Docker runtime for agents

@@ -4,7 +4,7 @@ import type { WorkspaceSourceKind } from "./workspace-state.js";
 export interface BootstrapPromptContext {
   repo: string;
   source_kind: WorkspaceSourceKind;
-  source_number: number;
+  source_number: number | null;
   workspace_name: string;
   branch: string;
 }
@@ -14,6 +14,8 @@ const DEFAULT_BOOTSTRAP_PROMPTS: Record<WorkspaceSourceKind, string> = {
     "Read GitHub issue #{issue_number} in {repo} using gh, understand the task, and wait for the next instruction. Do not make changes yet.",
   pr:
     "Read GitHub PR #{pr_number} in {repo} using gh, understand the current change, and wait for the next instruction. Do not make changes yet.",
+  adhoc:
+    "Inspect the current repo state on branch {branch} in {repo} and wait for the next instruction. Do not make changes yet.",
 };
 
 function resolveTemplate(
@@ -21,11 +23,29 @@ function resolveTemplate(
   repoName: string,
   sourceKind: WorkspaceSourceKind,
 ): string {
-  return (
-    config.repos[repoName]?.bootstrap_prompts[sourceKind] ??
-    config.bootstrap_prompts[sourceKind] ??
-    DEFAULT_BOOTSTRAP_PROMPTS[sourceKind]
-  );
+  const repoTemplates = config.repos[repoName]?.bootstrap_prompts;
+  const globalTemplates = config.bootstrap_prompts;
+
+  switch (sourceKind) {
+    case "issue":
+      return (
+        repoTemplates.issue ??
+        globalTemplates.issue ??
+        DEFAULT_BOOTSTRAP_PROMPTS.issue
+      );
+    case "pr":
+      return (
+        repoTemplates.pr ??
+        globalTemplates.pr ??
+        DEFAULT_BOOTSTRAP_PROMPTS.pr
+      );
+    case "adhoc":
+      return (
+        repoTemplates.adhoc ??
+        globalTemplates.adhoc ??
+        DEFAULT_BOOTSTRAP_PROMPTS.adhoc
+      );
+  }
 }
 
 export function buildBootstrapPrompt(

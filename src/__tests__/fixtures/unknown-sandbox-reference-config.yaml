@@ -1,0 +1,8 @@
+repos:
+  kong/kongctl:
+    main_worktree: ~/dev/kong/kongctl
+    sandbox: missing-sandbox
+
+sandboxes:
+  default:
+    provider: nono

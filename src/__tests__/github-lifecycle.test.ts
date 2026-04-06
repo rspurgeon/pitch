@@ -142,4 +142,20 @@ describe("runGitHubLifecycle", () => {
       "@me",
     ]);
   });
+
+  it("skips GitHub lifecycle work for ad hoc workspaces", async () => {
+    const execFileAsync = vi.fn();
+
+    const warnings = await runGitHubLifecycle(
+      {
+        repo: "kong/kongctl",
+        source_kind: "adhoc",
+        source_number: null,
+      },
+      { execFileAsync },
+    );
+
+    expect(warnings).toEqual([]);
+    expect(execFileAsync).not.toHaveBeenCalled();
+  });
 });

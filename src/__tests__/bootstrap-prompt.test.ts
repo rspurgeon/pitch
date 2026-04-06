@@ -32,10 +32,10 @@ function makeConfig(): PitchConfig {
       },
     },
     environments: {},
+    sandboxes: {},
     agents: {
       codex: {
         type: "codex",
-        runtime: "native",
         args: [],
         env: {},
       },
@@ -92,5 +92,19 @@ describe("buildBootstrapPrompt", () => {
         branch: "feature/example",
       }),
     ).toBe("Repo pr 123 in kong/kongctl on feature/example.");
+  });
+
+  it("uses the built-in ad hoc prompt when no override exists", () => {
+    expect(
+      buildBootstrapPrompt(makeConfig(), {
+        repo: "kong/kongctl",
+        source_kind: "adhoc",
+        source_number: null,
+        workspace_name: "spike-auth",
+        branch: "feature/auth",
+      }),
+    ).toBe(
+      "Inspect the current repo state on branch feature/auth in kong/kongctl and wait for the next instruction. Do not make changes yet.",
+    );
   });
 });

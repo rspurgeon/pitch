@@ -38,6 +38,12 @@ export interface RestoreWorktreeParams {
   allow_branch_reuse?: boolean;
 }
 
+export interface DeleteBranchIfEmptyParams {
+  repo: Pick<GitRepoConfig, "main_worktree">;
+  branch: string;
+  base_branch: string;
+}
+
 export interface FetchGitRefParams {
   repo: Pick<GitRepoConfig, "main_worktree">;
   remote: string;
@@ -62,6 +68,11 @@ export interface ManagedWorktreeMatch extends WorktreeResult {
 
 export interface EnsuredWorktreeResult extends WorktreeResult {
   adopted: boolean;
+}
+
+export interface DeleteBranchIfEmptyResult {
+  deleted: boolean;
+  reason?: string;
 }
 
 type GitWorktreeErrorCode =
@@ -559,6 +570,126 @@ export async function listWorktreesForBranch(
       branch,
       worktree_path: worktree.worktree_path,
     }));
+}
+
+async function hasRemoteTrackingBranch(
+  mainWorktree: string,
+  branch: string,
+): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["for-each-ref", "--format=%(refname:short)", "refs/remotes"],
+      { cwd: mainWorktree },
+    );
+
+    return stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .some((ref) => ref.endsWith(`/${branch}`));
+  } catch (err: unknown) {
+    throw new GitWorktreeError(
+      "COMMAND_FAILED",
+      `Failed to inspect remote-tracking branches for ${branch}\n${formatGitError(err)}`,
+    );
+  }
+}
+
+async function countUniqueBranchCommits(
+  mainWorktree: string,
+  baseBranch: string,
+  branch: string,
+): Promise<number> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["rev-list", "--right-only", "--count", `${baseBranch}...${branch}`],
+      { cwd: mainWorktree },
+    );
+    const parsed = Number.parseInt(stdout.trim(), 10);
+    if (Number.isNaN(parsed)) {
+      throw new Error(`Unexpected rev-list count: ${stdout.trim()}`);
+    }
+
+    return parsed;
+  } catch (err: unknown) {
+    throw new GitWorktreeError(
+      "COMMAND_FAILED",
+      `Failed to compare branch ${branch} against ${baseBranch}\n${formatGitError(err)}`,
+    );
+  }
+}
+
+export async function deleteBranchIfEmpty(
+  params: DeleteBranchIfEmptyParams,
+): Promise<DeleteBranchIfEmptyResult> {
+  const mainWorktree = expandHomePath(params.repo.main_worktree);
+  await ensureMainWorktree(mainWorktree);
+
+  const branch = await ensureValidBranchName(mainWorktree, params.branch);
+  const baseBranch = await ensureValidBranchName(mainWorktree, params.base_branch);
+
+  if (branch === baseBranch) {
+    return {
+      deleted: false,
+      reason: `Skipping local branch deletion for ${branch}: branch matches base branch ${baseBranch}.`,
+    };
+  }
+
+  if (!(await branchExists(mainWorktree, branch))) {
+    return {
+      deleted: false,
+      reason: `Skipping local branch deletion for ${branch}: local branch does not exist.`,
+    };
+  }
+
+  if (!(await branchExists(mainWorktree, baseBranch))) {
+    return {
+      deleted: false,
+      reason: `Skipping local branch deletion for ${branch}: base branch ${baseBranch} does not exist locally.`,
+    };
+  }
+
+  const activeWorktrees = await listWorktreesForBranch(
+    { main_worktree: mainWorktree },
+    branch,
+  );
+  if (activeWorktrees.length > 0) {
+    return {
+      deleted: false,
+      reason: `Skipping local branch deletion for ${branch}: branch is still checked out in another worktree.`,
+    };
+  }
+
+  if (await hasRemoteTrackingBranch(mainWorktree, branch)) {
+    return {
+      deleted: false,
+      reason: `Skipping local branch deletion for ${branch}: a remote-tracking ref exists, so the branch may have been pushed.`,
+    };
+  }
+
+  if ((await countUniqueBranchCommits(mainWorktree, baseBranch, branch)) > 0) {
+    return {
+      deleted: false,
+      reason: `Skipping local branch deletion for ${branch}: branch has commits not contained in ${baseBranch}.`,
+    };
+  }
+
+  try {
+    await execFileAsync("git", ["branch", "-D", branch], {
+      cwd: mainWorktree,
+    });
+  } catch (err: unknown) {
+    throw new GitWorktreeError(
+      "COMMAND_FAILED",
+      `Failed to delete local branch ${branch}\n${formatGitError(err)}`,
+    );
+  }
+
+  return {
+    deleted: true,
+  };
 }
 
 export async function removeWorktree(
