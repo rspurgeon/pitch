@@ -422,6 +422,44 @@ describe("resume workspace", () => {
     );
   });
 
+  it("can resume an explicit agent session id", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      buildAgentResumeCommand: vi.fn((input) => ({
+        ...makeClaudeResumeCommand(),
+        command: ["claude", "--resume", input.session_id],
+        session_id: input.session_id,
+      })),
+    });
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+        session_id: "claude-session-explicit",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
+    expect(dependencies.buildAgentResumeCommand).toHaveBeenCalledWith({
+      config,
+      agent: "claude-enterprise",
+      repo: "kong/kongctl",
+      environment: undefined,
+      workspace_name: "gh-42-fix-bug",
+      opencode_config_path: undefined,
+      session_id: "claude-session-explicit",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+    });
+    expect(workspace.agent_sessions.at(-1)).toEqual({
+      id: "claude-session-explicit",
+      started_at: "2026-03-23T04:00:00.000Z",
+      status: "active",
+    });
+  });
+
   it("restores a shared PR session using the underlying worktree name", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({

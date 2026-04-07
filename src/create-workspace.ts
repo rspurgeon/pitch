@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { join, posix } from "node:path";
 import { z } from "zod";
 import {
+  buildAgentResumeCommand,
   buildAgentStartCommand,
   resolveAgentEnv,
   type BuiltAgentCommand,
@@ -81,6 +82,7 @@ export const CreateWorkspaceInputSchema = z
     base_branch: z.string().trim().min(1).optional(),
     agent: z.string().trim().min(1).optional(),
     environment: z.string().trim().min(1).optional(),
+    session_id: z.string().trim().min(1).optional(),
     skip_prompt: z.boolean().optional(),
     model: z.string().trim().min(1).optional(),
   })
@@ -137,11 +139,20 @@ export const CreateWorkspaceInputSchema = z
         message: "slug cannot be used with ad hoc workspaces",
       });
     }
+
+    if (input.session_id !== undefined && input.model !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["model"],
+        message: "model is only supported for fresh launches",
+      });
+    }
   });
 
 export type CreateWorkspaceInput = z.infer<typeof CreateWorkspaceInputSchema>;
 
 export interface CreateWorkspaceDependencies {
+  buildAgentResumeCommand: typeof buildAgentResumeCommand;
   readWorkspaceRecord: typeof readWorkspaceRecord;
   listWorkspaceRecords: typeof listWorkspaceRecords;
   writeWorkspaceRecord: typeof writeWorkspaceRecord;
@@ -209,6 +220,7 @@ interface ResolvedWorkspaceSource {
 }
 
 const defaultDependencies: CreateWorkspaceDependencies = {
+  buildAgentResumeCommand,
   readWorkspaceRecord,
   listWorkspaceRecords,
   writeWorkspaceRecord,
@@ -523,27 +535,21 @@ function buildAgentSessions(
   command: BuiltAgentCommand,
   startedAt: string,
 ): WorkspaceRecord["agent_sessions"] {
-  if (command.agent_type === "claude") {
-    if (command.session_id === undefined) {
-      throw new CreateWorkspaceError(
-        "Claude start command did not include a pre-generated session id",
-      );
-    }
-
+  if (command.session_id === undefined) {
     return [
       {
-        id: command.session_id,
+        id: "pending",
         started_at: startedAt,
-        status: "active",
+        status: "pending",
       },
     ];
   }
 
   return [
     {
-      id: "pending",
+      id: command.session_id,
       started_at: startedAt,
-      status: "pending",
+      status: "active",
     },
   ];
 }
@@ -771,7 +777,8 @@ export async function createWorkspace(
       worktree.worktree_path,
     );
 
-    const initialPrompt = input.skip_prompt === true
+    const initialPrompt =
+      input.session_id !== undefined || input.skip_prompt === true
       ? undefined
       : buildBootstrapPrompt(config, {
           repo: repoName,
@@ -796,19 +803,37 @@ export async function createWorkspace(
       generatedOpencodeConfigPath,
     );
 
-    const agentCommand = dependencies.buildAgentStartCommand({
-      config,
-      agent: agentName,
-      repo: repoName,
-      ...(repoConfig.sandbox === undefined ? {} : { sandbox: repoConfig.sandbox }),
-      environment: environment.name,
-      opencode_config_path: opencodeConfigPath,
-      workspace_name: workspaceName,
-      worktree_path: workspacePaths.agent_worktree_path,
-      host_worktree_path: workspacePaths.host_worktree_path,
-      initial_prompt: initialPrompt,
-      override_args: buildAgentOverrides(input),
-    });
+    const agentCommand =
+      input.session_id === undefined
+        ? dependencies.buildAgentStartCommand({
+            config,
+            agent: agentName,
+            repo: repoName,
+            ...(repoConfig.sandbox === undefined
+              ? {}
+              : { sandbox: repoConfig.sandbox }),
+            environment: environment.name,
+            opencode_config_path: opencodeConfigPath,
+            workspace_name: workspaceName,
+            worktree_path: workspacePaths.agent_worktree_path,
+            host_worktree_path: workspacePaths.host_worktree_path,
+            initial_prompt: initialPrompt,
+            override_args: buildAgentOverrides(input),
+          })
+        : dependencies.buildAgentResumeCommand({
+            config,
+            agent: agentName,
+            repo: repoName,
+            ...(repoConfig.sandbox === undefined
+              ? {}
+              : { sandbox: repoConfig.sandbox }),
+            environment: environment.name,
+            opencode_config_path: opencodeConfigPath,
+            workspace_name: workspaceName,
+            session_id: input.session_id,
+            worktree_path: workspacePaths.agent_worktree_path,
+            host_worktree_path: workspacePaths.host_worktree_path,
+          });
 
     if (agentCommand.agent_type === "claude") {
       try {

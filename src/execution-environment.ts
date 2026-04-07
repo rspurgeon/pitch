@@ -336,6 +336,7 @@ function buildMiseBootstrapSnippet(): string {
     "  if command -v mise >/dev/null 2>&1; then",
     "    mise trust -y >/dev/null 2>&1 || true;",
     "    mise install;",
+    "    eval \"$(mise hook-env -s bash)\" || true;",
     "  fi;",
     "fi",
   ].join(" ");
@@ -343,7 +344,7 @@ function buildMiseBootstrapSnippet(): string {
 
 function buildUserLocalPathSnippet(): string {
   return [
-    'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"',
+    'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/.local/share/mise/bin:$HOME/.local/share/mise/shims:$PATH"',
   ].join(" ");
 }
 

@@ -59,6 +59,7 @@ export const ResumeWorkspaceInputSchema = z.object({
   name: z.string().trim().min(1),
   agent: z.string().trim().min(1).optional(),
   environment: z.string().trim().min(1).optional(),
+  session_id: z.string().trim().min(1).optional(),
   sync: z.boolean().optional(),
 }).strict();
 
@@ -634,11 +635,13 @@ export async function resumeWorkspace(
   const trailingPendingSession = hasTrailingPendingSession(workspace);
 
   let latestSessionId =
-    isAgentContextChanged || isEnvironmentContextChanged || trailingPendingSession
+    input.session_id ??
+    (isAgentContextChanged || isEnvironmentContextChanged || trailingPendingSession
       ? null
-      : findLatestResumableSessionId(workspace);
+      : findLatestResumableSessionId(workspace));
 
   if (
+    input.session_id === undefined &&
     !isAgentContextChanged &&
     !isEnvironmentContextChanged &&
     trailingPendingSession &&
@@ -675,6 +678,7 @@ export async function resumeWorkspace(
   }
 
   if (
+    input.session_id === undefined &&
     !isAgentContextChanged &&
     !isEnvironmentContextChanged &&
     trailingPendingSession &&

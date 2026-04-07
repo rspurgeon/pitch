@@ -83,6 +83,7 @@ const STRING_FLAGS = new Set([
   "name",
   "pr",
   "repo",
+  "session-id",
   "slug",
   "status",
 ]);
@@ -343,6 +344,7 @@ function buildCreateInput(flags: Map<string, FlagValue>): CreateWorkspaceInput {
     base_branch: readStringFlag(flags, "base-branch"),
     agent: readStringFlag(flags, "agent"),
     environment: readStringFlag(flags, "environment"),
+    session_id: readStringFlag(flags, "session-id"),
     skip_prompt: readBooleanFlag(flags, "skip-prompt"),
     model: readStringFlag(flags, "model"),
   };
@@ -391,6 +393,7 @@ function buildResumeInput(
     name: resolveWorkspaceName(flags, positionals),
     agent: readStringFlag(flags, "agent"),
     environment: readStringFlag(flags, "environment"),
+    session_id: readStringFlag(flags, "session-id"),
     sync: readBooleanFlag(flags, "sync"),
   };
 }
@@ -469,11 +472,11 @@ function formatWorkspaceList(workspaces: WorkspaceSummary[]): string {
 function buildHelpText(): string {
   return [
     "Usage:",
-    "  pitch [create] (--issue N | --pr N) [--slug SLUG] [options]",
-    "  pitch [create] --name NAME [--branch BRANCH] [options]",
+    "  pitch [create] (--issue N | --pr N) [--slug SLUG] [--session-id ID] [options]",
+    "  pitch [create] --name NAME [--branch BRANCH] [--session-id ID] [options]",
     "  pitch list [--repo REPO] [--status active|closed|all]",
     "  pitch get <name>",
-    "  pitch resume <name> [--agent AGENT] [--environment ENV] [--sync]",
+    "  pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--sync]",
     "  pitch close <name>",
     "  pitch delete <name> [--force] [-d|--delete-branch-if-empty]",
     "  pitch completion zsh",
@@ -489,6 +492,7 @@ function buildHelpText(): string {
     "  --base-branch BRANCH",
     "  --agent AGENT",
     "  --environment ENV",
+    "  --session-id ID",
     "  --sync",
     "  --model MODEL",
     "  --skip-prompt",
@@ -546,6 +550,7 @@ function buildZshCompletionScript(): string {
     "        '--base-branch[Base branch]:branch:' \\",
     "        '--agent[Configured agent]:agent:' \\",
     "        '--environment[Execution environment]:environment:' \\",
+    "        '--session-id[Resume an existing agent session id]:session id:' \\",
     "        '--model[Model override]:model:' \\",
     "        '--skip-prompt[Skip bootstrap prompt]' \\",
     "        '--json[Emit JSON]' \\",
@@ -572,6 +577,7 @@ function buildZshCompletionScript(): string {
     "        '--name[Workspace name]:workspace:_pitch_workspaces' \\",
     "        '--agent[Configured agent]:agent:' \\",
     "        '--environment[Execution environment]:environment:' \\",
+    "        '--session-id[Resume an existing agent session id]:session id:' \\",
     "        '--sync[Fast-forward PR workspaces to latest upstream head before resuming]' \\",
     "        '--json[Emit JSON]' \\",
     "        '--help[Show help]' \\",

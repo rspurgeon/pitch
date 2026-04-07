@@ -164,10 +164,13 @@ describe("runCli", () => {
         repo: undefined,
         issue: undefined,
         pr: 700,
+        name: undefined,
         slug: "default-aas",
+        branch: undefined,
         base_branch: undefined,
         agent: undefined,
         environment: undefined,
+        session_id: undefined,
         skip_prompt: true,
         model: undefined,
       },
@@ -213,6 +216,7 @@ describe("runCli", () => {
         base_branch: undefined,
         agent: undefined,
         environment: undefined,
+        session_id: undefined,
         skip_prompt: undefined,
         model: undefined,
       },
@@ -248,10 +252,13 @@ describe("runCli", () => {
         repo: undefined,
         issue: undefined,
         pr: 700,
+        name: undefined,
         slug: undefined,
+        branch: undefined,
         base_branch: undefined,
         agent: undefined,
         environment: undefined,
+        session_id: undefined,
         skip_prompt: undefined,
         model: undefined,
       },
@@ -279,10 +286,13 @@ describe("runCli", () => {
         repo: undefined,
         issue: undefined,
         pr: 700,
+        name: undefined,
         slug: "default-aas",
+        branch: undefined,
         base_branch: undefined,
         agent: undefined,
         environment: undefined,
+        session_id: undefined,
         skip_prompt: true,
         model: undefined,
       },
@@ -316,10 +326,13 @@ describe("runCli", () => {
         repo: undefined,
         issue: undefined,
         pr: 700,
+        name: undefined,
         slug: undefined,
+        branch: undefined,
         base_branch: undefined,
         agent: undefined,
         environment: undefined,
+        session_id: undefined,
         skip_prompt: undefined,
         model: undefined,
       },
@@ -417,6 +430,7 @@ describe("runCli", () => {
         name: "pr-700-default-aas",
         agent: "codex",
         environment: undefined,
+        session_id: undefined,
         sync: undefined,
       },
       makeConfig(),
@@ -440,7 +454,63 @@ describe("runCli", () => {
         name: "pr-700-default-aas",
         agent: undefined,
         environment: undefined,
+        session_id: undefined,
         sync: true,
+      },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
+  it("passes an explicit session id through create", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["create", "--pr", "700", "--session-id", "019d6505-21ab-7493-9ea5-e10084cc79f0"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.createWorkspace).toHaveBeenCalledWith(
+      {
+        repo: undefined,
+        issue: undefined,
+        pr: 700,
+        name: undefined,
+        slug: undefined,
+        branch: undefined,
+        base_branch: undefined,
+        agent: undefined,
+        environment: undefined,
+        session_id: "019d6505-21ab-7493-9ea5-e10084cc79f0",
+        skip_prompt: undefined,
+        model: undefined,
+      },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
+  it("passes an explicit session id through resume", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["resume", "pr-700-default-aas", "--session-id", "019d6505-21ab-7493-9ea5-e10084cc79f0"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.resumeWorkspace).toHaveBeenCalledWith(
+      {
+        name: "pr-700-default-aas",
+        agent: undefined,
+        environment: undefined,
+        session_id: "019d6505-21ab-7493-9ea5-e10084cc79f0",
+        sync: undefined,
       },
       makeConfig(),
       {
@@ -580,13 +650,19 @@ describe("runCli", () => {
 
     expect(exitCode).toBe(0);
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch [create] (--issue N | --pr N) [--slug SLUG] [options]",
+      "pitch [create] (--issue N | --pr N) [--slug SLUG] [--session-id ID] [options]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch [create] --name NAME [--branch BRANCH] [options]",
+      "pitch [create] --name NAME [--branch BRANCH] [--session-id ID] [options]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "pitch delete <name> [--force] [-d|--delete-branch-if-empty]",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--sync]",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "  --session-id ID",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "If --issue, --pr, or --name is provided without an explicit command,",
@@ -635,6 +711,9 @@ describe("runCli", () => {
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "'--branch[Ad hoc git branch name]:branch:'",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "'--session-id[Resume an existing agent session id]:session id:'",
     );
   });
 

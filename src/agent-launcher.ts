@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { dirname, isAbsolute } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join } from "node:path";
 import type {
   AgentType,
   ExecutionEnvironmentKind,
@@ -333,12 +334,140 @@ function validateSandboxCompatibility(
   }
 }
 
+function resolveSandboxReadablePaths(
+  agentType: SupportedAgentType,
+  environment: ResolvedExecutionEnvironment,
+  sandbox: SandboxConfig | null,
+): string[] {
+  if (sandbox === null) {
+    return [];
+  }
+
+  const executablePaths = executableReadDirectoryResolver(AGENT_BINARIES[agentType]);
+  const codexPaths =
+    agentType !== "codex"
+      ? []
+      : [
+          `${homedir()}/.config/mise`,
+          `${homedir()}/.cache/mise`,
+          `${homedir()}/.local/bin`,
+          `${homedir()}/.local/share/mise/bin`,
+        ];
+
+  return [...new Set([...executablePaths, ...codexPaths])];
+}
+
+function resolveSandboxWritablePaths(
+  agentType: SupportedAgentType,
+  environment: ResolvedExecutionEnvironment,
+  sandbox: SandboxConfig | null,
+): string[] {
+  if (sandbox === null) {
+    return [];
+  }
+
+  if (agentType !== "codex") {
+    return [];
+  }
+
+  return [`${homedir()}/.cache/mise`];
+}
+
+function mergePathWithToolchainDefaults(path: string | undefined): string {
+  const home = homedir();
+  const additions = [
+    `${home}/.local/bin`,
+    `${home}/.local/share/mise/bin`,
+    `${home}/.local/share/mise/shims`,
+  ];
+
+  const baseParts = (path ?? "").split(":").filter(Boolean);
+  const mergedParts: string[] = [];
+  const seen = new Set<string>();
+
+  for (const part of [...additions, ...baseParts]) {
+    if (seen.has(part)) {
+      continue;
+    }
+
+    seen.add(part);
+    mergedParts.push(part);
+  }
+
+  return mergedParts.join(":");
+}
+
+function toTomlBasicString(value: string): string {
+  return `"${value
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("\n", "\\n")
+    .replaceAll("\r", "\\r")
+    .replaceAll("\t", "\\t")}"`;
+}
+
+function augmentCodexEnvironment(
+  environment: ResolvedExecutionEnvironment,
+  sandbox: SandboxConfig | null,
+  agentEnv: Record<string, string>,
+  worktreePath: string | undefined,
+): Record<string, string> {
+  if (sandbox === null) {
+    return agentEnv;
+  }
+
+  return {
+    ...agentEnv,
+    PATH: mergePathWithToolchainDefaults(agentEnv.PATH ?? process.env.PATH),
+  };
+}
+
+function getCodexShellSandboxArgs(
+  sandbox: SandboxConfig | null,
+): string[] {
+  if (sandbox === null) {
+    return [];
+  }
+
+  // When nono is the outer sandbox, Codex should not create a second
+  // nested shell sandbox. That inner layer drops access to host tools
+  // like mise-managed Go binaries in guest VMs.
+  return ["--sandbox", "danger-full-access"];
+}
+
+function getCodexShellEnvironmentArgs(
+  sandbox: SandboxConfig | null,
+  agentEnv: Record<string, string>,
+): string[] {
+  if (sandbox === null) {
+    return [];
+  }
+
+  const args = ["-c", "shell_environment_policy.inherit=all"];
+  const path = agentEnv.PATH;
+
+  if (path === undefined || path.length === 0) {
+    return args;
+  }
+
+  // Codex does not reliably pass the parent PATH through to model-run
+  // shell commands in externally sandboxed VM sessions. Set PATH
+  // explicitly so model-executed shells can find the same toolchain
+  // binaries as the outer nono-wrapped process.
+  return [
+    ...args,
+    "-c",
+    `shell_environment_policy.set={PATH=${toTomlBasicString(path)}}`,
+  ];
+}
+
 function wrapSandboxCommand(
   agentType: SupportedAgentType,
   args: string[],
   sandbox: SandboxConfig | null,
   worktreePath: string | undefined,
   readablePaths: string[],
+  writablePaths: string[],
   command: BaseWrappedCommand,
 ): SandboxWrappedCommand {
   if (sandbox === null) {
@@ -362,6 +491,7 @@ function wrapSandboxCommand(
     worktreePath,
     "--allow-cwd",
     ...readablePaths.flatMap((path) => ["--read", path]),
+    ...writablePaths.flatMap((path) => ["--write", path]),
     ...(sandbox.network_profile === undefined
       ? []
       : ["--network-profile", sandbox.network_profile]),
@@ -375,18 +505,6 @@ function wrapSandboxCommand(
     command: wrappedCommand,
     pane_process_name: sandbox.provider,
   };
-}
-
-function resolveSandboxReadablePaths(
-  agentType: SupportedAgentType,
-  environment: ResolvedExecutionEnvironment,
-  sandbox: SandboxConfig | null,
-): string[] {
-  if (sandbox === null || environment.kind !== "host") {
-    return [];
-  }
-
-  return executableReadDirectoryResolver(AGENT_BINARIES[agentType]);
 }
 
 function resolveAgentTarget(
@@ -586,12 +704,18 @@ function buildClaudeStartCommand(
     environment,
     sandbox,
   );
+  const sandboxWritablePaths = resolveSandboxWritablePaths(
+    "claude",
+    environment,
+    sandbox,
+  );
   const sandboxCommand = wrapSandboxCommand(
     "claude",
     resolved.args,
     sandbox,
     input.worktree_path,
     sandboxReadablePaths,
+    sandboxWritablePaths,
     baseCommand,
   );
   const executionCommand = wrapExecutionEnvironmentCommand(
@@ -637,12 +761,18 @@ function buildClaudeResumeCommand(
     environment,
     sandbox,
   );
+  const sandboxWritablePaths = resolveSandboxWritablePaths(
+    "claude",
+    environment,
+    sandbox,
+  );
   const sandboxCommand = wrapSandboxCommand(
     "claude",
     resolved.args,
     sandbox,
     input.worktree_path,
     sandboxReadablePaths,
+    sandboxWritablePaths,
     baseCommand,
   );
   const executionCommand = wrapExecutionEnvironmentCommand(
@@ -651,7 +781,7 @@ function buildClaudeResumeCommand(
     agentEnv,
     input.workspace_name,
     workspacePaths,
-    false,
+    true,
   );
 
   return {
@@ -677,10 +807,15 @@ function buildCodexStartCommand(
   sandbox: SandboxConfig | null,
   workspacePaths: ResolvedWorkspacePaths,
 ): BuiltAgentCommand {
-  const agentEnv = mapAgentEnvForEnvironment(
-    resolved.env,
+  const agentEnv = augmentCodexEnvironment(
     environment,
-    workspacePaths,
+    sandbox,
+    mapAgentEnvForEnvironment(
+      resolved.env,
+      environment,
+      workspacePaths,
+    ),
+    input.worktree_path,
   );
   const layeredArgs = withoutReservedArgs(
     [...resolved.args, ...(input.override_args ?? [])],
@@ -690,6 +825,8 @@ function buildCodexStartCommand(
   const command = [
     AGENT_BINARIES.codex,
     ...layeredArgs,
+    ...getCodexShellEnvironmentArgs(sandbox, agentEnv),
+    ...getCodexShellSandboxArgs(sandbox),
     "--cd",
     input.worktree_path,
     ...(input.initial_prompt === undefined ? [] : [input.initial_prompt]),
@@ -701,12 +838,18 @@ function buildCodexStartCommand(
     environment,
     sandbox,
   );
+  const sandboxWritablePaths = resolveSandboxWritablePaths(
+    "codex",
+    environment,
+    sandbox,
+  );
   const sandboxCommand = wrapSandboxCommand(
     "codex",
     resolved.args,
     sandbox,
     input.worktree_path,
     sandboxReadablePaths,
+    sandboxWritablePaths,
     baseCommand,
   );
   const executionCommand = wrapExecutionEnvironmentCommand(
@@ -740,13 +883,28 @@ function buildCodexResumeCommand(
   sandbox: SandboxConfig | null,
   workspacePaths: ResolvedWorkspacePaths | null,
 ): BuiltAgentCommand {
-  const command = [AGENT_BINARIES.codex, "resume", input.session_id];
-  const agentEnv =
+  const agentEnv = augmentCodexEnvironment(
+    environment,
+    sandbox,
     workspacePaths === null
       ? resolved.env
-      : mapAgentEnvForEnvironment(resolved.env, environment, workspacePaths);
+      : mapAgentEnvForEnvironment(resolved.env, environment, workspacePaths),
+    input.worktree_path,
+  );
+  const command = [
+    AGENT_BINARIES.codex,
+    ...getCodexShellEnvironmentArgs(sandbox, agentEnv),
+    ...getCodexShellSandboxArgs(sandbox),
+    "resume",
+    input.session_id,
+  ];
   const baseCommand = wrapBaseCommand("codex", command);
   const sandboxReadablePaths = resolveSandboxReadablePaths(
+    "codex",
+    environment,
+    sandbox,
+  );
+  const sandboxWritablePaths = resolveSandboxWritablePaths(
     "codex",
     environment,
     sandbox,
@@ -757,6 +915,7 @@ function buildCodexResumeCommand(
     sandbox,
     input.worktree_path,
     sandboxReadablePaths,
+    sandboxWritablePaths,
     baseCommand,
   );
   const executionCommand = wrapExecutionEnvironmentCommand(
@@ -830,12 +989,18 @@ function buildOpencodeStartCommand(
     environment,
     sandbox,
   );
+  const sandboxWritablePaths = resolveSandboxWritablePaths(
+    "opencode",
+    environment,
+    sandbox,
+  );
   const sandboxCommand = wrapSandboxCommand(
     "opencode",
     resolved.args,
     sandbox,
     input.worktree_path,
     sandboxReadablePaths,
+    sandboxWritablePaths,
     baseCommand,
   );
   const executionCommand = wrapExecutionEnvironmentCommand(
@@ -917,12 +1082,18 @@ function buildOpencodeResumeCommand(
     environment,
     sandbox,
   );
+  const sandboxWritablePaths = resolveSandboxWritablePaths(
+    "opencode",
+    environment,
+    sandbox,
+  );
   const sandboxCommand = wrapSandboxCommand(
     "opencode",
     resolved.args,
     sandbox,
     input.worktree_path,
     sandboxReadablePaths,
+    sandboxWritablePaths,
     baseCommand,
   );
   const executionCommand = wrapExecutionEnvironmentCommand(

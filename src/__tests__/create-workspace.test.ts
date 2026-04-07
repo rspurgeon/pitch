@@ -187,6 +187,31 @@ function makeCodexCommand(): BuiltAgentCommand {
   };
 }
 
+function makeCodexResumeCommand(): BuiltAgentCommand {
+  return {
+    agent_name: "codex-api",
+    agent_type: "codex",
+    environment_name: undefined,
+    environment_kind: "host",
+    command: [
+      "codex",
+      "resume",
+      "codex-session",
+    ],
+    env: {
+      CODEX_HOME: "~/.codex-api",
+      OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
+    },
+    agent_env: {
+      CODEX_HOME: "~/.codex-api",
+      OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
+    },
+    pane_process_name: "codex",
+    session_id: "codex-session",
+    warnings: [],
+  };
+}
+
 function makeOpencodeCommand(
   env: Record<string, string> = {
     OPENCODE_CONFIG_DIR: "~/.config/opencode",
@@ -278,6 +303,7 @@ function makeDependencies(
       },
     })),
     sendKeysToPane: vi.fn(async () => undefined),
+    buildAgentResumeCommand: vi.fn(() => makeClaudeCommand()),
     buildAgentStartCommand: vi.fn(() => makeClaudeCommand()),
     runGitHubLifecycle: vi.fn(async () => []),
     sleep: vi.fn(async () => undefined),
@@ -352,6 +378,61 @@ describe("create workspace", () => {
       dependencies.sendKeysToPane,
     ).mock.invocationCallOrder[0];
     expect(writeCallOrder).toBeLessThan(sendCallOrder);
+  });
+
+  it("can create a workspace by resuming an explicit agent session id", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      buildAgentResumeCommand: vi.fn(() => makeCodexResumeCommand()),
+    });
+
+    const workspace = await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+        agent: "codex-api",
+        session_id: "codex-session",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
+    expect(dependencies.buildAgentResumeCommand).toHaveBeenCalledWith({
+      config,
+      agent: "codex-api",
+      repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
+      workspace_name: "gh-42-fix-bug",
+      session_id: "codex-session",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+    });
+    expect(workspace).toEqual(
+      makeWorkspaceRecord({
+        agent_name: "codex-api",
+        agent_type: "codex",
+        agent_pane_process: "codex",
+        agent_env: {
+          CODEX_HOME: "~/.codex-api",
+          OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
+        },
+        agent_sessions: [
+          {
+            id: "codex-session",
+            started_at: "2026-03-22T20:30:00.000Z",
+            status: "active",
+          },
+        ],
+      }),
+    );
+    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
+      pane_id: "%1",
+      command:
+        "CODEX_HOME=~/.codex-api OPENAI_API_KEY=${OPENAI_API_KEY_SECONDARY} " +
+        "command -- 'codex' 'resume' 'codex-session'",
+    });
   });
 
   it("stores the selected repo sandbox on create", async () => {

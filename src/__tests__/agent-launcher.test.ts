@@ -10,6 +10,15 @@ import {
   setExecutableReadDirectoryResolverForTests,
 } from "../agent-launcher.js";
 
+function buildCodexPathOverride(path: string): string {
+  return `shell_environment_policy.set={PATH="${path
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("\n", "\\n")
+    .replaceAll("\r", "\\r")
+    .replaceAll("\t", "\\t")}"}`;
+}
+
 function makeConfig(): PitchConfig {
   return {
     defaults: {
@@ -666,6 +675,16 @@ describe("agent launcher", () => {
       "--allow-cwd",
       "--read",
       "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
+      "--read",
+      "/home/rspurgeon/.config/mise",
+      "--read",
+      "/home/rspurgeon/.cache/mise",
+      "--read",
+      "/home/rspurgeon/.local/bin",
+      "--read",
+      "/home/rspurgeon/.local/share/mise/bin",
+      "--write",
+      "/home/rspurgeon/.cache/mise",
       "--network-profile",
       "docs-and-github",
       "--capability-elevation",
@@ -680,9 +699,31 @@ describe("agent launcher", () => {
       "/home/rspurgeon/go",
       "--add-dir",
       "/home/rspurgeon/.config/kongctl",
+      "-c",
+      "shell_environment_policy.inherit=all",
+      "-c",
+      buildCodexPathOverride(command.agent_env.PATH),
+      "--sandbox",
+      "danger-full-access",
       "--cd",
       "/tmp/worktree",
     ]);
+    expect(command.agent_env.PATH).toContain(
+      "/home/rspurgeon/.local/share/mise/bin",
+    );
+    expect(command.agent_env.PATH).toContain(
+      "/home/rspurgeon/.local/share/mise/shims",
+    );
+    expect(command.agent_env.PATH).toContain(
+      "/home/rspurgeon/.local/bin",
+    );
+    expect(command.agent_env.GOPATH).toBe(undefined);
+    expect(command.agent_env.GOMODCACHE).toBe(undefined);
+    expect(command.agent_env.GOCACHE).toBe(undefined);
+    expect(command.agent_env.TMPDIR).toBe(undefined);
+    expect(command.agent_env.GOTMPDIR).toBe(undefined);
+    expect(command.agent_env.GOLANGCI_LINT_CACHE).toBe(undefined);
+    expect(command.agent_env.GOFLAGS).toBe(undefined);
   });
 
   it("uses explicit sandbox profiles verbatim", () => {
@@ -711,8 +752,24 @@ describe("agent launcher", () => {
       "--allow-cwd",
       "--read",
       "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
+      "--read",
+      "/home/rspurgeon/.config/mise",
+      "--read",
+      "/home/rspurgeon/.cache/mise",
+      "--read",
+      "/home/rspurgeon/.local/bin",
+      "--read",
+      "/home/rspurgeon/.local/share/mise/bin",
+      "--write",
+      "/home/rspurgeon/.cache/mise",
       "--",
       "codex",
+      "-c",
+      "shell_environment_policy.inherit=all",
+      "-c",
+      buildCodexPathOverride(command.agent_env.PATH),
+      "--sandbox",
+      "danger-full-access",
       "resume",
       "session-123",
     ]);
@@ -762,6 +819,22 @@ describe("agent launcher", () => {
 
     expect(command.pane_process_name).toBe("ssh");
     expect(command.command[7]).toContain("env CODEX_HOME");
+    expect(command.agent_env.PATH).toContain(
+      "/home/rspurgeon/.local/share/mise/bin",
+    );
+    expect(command.agent_env.PATH).toContain(
+      "/home/rspurgeon/.local/share/mise/shims",
+    );
+    expect(command.agent_env.PATH).toContain(
+      "/home/rspurgeon/.local/bin",
+    );
+    expect(command.agent_env.GOPATH).toBe(undefined);
+    expect(command.agent_env.GOMODCACHE).toBe(undefined);
+    expect(command.agent_env.GOCACHE).toBe(undefined);
+    expect(command.agent_env.TMPDIR).toBe(undefined);
+    expect(command.agent_env.GOTMPDIR).toBe(undefined);
+    expect(command.agent_env.GOLANGCI_LINT_CACHE).toBe(undefined);
+    expect(command.agent_env.GOFLAGS).toBe(undefined);
     expect(command.command[7]).toContain("'\"'\"'nono'\"'\"' '\"'\"'run'\"'\"'");
     expect(command.command[7]).toContain(
       "'\"'\"'--profile'\"'\"' '\"'\"'/srv/nono/kongctl-codex.json'\"'\"'",
@@ -769,8 +842,60 @@ describe("agent launcher", () => {
     expect(command.command[7]).toContain(
       "'\"'\"'--workdir'\"'\"' '\"'\"'/srv/pitch/workspaces/gh-565-fix-validation'\"'\"'",
     );
-    expect(command.command[7]).not.toContain(
+    expect(command.command[7]).toContain(
+      "'\"'\"'-c'\"'\"' '\"'\"'shell_environment_policy.inherit=all'\"'\"'",
+    );
+    expect(command.command[7]).toContain(
+      "shell_environment_policy.set={PATH=",
+    );
+    expect(command.command[7]).toContain(
+      "'\"'\"'--sandbox'\"'\"' '\"'\"'danger-full-access'\"'\"'",
+    );
+  });
+
+  it("adds codex toolchain PATH for vm-ssh environment resumes", () => {
+    const config = makeConfig();
+    setExecutableReadDirectoryResolverForTests(() => [
       "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
+    ]);
+
+    const command = buildAgentResumeCommand({
+      config,
+      agent: "codex",
+      repo: "kong/kongctl",
+      sandbox: "kongctl",
+      environment: "sandbox-vm",
+      workspace_name: "gh-565-fix-validation",
+      session_id: "session-123",
+      worktree_path: "/srv/pitch/workspaces/gh-565-fix-validation",
+      host_worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.environment_kind).toBe("vm-ssh");
+    expect(command.agent_env.PATH).toContain(
+      "/home/rspurgeon/.local/share/mise/bin",
+    );
+    expect(command.agent_env.PATH).toContain(
+      "/home/rspurgeon/.local/share/mise/shims",
+    );
+    expect(command.agent_env.PATH).toContain(
+      "/home/rspurgeon/.local/bin",
+    );
+    expect(command.agent_env.GOPATH).toBe(undefined);
+    expect(command.agent_env.GOMODCACHE).toBe(undefined);
+    expect(command.agent_env.GOCACHE).toBe(undefined);
+    expect(command.agent_env.TMPDIR).toBe(undefined);
+    expect(command.agent_env.GOTMPDIR).toBe(undefined);
+    expect(command.agent_env.GOLANGCI_LINT_CACHE).toBe(undefined);
+    expect(command.agent_env.GOFLAGS).toBe(undefined);
+    expect(command.command[7]).toContain(
+      "'\"'\"'-c'\"'\"' '\"'\"'shell_environment_policy.inherit=all'\"'\"'",
+    );
+    expect(command.command[7]).toContain(
+      "shell_environment_policy.set={PATH=",
+    );
+    expect(command.command[7]).toContain(
+      "'\"'\"'--sandbox'\"'\"' '\"'\"'danger-full-access'\"'\"'",
     );
   });
 
