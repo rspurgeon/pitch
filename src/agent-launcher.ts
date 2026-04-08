@@ -15,6 +15,7 @@ import {
   buildVmSshCommand,
   mapAgentEnvForEnvironment,
   mapAdditionalPathsForEnvironment,
+  resolveVmSharedAgentStatusPaths,
   resolveExecutionEnvironment,
   type ResolvedExecutionEnvironment,
   type ResolvedWorkspacePaths,
@@ -652,12 +653,24 @@ function wrapExecutionEnvironmentCommand(
     );
   }
 
+  const resolvedAgentEnv = { ...agentEnv };
+  if (environment.name !== undefined) {
+    const sharedAgentStatusPaths = resolveVmSharedAgentStatusPaths(
+      environment.name,
+      environment.config as VmSshExecutionEnvironmentConfig,
+    );
+    if (sharedAgentStatusPaths !== null) {
+      resolvedAgentEnv.PITCH_AGENT_STATUS_DIR =
+        sharedAgentStatusPaths.guest_cache_dir;
+    }
+  }
+
   const vmCommand = buildVmSshCommand({
     environment: environment.config as VmSshExecutionEnvironmentConfig,
     workspace_name: workspaceName,
     workspace_paths: workspacePaths,
     agent_command: baseCommand.command,
-    agent_env: agentEnv,
+    agent_env: resolvedAgentEnv,
     run_bootstrap: runBootstrap,
   });
 

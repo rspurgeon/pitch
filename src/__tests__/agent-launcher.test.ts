@@ -604,6 +604,11 @@ describe("agent launcher", () => {
 
   it("wraps agent commands for vm-ssh environments", () => {
     const config = makeConfig();
+    config.environments["sandbox-vm"].shared_paths.unshift({
+      host_path: "/srv/pitch-host",
+      guest_path: "/srv/pitch-shared",
+      mode: "rw",
+    });
 
     const command = buildAgentStartCommand({
       config,
@@ -643,6 +648,8 @@ describe("agent launcher", () => {
     );
     expect(command.command[7]).toContain("mise install");
     expect(command.command[7]).toContain("clear &&");
+    expect(command.command[7]).toContain("PITCH_AGENT_STATUS_DIR");
+    expect(command.command[7]).toContain("/srv/pitch-shared/.pitch-agent-status/sandbox-vm");
     expect(command.command[7]).toContain("'codex'");
     expect(command.command[7]).toContain("/srv/shared/go");
     expect(command.command[7]).toContain("/srv/shared/kongctl");

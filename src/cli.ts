@@ -1,4 +1,22 @@
-import { stdout as defaultStdout, stderr as defaultStderr } from "node:process";
+import { createInterface } from "node:readline/promises";
+import { basename } from "node:path";
+import {
+  stdin as defaultStdin,
+  stdout as defaultStdout,
+  stderr as defaultStderr,
+} from "node:process";
+import {
+  buildAgentShortcutEntries,
+  getAgentsView,
+  jumpToAgentSession,
+  type AgentsView,
+} from "./agents.js";
+import {
+  getAgentStatusSnapshot,
+  markAgentSessionError,
+  type AgentStatusSnapshot,
+  type MarkAgentErrorInput,
+} from "./agent-status.js";
 import {
   closeWorkspace,
   deleteWorkspace,
@@ -16,14 +34,23 @@ import {
   type WorkspaceSummary,
 } from "./workspace-query.js";
 import type { WorkspaceRecord } from "./workspace-state.js";
+import { renderStatusRight, type StatusRightInput } from "./status-right.js";
+import { shellEscape } from "./shell.js";
+import { displayTmuxMenu } from "./tmux.js";
 
 type CliVerb =
   | "create"
+  | "agents"
+  | "agents-popup"
+  | "jump"
+  | "agent-status"
+  | "agent-error"
   | "list"
   | "get"
   | "resume"
   | "close"
   | "delete"
+  | "status-right"
   | "completion"
   | "__complete-workspaces";
 type FlagValue = boolean | string;
@@ -36,11 +63,21 @@ interface ParsedArgs {
 
 interface JsonCommandResult {
   command: Exclude<CliVerb, "completion" | "__complete-workspaces">;
-  result: WorkspaceRecord | WorkspaceSummary[];
+  result:
+    | WorkspaceRecord
+    | WorkspaceSummary[]
+    | AgentStatusSnapshot
+    | AgentsView
+    | string;
   warnings: string[];
 }
 
 export interface CliDependencies {
+  getAgentsView: typeof getAgentsView;
+  jumpToAgentSession: typeof jumpToAgentSession;
+  displayTmuxMenu: typeof displayTmuxMenu;
+  getAgentStatusSnapshot: typeof getAgentStatusSnapshot;
+  markAgentSessionError: typeof markAgentSessionError;
   loadConfig: typeof loadConfig;
   createWorkspace: typeof createWorkspace;
   listWorkspaces: typeof listWorkspaces;
@@ -48,11 +85,18 @@ export interface CliDependencies {
   resumeWorkspace: typeof resumeWorkspace;
   closeWorkspace: typeof closeWorkspace;
   deleteWorkspace: typeof deleteWorkspace;
+  renderStatusRight: typeof renderStatusRight;
+  stdin: NodeJS.ReadableStream;
   stdout: { write(chunk: string): void };
   stderr: { write(chunk: string): void };
 }
 
 const defaultDependencies: CliDependencies = {
+  getAgentsView,
+  jumpToAgentSession,
+  displayTmuxMenu,
+  getAgentStatusSnapshot,
+  markAgentSessionError,
   loadConfig,
   createWorkspace,
   listWorkspaces,
@@ -60,6 +104,8 @@ const defaultDependencies: CliDependencies = {
   resumeWorkspace,
   closeWorkspace,
   deleteWorkspace,
+  renderStatusRight,
+  stdin: defaultStdin,
   stdout: defaultStdout,
   stderr: defaultStderr,
 };
@@ -68,6 +114,7 @@ const BOOLEAN_FLAGS = new Set([
   "delete-branch-if-empty",
   "help",
   "json",
+  "pick",
   "skip-prompt",
   "force",
   "sync",
@@ -75,17 +122,25 @@ const BOOLEAN_FLAGS = new Set([
 
 const STRING_FLAGS = new Set([
   "agent",
+  "agent-type",
   "base-branch",
   "branch",
   "environment",
+  "cwd",
   "issue",
+  "message",
   "model",
   "name",
   "pr",
   "repo",
+  "separator",
   "session-id",
   "slug",
   "status",
+  "transcript-path",
+  "tty",
+  "tmux-session",
+  "tmux-window",
 ]);
 
 const SHORT_FLAG_ALIASES = new Map<string, string>([
@@ -231,11 +286,17 @@ function parseArgs(argv: string[]): ParsedArgs {
 
   if (
     verbToken !== "create" &&
+    verbToken !== "agents" &&
+    verbToken !== "agents-popup" &&
+    verbToken !== "jump" &&
+    verbToken !== "agent-status" &&
+    verbToken !== "agent-error" &&
     verbToken !== "list" &&
         verbToken !== "get" &&
         verbToken !== "resume" &&
         verbToken !== "close" &&
         verbToken !== "delete" &&
+        verbToken !== "status-right" &&
         verbToken !== "completion" &&
         verbToken !== "__complete-workspaces"
   ) {
@@ -418,6 +479,76 @@ function buildDeleteInput(
   };
 }
 
+function buildStatusRightInput(flags: Map<string, FlagValue>): StatusRightInput {
+  return {
+    separator: readStringFlag(flags, "separator"),
+    tmuxSession: readStringFlag(flags, "tmux-session"),
+    tmuxWindow: readStringFlag(flags, "tmux-window"),
+  };
+}
+
+async function pickAgentSessionId(
+  view: AgentsView,
+  dependencies: CliDependencies,
+): Promise<string> {
+  const rl = createInterface({
+    input: dependencies.stdin,
+    output: dependencies.stdout as NodeJS.WritableStream,
+  });
+
+  try {
+    const response = await rl.question("Jump to agent #: ");
+    const choice = Number.parseInt(response.trim(), 10);
+
+    if (!Number.isSafeInteger(choice) || choice < 1 || choice > view.agents.length) {
+      throw new Error(`Invalid agent selection: ${response.trim() || "<empty>"}`);
+    }
+
+    return view.agents[choice - 1].session_id;
+  } finally {
+    rl.close();
+  }
+}
+
+function buildAgentErrorInput(flags: Map<string, FlagValue>): MarkAgentErrorInput {
+  const agentType = readStringFlag(flags, "agent-type");
+  if (agentType !== "codex" && agentType !== "claude") {
+    throw new Error("Option --agent-type must be one of: codex, claude");
+  }
+
+  const sessionId = readStringFlag(flags, "session-id");
+  if (sessionId === undefined) {
+    throw new Error("Missing required option --session-id.");
+  }
+
+  const message = readStringFlag(flags, "message");
+  if (message === undefined || message.length === 0) {
+    throw new Error("Missing required option --message.");
+  }
+
+  return {
+    agent_type: agentType,
+    session_id: sessionId,
+    message,
+    cwd: readStringFlag(flags, "cwd"),
+    transcript_path: readStringFlag(flags, "transcript-path"),
+    tty: readStringFlag(flags, "tty"),
+  };
+}
+
+function buildJumpSessionId(positionals: string[]): string {
+  const sessionId = positionals.at(0);
+  if (positionals.length > 1) {
+    throw new Error(
+      `Unexpected positional arguments for jump: ${positionals.slice(1).join(" ")}`,
+    );
+  }
+  if (sessionId === undefined) {
+    throw new Error("Missing agent session id.");
+  }
+  return sessionId;
+}
+
 function formatWorkspaceSummary(workspace: WorkspaceRecord): string {
   const lines = [
     `name: ${workspace.name}`,
@@ -469,21 +600,162 @@ function formatWorkspaceList(workspaces: WorkspaceSummary[]): string {
   );
 }
 
+function formatAgentStatusSnapshot(snapshot: AgentStatusSnapshot): string {
+  const lines = [
+    `summary: R:${snapshot.summary.counts.running} Q:${snapshot.summary.counts.question} I:${snapshot.summary.counts.idle} E:${snapshot.summary.counts.error}`,
+    `active_sessions: ${snapshot.summary.active_sessions}`,
+    `generated_at: ${snapshot.summary.generated_at}`,
+  ];
+
+  if (snapshot.sources.length > 0) {
+    lines.push("sources:");
+    for (const source of snapshot.sources) {
+      lines.push(
+        `- ${source.source}: R:${source.summary.counts.running} Q:${source.summary.counts.question} I:${source.summary.counts.idle} E:${source.summary.counts.error} (${source.summary.active_sessions})`,
+      );
+    }
+  }
+
+  if (snapshot.sessions.length === 0) {
+    lines.push("sessions: none");
+    return `${lines.join("\n")}\n`;
+  }
+
+  lines.push("sessions:");
+  for (const session of snapshot.sessions) {
+    lines.push(
+      `- ${session.agent_type} ${session.state} ${session.session_id} ${session.last_event} ${session.updated_at}`,
+    );
+    if (session.cwd !== undefined) {
+      lines.push(`  cwd: ${session.cwd}`);
+    }
+    if (session.tty !== undefined) {
+      lines.push(`  tty: ${session.tty}`);
+    }
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function formatAgentsView(view: AgentsView): string {
+  const lines = [
+    `summary: R:${view.summary.counts.running} Q:${view.summary.counts.question} I:${view.summary.counts.idle} E:${view.summary.counts.error}`,
+  ];
+
+  if (view.agents.length === 0) {
+    lines.push("agents: none");
+    return `${lines.join("\n")}\n`;
+  }
+
+  lines.push(
+    renderTable(
+      ["#", "State", "Agent", "Session", "Tmux", "TTY", "Cwd"],
+      view.agents.map((agent: AgentsView["agents"][number], index: number) => [
+        String(index + 1),
+        agent.state,
+        agent.agent_type,
+        agent.session_key,
+        agent.tmux === undefined
+          ? "-"
+          : `${agent.tmux.session_name}:${agent.tmux.window_name}.${agent.tmux.pane_index}`,
+        agent.tty ?? "-",
+        agent.cwd ?? "-",
+      ]),
+    ).trimEnd(),
+  );
+
+  return `${lines.join("\n")}\n`;
+}
+
+function buildAgentMenuCommand(entry: AgentsView["agents"][number]): string {
+  if (entry.tmux === undefined) {
+    throw new Error(`Cannot build tmux menu command for non-jumpable agent ${entry.session_id}`);
+  }
+
+  const target = `${entry.tmux.session_name}:${entry.tmux.window_name}`;
+  const shellCommand = [
+    `tmux switch-client -t ${shellEscape(target)}`,
+    `tmux select-window -t ${shellEscape(target)}`,
+    `tmux select-pane -t ${shellEscape(entry.tmux.pane_id)}`,
+  ].join("; ");
+
+  return `run-shell ${shellEscape(shellCommand)}`;
+}
+
+function shortenAgentPath(path: string | undefined): string {
+  if (path === undefined || path.length === 0) {
+    return "-";
+  }
+
+  const trimmed = path.replace(/^\/home\/[^/]+\//, "~/");
+  const parts = trimmed.split("/").filter((part) => part.length > 0);
+  if (parts.length <= 3) {
+    return trimmed;
+  }
+
+  return `.../${parts.slice(-3).join("/")}`;
+}
+
+function buildAgentMenuRows(
+  entries: ReturnType<typeof buildAgentShortcutEntries>,
+): string[] {
+  const rows = entries.map((entry) => {
+    const tmuxLabel =
+      entry.agent.tmux === undefined
+        ? "-"
+        : `${entry.agent.tmux.session_name}/${entry.agent.tmux.window_name}`;
+    const nameLabel =
+      entry.agent.cwd === undefined
+        ? tmuxLabel
+        : basename(entry.agent.cwd);
+    const pathLabel = shortenAgentPath(entry.agent.cwd);
+
+    return [
+      entry.key,
+      nameLabel,
+      tmuxLabel,
+      pathLabel,
+      `${entry.agent.agent_type} ${entry.agent.state}`,
+    ];
+  });
+
+  const widths = rows[0]!.map((_, columnIndex) =>
+    Math.max(...rows.map((row) => row[columnIndex]!.length)),
+  );
+
+  return rows.map((row) =>
+    row
+      .map((value, columnIndex) =>
+        columnIndex === row.length - 1
+          ? value
+          : value.padEnd(widths[columnIndex]),
+      )
+      .join(" | "),
+  );
+}
+
 function buildHelpText(): string {
   return [
     "Usage:",
     "  pitch [create] (--issue N | --pr N) [--slug SLUG] [--session-id ID] [options]",
     "  pitch [create] --name NAME [--branch BRANCH] [--session-id ID] [options]",
+    "  pitch agents [--pick]",
+    "  pitch agents-popup",
+    "  pitch jump <session-id-or-prefix>",
+    "  pitch agent-status",
+    "  pitch agent-error --agent-type TYPE --session-id ID --message TEXT",
     "  pitch list [--repo REPO] [--status active|closed|all]",
     "  pitch get <name>",
     "  pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--sync]",
     "  pitch close <name>",
     "  pitch delete <name> [--force] [-d|--delete-branch-if-empty]",
+    "  pitch status-right [--separator TEXT]",
     "  pitch completion zsh",
     "  pitch workspace <command> ...",
     "",
     "Options:",
     "  --repo REPO",
+    "  --separator TEXT",
     "  --issue N",
     "  --pr N",
     "  --name NAME",
@@ -491,13 +763,19 @@ function buildHelpText(): string {
     "  --branch BRANCH",
     "  --base-branch BRANCH",
     "  --agent AGENT",
+    "  --agent-type codex|claude",
     "  --environment ENV",
+    "  --cwd PATH",
+    "  --transcript-path PATH",
+    "  --tty TTY",
     "  --session-id ID",
+    "  --message TEXT",
     "  --sync",
     "  --model MODEL",
     "  --skip-prompt",
     "  --force",
     "  -d, --delete-branch-if-empty",
+    "  --pick",
     "  --status active|closed|all",
     "  --json",
     "  --help",
@@ -556,6 +834,38 @@ function buildZshCompletionScript(): string {
     "        '--json[Emit JSON]' \\",
     "        '--help[Show help]'",
     "      ;;",
+    "    agents)",
+    "      _arguments -s -S \\",
+    "        '--pick[Interactively choose and jump to a live agent]' \\",
+    "        '--json[Emit JSON]' \\",
+    "        '--help[Show help]'",
+    "      ;;",
+    "    agents-popup)",
+    "      _arguments -s -S \\",
+    "        '--help[Show help]'",
+    "      ;;",
+    "    jump)",
+    "      _arguments -s -S \\",
+    "        '--json[Emit JSON]' \\",
+    "        '--help[Show help]' \\",
+    "        '1:session-id-or-prefix:'",
+    "      ;;",
+    "    agent-status)",
+    "      _arguments -s -S \\",
+    "        '--json[Emit JSON]' \\",
+    "        '--help[Show help]'",
+    "      ;;",
+    "    agent-error)",
+    "      _arguments -s -S \\",
+    "        '--agent-type[Agent type]:type:(codex claude)' \\",
+    "        '--session-id[Agent session id]:session:' \\",
+    "        '--message[Error message]:message:' \\",
+    "        '--cwd[Working directory]:path:_files' \\",
+    "        '--transcript-path[Transcript path]:path:_files' \\",
+    "        '--tty[Terminal id]:tty:' \\",
+    "        '--json[Emit JSON]' \\",
+    "        '--help[Show help]'",
+    "      ;;",
     "    list)",
     "      _arguments -s -S \\",
     "        '--repo[GitHub org/repo]:repo:' \\",
@@ -602,6 +912,12 @@ function buildZshCompletionScript(): string {
     "        '--help[Show help]' \\",
     "        '1:workspace:_pitch_workspaces'",
     "      ;;",
+    "    status-right)",
+    "      _arguments -s -S \\",
+    "        '--separator[Append this suffix when agent status is present]:text:' \\",
+    "        '--json[Emit JSON]' \\",
+    "        '--help[Show help]'",
+    "      ;;",
     "    completion)",
     "      _arguments '1:shell:(zsh)'",
     "      ;;",
@@ -617,11 +933,17 @@ function buildZshCompletionScript(): string {
     "  if (( CURRENT == 2 )); then",
     "    _values 'pitch command' \\",
     "      'create[Create a workspace]' \\",
+    "      'agents[List live agents with tmux targets]' \\",
+    "      'agents-popup[Open a tmux agent menu with home-row keys]' \\",
+    "      'jump[Focus the tmux pane for a live agent session]' \\",
+    "      'agent-status[Inspect live agent hook state]' \\",
+    "      'agent-error[Record an explicit agent error state]' \\",
     "      'list[List workspaces]' \\",
     "      'get[Show a workspace]' \\",
     "      'resume[Resume a workspace]' \\",
     "      'close[Close a workspace]' \\",
     "      'delete[Delete a workspace]' \\",
+    "      'status-right[Render an agent status-right segment]' \\",
     "      'completion[Generate shell completion]' \\",
     "      'workspace[Compatibility alias for workspace lifecycle commands]'",
     "    return",
@@ -636,6 +958,11 @@ function buildZshCompletionScript(): string {
     "    if (( CURRENT == 3 )); then",
     "      _values 'pitch workspace command' \\",
     "        'create[Create a workspace]' \\",
+    "        'agents[List live agents with tmux targets]' \\",
+    "        'agents-popup[Open a tmux agent menu with home-row keys]' \\",
+    "        'jump[Focus the tmux pane for a live agent session]' \\",
+    "        'agent-status[Inspect live agent hook state]' \\",
+    "        'agent-error[Record an explicit agent error state]' \\",
     "        'list[List workspaces]' \\",
     "        'get[Show a workspace]' \\",
     "        'resume[Resume a workspace]' \\",
@@ -688,6 +1015,94 @@ async function executeCommand(
         warnings,
       };
     }
+    case "agents":
+      ensureNoExtraPositionals(parsed.positionals, parsed.verb);
+      if (readBooleanFlag(parsed.flags, "pick") === true) {
+        if (readBooleanFlag(parsed.flags, "json") === true) {
+          throw new Error("Cannot combine --pick with --json.");
+        }
+
+        const view = await dependencies.getAgentsView();
+        if (view.agents.length === 0) {
+          return {
+            command: parsed.verb,
+            result: "No live agents available.",
+            warnings: [],
+          };
+        }
+
+        dependencies.stdout.write(formatAgentsView(view));
+        const selectedSessionId = await pickAgentSessionId(view, dependencies);
+        const agent = await dependencies.jumpToAgentSession(selectedSessionId);
+        return {
+          command: parsed.verb,
+          result: `Focused ${agent.agent_type} session ${agent.session_id}.`,
+          warnings: [],
+        };
+      }
+      return {
+        command: parsed.verb,
+        result: await dependencies.getAgentsView(),
+        warnings: [],
+      };
+    case "agents-popup":
+      ensureNoExtraPositionals(parsed.positionals, parsed.verb);
+      {
+        const view = await dependencies.getAgentsView();
+        const entries = buildAgentShortcutEntries(view.agents);
+
+        if (entries.length === 0) {
+          return {
+            command: parsed.verb,
+            result: "No jumpable agents available.",
+            warnings: [],
+          };
+        }
+
+        const labels = buildAgentMenuRows(entries);
+        await dependencies.displayTmuxMenu({
+          title: "Pitch Agents",
+          x: "P",
+          y: "P",
+          items: entries.map((entry, index) => ({
+            label: labels[index]!,
+            key: entry.key,
+            command: buildAgentMenuCommand(entry.agent),
+          })),
+        });
+        return {
+          command: parsed.verb,
+          result: "",
+          warnings: [],
+        };
+      }
+    case "jump": {
+      const agent = await dependencies.jumpToAgentSession(
+        buildJumpSessionId(parsed.positionals),
+      );
+      return {
+        command: parsed.verb,
+        result: `Focused ${agent.agent_type} session ${agent.session_id}.`,
+        warnings: [],
+      };
+    }
+    case "agent-status":
+      ensureNoExtraPositionals(parsed.positionals, parsed.verb);
+      return {
+        command: parsed.verb,
+        result: await dependencies.getAgentStatusSnapshot(),
+        warnings: [],
+      };
+    case "agent-error":
+      ensureNoExtraPositionals(parsed.positionals, parsed.verb);
+      await dependencies.markAgentSessionError(
+        buildAgentErrorInput(parsed.flags),
+      );
+      return {
+        command: parsed.verb,
+        result: "Recorded agent error state.",
+        warnings: [],
+      };
     case "list":
       ensureNoExtraPositionals(parsed.positionals, parsed.verb);
       return {
@@ -749,6 +1164,15 @@ async function executeCommand(
         warnings,
       };
     }
+    case "status-right":
+      ensureNoExtraPositionals(parsed.positionals, parsed.verb);
+      return {
+        command: parsed.verb,
+        result: await dependencies.renderStatusRight(
+          buildStatusRightInput(parsed.flags),
+        ),
+        warnings: [],
+      };
     case "completion":
     case "__complete-workspaces":
       return null;
@@ -756,17 +1180,62 @@ async function executeCommand(
 }
 
 function isWorkspaceList(
-  result: WorkspaceRecord | WorkspaceSummary[],
+  result:
+    | WorkspaceRecord
+    | WorkspaceSummary[]
+    | AgentStatusSnapshot
+    | AgentsView
+    | string,
 ): result is WorkspaceSummary[] {
   return Array.isArray(result);
+}
+
+function isAgentStatusSnapshot(
+  result:
+    | WorkspaceRecord
+    | WorkspaceSummary[]
+    | AgentStatusSnapshot
+    | AgentsView
+    | string,
+): result is AgentStatusSnapshot {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    "summary" in result &&
+    "sessions" in result
+  );
+}
+
+function isAgentsView(
+  result:
+    | WorkspaceRecord
+    | WorkspaceSummary[]
+    | AgentStatusSnapshot
+    | AgentsView
+    | string,
+): result is AgentsView {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    "agents" in result &&
+    Array.isArray(result.agents)
+  );
 }
 
 function writeHumanResult(
   commandResult: JsonCommandResult,
   dependencies: CliDependencies,
 ): void {
-  if (isWorkspaceList(commandResult.result)) {
+  if (typeof commandResult.result === "string") {
+    if (commandResult.result.length > 0) {
+      dependencies.stdout.write(`${commandResult.result}\n`);
+    }
+  } else if (isWorkspaceList(commandResult.result)) {
     dependencies.stdout.write(formatWorkspaceList(commandResult.result));
+  } else if (isAgentsView(commandResult.result)) {
+    dependencies.stdout.write(formatAgentsView(commandResult.result));
+  } else if (isAgentStatusSnapshot(commandResult.result)) {
+    dependencies.stdout.write(formatAgentStatusSnapshot(commandResult.result));
   } else {
     dependencies.stdout.write(formatWorkspaceSummary(commandResult.result));
   }

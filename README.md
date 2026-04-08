@@ -73,6 +73,132 @@ executables:
 - `pitch` — direct CLI
 - `pitch-mcp` — stdio MCP server
 
+## tmux Status-Right Spike
+
+Pitch includes a tmux `status-right` segment that renders
+a simple aggregate of host-side agent state:
+
+```bash
+pitch status-right
+```
+
+The segment reads agent state collected from Codex and
+Claude Code hooks and prints a compact summary such as
+`R:3 Q:1 I:2`.
+When no active host-side sessions are tracked, it
+prints nothing, so you can prepend it to your existing
+`status-right` content instead of replacing it:
+
+```tmux
+set -g status-right '#(pitch status-right --separator " | ")#H #{window_name} #{pane_current_path}'
+```
+
+The current state letters are:
+
+- `R` for running
+- `Q` for waiting on human attention
+- `I` for idle
+- `E` for error
+
+You can also inspect the current cache directly:
+
+```bash
+pitch agents
+pitch agents --pick
+pitch agents-popup
+pitch jump SESSION_ID
+pitch agent-status
+pitch agent-status --json
+```
+
+`pitch agents` joins cached agent sessions to live tmux panes by TTY so
+you can see where each tracked agent is running.
+
+`pitch agents-popup` opens a native tmux menu with home-row shortcut keys
+so you can jump directly to a live agent pane without leaving the current
+client.
+
+To record an explicit error state for a session, use:
+
+```bash
+pitch agent-error --agent-type claude --session-id SESSION_ID --message "hook failed"
+```
+
+This spike currently ignores Pitch workspace state and
+uses host-side agent hook state only.
+
+For Codex, `Q` is intentionally conservative. It is only
+set for explicit approval or confirmation language in the
+final stop message, not for every assistant question.
+Claude Code has a richer hook surface, so `Notification`
+events map more directly to `Q`. Claude `Stop` messages
+that clearly ask for approval or a choice are also treated
+as `Q`, which better matches the common Claude workflow of
+ending a turn with "Shall I proceed?" or "Let me know
+which option you'd like."
+
+### Claude Code Hook Setup
+
+Add host-level Claude hooks in `~/.claude/settings.json`
+that invoke Pitch on key lifecycle events:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PITCH_ROOT=/srv/pitch-host/worktrees/rspurgeon/pitch/tmux-sidebar /home/rspurgeon/.local/bin/pitch claude-hook"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PITCH_ROOT=/srv/pitch-host/worktrees/rspurgeon/pitch/tmux-sidebar /home/rspurgeon/.local/bin/pitch claude-hook"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PITCH_ROOT=/srv/pitch-host/worktrees/rspurgeon/pitch/tmux-sidebar /home/rspurgeon/.local/bin/pitch claude-hook"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PITCH_ROOT=/srv/pitch-host/worktrees/rspurgeon/pitch/tmux-sidebar /home/rspurgeon/.local/bin/pitch claude-hook"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PITCH_ROOT=/srv/pitch-host/worktrees/rspurgeon/pitch/tmux-sidebar /home/rspurgeon/.local/bin/pitch claude-hook"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
 ## MCP Client Configuration
 
 Pitch usually lives in one checkout, but you use it from a
