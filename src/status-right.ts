@@ -1,0 +1,149 @@
+import {
+  refreshAgentStatusSummary,
+  type AgentStatusSummary,
+} from "./agent-status.js";
+
+export interface StatusRightInput {
+  separator?: string;
+  tmuxSession?: string;
+  tmuxWindow?: string;
+}
+
+export interface StatusRightDependencies {
+  refreshAgentStatusSummary: typeof refreshAgentStatusSummary;
+}
+
+const defaultDependencies: StatusRightDependencies = {
+  refreshAgentStatusSummary,
+};
+
+const TMUX_FORMAT = "tmux";
+const DEFAULT_RUNNING_COLOR = "#7DAF7D";
+const DEFAULT_QUESTION_COLOR = "#E5C07B";
+const DEFAULT_IDLE_COLOR = "#61AFEF";
+const DEFAULT_ERROR_COLOR = "#E06C75";
+const DEFAULT_PREFIX_COLOR = "#B7BDB5";
+const DEFAULT_DOT_SYMBOL = "●";
+const DEFAULT_RUNNING_DIM_SYMBOL = "·";
+const DEFAULT_QUESTION_SYMBOL = "?";
+const DEFAULT_PREFIX_SYMBOL = "🤖";
+
+function isTmuxFormatEnabled(): boolean {
+  return process.env.PITCH_STATUS_RIGHT_FORMAT === TMUX_FORMAT;
+}
+
+function formatPlainSummary(summary: AgentStatusSummary): string {
+  const segments: string[] = [];
+
+  if (summary.counts.running > 0) {
+    segments.push(`R:${summary.counts.running}`);
+  }
+  if (summary.counts.question > 0) {
+    segments.push(`Q:${summary.counts.question}`);
+  }
+  if (summary.counts.idle > 0) {
+    segments.push(`I:${summary.counts.idle}`);
+  }
+  if (summary.counts.error > 0) {
+    segments.push(`E:${summary.counts.error}`);
+  }
+
+  return segments.join(" ");
+}
+
+function buildTmuxSegment(
+  symbol: string,
+  count: number,
+  color: string,
+): string {
+  return `#[fg=${color}]${symbol}${count}#[default]`;
+}
+
+function formatTmuxSummary(summary: AgentStatusSummary): string {
+  const segments: string[] = [];
+  const prefix = process.env.PITCH_STATUS_RIGHT_PREFIX_SYMBOL;
+  const pulseFrame = Math.floor(Date.now() / 1000) % 2 === 0;
+
+  if (prefix !== "") {
+    segments.push(
+      buildTmuxSegment(
+        prefix ?? DEFAULT_PREFIX_SYMBOL,
+        0,
+        process.env.PITCH_STATUS_RIGHT_PREFIX_COLOR ?? DEFAULT_PREFIX_COLOR,
+      ).replace(/0#\[default\]$/, "#[default]"),
+    );
+  }
+
+  if (summary.counts.running > 0) {
+    segments.push(
+      buildTmuxSegment(
+        pulseFrame
+          ? (process.env.PITCH_STATUS_RIGHT_RUNNING_SYMBOL ?? DEFAULT_DOT_SYMBOL)
+          : (process.env.PITCH_STATUS_RIGHT_RUNNING_DIM_SYMBOL ??
+              DEFAULT_RUNNING_DIM_SYMBOL),
+        summary.counts.running,
+        process.env.PITCH_STATUS_RIGHT_RUNNING_COLOR ?? DEFAULT_RUNNING_COLOR,
+      ),
+    );
+  }
+  if (summary.counts.idle > 0) {
+    segments.push(
+      buildTmuxSegment(
+        process.env.PITCH_STATUS_RIGHT_IDLE_SYMBOL ?? DEFAULT_DOT_SYMBOL,
+        summary.counts.idle,
+        process.env.PITCH_STATUS_RIGHT_IDLE_COLOR ?? DEFAULT_IDLE_COLOR,
+      ),
+    );
+  }
+  if (summary.counts.question > 0) {
+    segments.push(
+      buildTmuxSegment(
+        process.env.PITCH_STATUS_RIGHT_QUESTION_SYMBOL ??
+          DEFAULT_QUESTION_SYMBOL,
+        summary.counts.question,
+        process.env.PITCH_STATUS_RIGHT_QUESTION_COLOR ?? DEFAULT_QUESTION_COLOR,
+      ),
+    );
+  }
+  if (summary.counts.error > 0) {
+    segments.push(
+      buildTmuxSegment(
+        process.env.PITCH_STATUS_RIGHT_ERROR_SYMBOL ?? DEFAULT_DOT_SYMBOL,
+        summary.counts.error,
+        process.env.PITCH_STATUS_RIGHT_ERROR_COLOR ?? DEFAULT_ERROR_COLOR,
+      ),
+    );
+  }
+
+  return segments.join(" ");
+}
+
+function formatSummary(summary: AgentStatusSummary): string {
+  return isTmuxFormatEnabled()
+    ? formatTmuxSummary(summary)
+    : formatPlainSummary(summary);
+}
+
+export async function renderStatusRight(
+  input: StatusRightInput = {},
+  dependencyOverrides: Partial<StatusRightDependencies> = {},
+): Promise<string> {
+  const dependencies: StatusRightDependencies = {
+    ...defaultDependencies,
+    ...dependencyOverrides,
+  };
+
+  const summary = await dependencies.refreshAgentStatusSummary();
+  if (summary.active_sessions === 0) {
+    return "";
+  }
+
+  const rendered = formatSummary(summary);
+  if (rendered.length === 0) {
+    return "";
+  }
+
+  return input.separator !== undefined && input.separator.length > 0
+    ? `${rendered}${input.separator}`
+    : rendered;
+}

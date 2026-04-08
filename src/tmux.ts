@@ -57,6 +57,16 @@ export interface TmuxPaneInfo {
   current_path: string;
 }
 
+export interface TmuxPaneListing {
+  session_name: string;
+  window_name: string;
+  pane_index: number;
+  pane_id: string;
+  pane_tty: string;
+  current_command: string;
+  current_path: string;
+}
+
 export interface TmuxSessionResult {
   session_name: string;
   created: boolean;
@@ -80,6 +90,37 @@ export interface TmuxLayoutResult {
   window_name: string;
   window_target: string;
   panes: TmuxPaneLayout;
+}
+
+export interface FocusTmuxPaneParams {
+  session_name: string;
+  window_name: string;
+  pane_id: string;
+}
+
+export interface DisplayTmuxPopupParams {
+  command: string;
+  title?: string;
+  width?: string;
+  height?: string;
+}
+
+export interface DisplayTmuxMenuItem {
+  label: string;
+  key?: string;
+  command: string;
+}
+
+export interface DisplayTmuxMenuParams {
+  title?: string;
+  items: DisplayTmuxMenuItem[];
+  x?: string;
+  y?: string;
+}
+
+export interface RunTmuxShellCommandParams {
+  command: string;
+  background?: boolean;
 }
 
 type TmuxErrorCode =
@@ -453,6 +494,130 @@ export async function getTmuxPaneInfo(
     current_command: currentCommand,
     current_path: currentPath,
   };
+}
+
+export async function listTmuxPanes(
+  options: TmuxClientOptions = {},
+): Promise<TmuxPaneListing[]> {
+  const { stdout } = await runTmux(
+    [
+      "list-panes",
+      "-a",
+      "-F",
+      "#{session_name}\t#{window_name}\t#{pane_index}\t#{pane_id}\t#{pane_tty}\t#{pane_current_command}\t#{pane_current_path}",
+    ],
+    options,
+  );
+
+  return stdout
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const [
+        sessionName,
+        windowName,
+        paneIndexText,
+        paneId,
+        paneTty,
+        currentCommand,
+        currentPath,
+      ] = line.split("\t");
+      const paneIndex = Number.parseInt(paneIndexText ?? "", 10);
+
+      if (
+        sessionName === undefined ||
+        windowName === undefined ||
+        !Number.isSafeInteger(paneIndex) ||
+        paneId === undefined ||
+        paneTty === undefined ||
+        currentCommand === undefined ||
+        currentPath === undefined
+      ) {
+        throw new TmuxError(
+          "COMMAND_FAILED",
+          `Unexpected tmux list-panes output: ${line}`,
+        );
+      }
+
+      return {
+        session_name: sessionName,
+        window_name: windowName,
+        pane_index: paneIndex,
+        pane_id: paneId,
+        pane_tty: paneTty,
+        current_command: currentCommand,
+        current_path: currentPath,
+      };
+    });
+}
+
+export async function focusTmuxPane(
+  params: FocusTmuxPaneParams,
+  options: TmuxClientOptions = {},
+): Promise<void> {
+  const target = windowTarget(params.session_name, params.window_name);
+  await runTmux(["switch-client", "-t", target], options);
+  await runTmux(["select-window", "-t", target], options);
+  await runTmux(["refresh-client", "-c"], options);
+}
+
+export async function displayTmuxPopup(
+  params: DisplayTmuxPopupParams,
+  options: TmuxClientOptions = {},
+): Promise<void> {
+  const args = [
+    "display-popup",
+    "-E",
+    "-w",
+    params.width ?? "70%",
+    "-h",
+    params.height ?? "60%",
+  ];
+
+  if (params.title !== undefined && params.title.length > 0) {
+    args.push("-T", params.title);
+  }
+
+  args.push(params.command);
+  await runTmux(args, options);
+}
+
+export async function displayTmuxMenu(
+  params: DisplayTmuxMenuParams,
+  options: TmuxClientOptions = {},
+): Promise<void> {
+  const args = ["display-menu"];
+
+  if (params.title !== undefined && params.title.length > 0) {
+    args.push("-T", params.title);
+  }
+
+  if (params.x !== undefined && params.x.length > 0) {
+    args.push("-x", params.x);
+  }
+
+  if (params.y !== undefined && params.y.length > 0) {
+    args.push("-y", params.y);
+  }
+
+  for (const item of params.items) {
+    args.push(item.label, item.key ?? "", item.command);
+  }
+
+  await runTmux(args, options);
+}
+
+export async function runTmuxShellCommand(
+  params: RunTmuxShellCommandParams,
+  options: TmuxClientOptions = {},
+): Promise<void> {
+  const args = ["run-shell"];
+  if (params.background === true) {
+    args.push("-b");
+  }
+  args.push(params.command);
+  await runTmux(args, options);
 }
 
 export async function getTmuxWindowPane(

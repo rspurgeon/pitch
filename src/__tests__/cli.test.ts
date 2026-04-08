@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { Readable } from "node:stream";
+import type { AgentsView } from "../agents.js";
 import { runCli, type CliDependencies } from "../cli.js";
+import type { AgentStatusSnapshot } from "../agent-status.js";
 import type { PitchConfig } from "../config.js";
 import type { WorkspaceSummary } from "../workspace-query.js";
 import type { WorkspaceRecord } from "../workspace-state.js";
@@ -125,6 +128,121 @@ function makeDependencies(
   const stderrBuffer: string[] = [];
 
   return {
+    getAgentsView: vi.fn(async (): Promise<AgentsView> => ({
+      summary: {
+        generated_at: "2026-04-08T12:00:00.000Z",
+        active_sessions: 2,
+        counts: {
+          running: 1,
+          question: 1,
+          idle: 0,
+          error: 0,
+        },
+      },
+      agents: [
+        {
+          agent_type: "claude",
+          state: "question",
+          session_id: "claude-session-1",
+          session_key: "claude-sessi",
+          last_event: "Notification",
+          updated_at: "2026-04-08T12:00:00.000Z",
+          cwd: "/tmp/claude",
+          tty: "pts/31",
+          tmux: {
+            session_name: "pitch",
+            window_name: "tmux-sidebar",
+            pane_index: 0,
+            pane_id: "%12",
+            pane_tty: "pts/31",
+            current_command: "claude",
+            current_path: "/tmp/claude",
+          },
+        },
+        {
+          agent_type: "codex",
+          state: "running",
+          session_id: "codex-session-1",
+          session_key: "codex-sessio",
+          last_event: "UserPromptSubmit",
+          updated_at: "2026-04-08T11:59:00.000Z",
+          cwd: "/tmp/codex",
+          tty: "pts/21",
+          tmux: undefined,
+        },
+      ],
+    })),
+    jumpToAgentSession: vi.fn(async () => ({
+      agent_type: "claude" as const,
+      state: "question" as const,
+      session_id: "claude-session-1",
+      session_key: "claude-sessi",
+      last_event: "Notification",
+      updated_at: "2026-04-08T12:00:00.000Z",
+      cwd: "/tmp/claude",
+      tty: "pts/31",
+      tmux: {
+        session_name: "pitch",
+        window_name: "tmux-sidebar",
+        pane_index: 0,
+        pane_id: "%12",
+        pane_tty: "pts/31",
+        current_command: "claude",
+        current_path: "/tmp/claude",
+      },
+    })),
+    displayTmuxMenu: vi.fn(async () => undefined),
+    getAgentStatusSnapshot: vi.fn(async (): Promise<AgentStatusSnapshot> => ({
+      summary: {
+        generated_at: "2026-04-08T12:00:00.000Z",
+        active_sessions: 2,
+        counts: {
+          running: 1,
+          question: 1,
+          idle: 0,
+          error: 0,
+        },
+      },
+      sessions: [
+        {
+          session_id: "claude-session-1",
+          agent_type: "claude",
+          state: "question",
+          cwd: "/tmp/claude",
+          transcript_path: "/tmp/claude.jsonl",
+          tty: "pts/31",
+          last_event: "Notification",
+          last_notification_message: "Claude needs input.",
+          last_stop_message: undefined,
+          error_message: undefined,
+          updated_at: "2026-04-08T12:00:00.000Z",
+        },
+        {
+          session_id: "codex-session-1",
+          agent_type: "codex",
+          state: "running",
+          cwd: "/tmp/codex",
+          transcript_path: "/tmp/codex.jsonl",
+          tty: "pts/21",
+          last_event: "UserPromptSubmit",
+          last_assistant_message: undefined,
+          error_message: undefined,
+          updated_at: "2026-04-08T11:59:00.000Z",
+        },
+      ],
+    })),
+    markAgentSessionError: vi.fn(async () => ({
+      session_id: "codex-session-1",
+      agent_type: "codex",
+      state: "error",
+      cwd: "/tmp/codex",
+      transcript_path: undefined,
+      tty: "pts/21",
+      last_event: "Error",
+      last_assistant_message: undefined,
+      error_message: "failed",
+      updated_at: "2026-04-08T12:00:00.000Z",
+    })),
     loadConfig: vi.fn(async () => makeConfig()),
     createWorkspace: vi.fn(async () => makeWorkspaceRecord()),
     listWorkspaces: vi.fn(async () => [makeWorkspaceSummary()]),
@@ -132,6 +250,8 @@ function makeDependencies(
     resumeWorkspace: vi.fn(async () => makeWorkspaceRecord()),
     closeWorkspace: vi.fn(async () => makeWorkspaceRecord({ status: "closed" })),
     deleteWorkspace: vi.fn(async () => makeWorkspaceRecord({ status: "closed" })),
+    renderStatusRight: vi.fn(async () => "R:2 I:1"),
+    stdin: Readable.from([]),
     stdout: {
       write(chunk: string) {
         stdoutBuffer.push(chunk);
@@ -149,6 +269,128 @@ function makeDependencies(
 }
 
 describe("runCli", () => {
+  it("renders agents with tmux targets", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(["agents"], dependencies);
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.getAgentsView).toHaveBeenCalledTimes(1);
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "summary: R:1 Q:1 I:0 E:0",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "pitch:tmux-sidebar.0",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain("claude-sessi");
+    expect(dependencies.stdoutBuffer.join("")).toContain("question");
+  });
+
+  it("supports interactive agent picking", async () => {
+    const dependencies = makeDependencies({
+      stdin: Readable.from(["1\n"]),
+    });
+
+    const exitCode = await runCli(["agents", "--pick"], dependencies);
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.getAgentsView).toHaveBeenCalledTimes(1);
+    expect(dependencies.jumpToAgentSession).toHaveBeenCalledWith(
+      "claude-session-1",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain("Jump to agent #:");
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "Focused claude session claude-session-1.",
+    );
+  });
+
+  it("opens the tmux agent popup", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(["agents-popup"], dependencies);
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.getAgentsView).toHaveBeenCalledTimes(1);
+    expect(dependencies.displayTmuxMenu).toHaveBeenCalledTimes(1);
+    expect(dependencies.stdoutBuffer.join("")).toBe("");
+  });
+
+  it("jumps to a live agent session by unique prefix", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(["jump", "claude-sessi"], dependencies);
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.jumpToAgentSession).toHaveBeenCalledWith(
+      "claude-sessi",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "Focused claude session claude-session-1.",
+    );
+  });
+
+  it("renders a human-readable agent status snapshot", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(["agent-status"], dependencies);
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.getAgentStatusSnapshot).toHaveBeenCalledTimes(1);
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "summary: R:1 Q:1 I:0 E:0",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "- claude question claude-session-1 Notification 2026-04-08T12:00:00.000Z",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain("  tty: pts/31");
+  });
+
+  it("records an explicit agent error state", async () => {
+    const dependencies = makeDependencies({
+      markAgentSessionError: vi.fn(async () => ({
+        session_id: "claude-session-1",
+        agent_type: "claude",
+        state: "error",
+        cwd: "/tmp/claude",
+        transcript_path: undefined,
+        tty: "pts/31",
+        last_event: "Error",
+        last_notification_message: undefined,
+        last_stop_message: undefined,
+        error_message: "hook failed",
+        updated_at: "2026-04-08T12:10:00.000Z",
+      })),
+    });
+
+    const exitCode = await runCli(
+      [
+        "agent-error",
+        "--agent-type",
+        "claude",
+        "--session-id",
+        "claude-session-1",
+        "--message",
+        "hook failed",
+        "--tty",
+        "pts/31",
+      ],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.markAgentSessionError).toHaveBeenCalledWith({
+      agent_type: "claude",
+      session_id: "claude-session-1",
+      message: "hook failed",
+      cwd: undefined,
+      transcript_path: undefined,
+      tty: "pts/31",
+    });
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "Recorded agent error state.",
+    );
+  });
+
   it("dispatches top-level create to createWorkspace", async () => {
     const dependencies = makeDependencies();
 
@@ -492,6 +734,49 @@ describe("runCli", () => {
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "status: closed",
     );
+  });
+
+  it("renders the tmux status-right segment", async () => {
+    const dependencies = makeDependencies({
+      renderStatusRight: vi.fn(async () => "R:1 Q:1 | "),
+    });
+
+    const exitCode = await runCli(
+      ["status-right", "--separator", " | "],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.renderStatusRight).toHaveBeenCalledWith({
+      separator: " | ",
+    });
+    expect(dependencies.stdoutBuffer.join("")).toBe("R:1 Q:1 | \n");
+    expect(dependencies.loadConfig).not.toHaveBeenCalled();
+  });
+
+  it("passes tmux context overrides to status-right", async () => {
+    const dependencies = makeDependencies({
+      renderStatusRight: vi.fn(async () => "R:1"),
+    });
+
+    const exitCode = await runCli(
+      [
+        "status-right",
+        "--tmux-session",
+        "pitch",
+        "--tmux-window",
+        "tmux-sidebar",
+      ],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.renderStatusRight).toHaveBeenCalledWith({
+      separator: undefined,
+      tmuxSession: "pitch",
+      tmuxWindow: "tmux-sidebar",
+    });
+    expect(dependencies.loadConfig).not.toHaveBeenCalled();
   });
 
   it("passes delete-branch-if-empty to deleteWorkspace", async () => {
