@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline/promises";
+import { basename } from "node:path";
 import {
   stdin as defaultStdin,
   stdout as defaultStdout,
@@ -604,6 +605,15 @@ function formatAgentStatusSnapshot(snapshot: AgentStatusSnapshot): string {
     `generated_at: ${snapshot.summary.generated_at}`,
   ];
 
+  if (snapshot.sources.length > 0) {
+    lines.push("sources:");
+    for (const source of snapshot.sources) {
+      lines.push(
+        `- ${source.source}: R:${source.summary.counts.running} Q:${source.summary.counts.question} I:${source.summary.counts.idle} E:${source.summary.counts.error} (${source.summary.active_sessions})`,
+      );
+    }
+  }
+
   if (snapshot.sessions.length === 0) {
     lines.push("sessions: none");
     return `${lines.join("\n")}\n`;
@@ -655,10 +665,6 @@ function formatAgentsView(view: AgentsView): string {
   return `${lines.join("\n")}\n`;
 }
 
-function tmuxQuote(value: string): string {
-  return `"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
-}
-
 function buildAgentMenuCommand(entry: AgentsView["agents"][number]): string {
   if (entry.tmux === undefined) {
     throw new Error(`Cannot build tmux menu command for non-jumpable agent ${entry.session_id}`);
@@ -674,19 +680,56 @@ function buildAgentMenuCommand(entry: AgentsView["agents"][number]): string {
   return `run-shell ${shellEscape(shellCommand)}`;
 }
 
-function buildAgentMenuLabel(entry: AgentsView["agents"][number]): string {
-  const location =
-    entry.tmux === undefined
-      ? "-"
-      : `${entry.tmux.session_name}:${entry.tmux.window_name}.${entry.tmux.pane_index}`;
+function shortenAgentPath(path: string | undefined): string {
+  if (path === undefined || path.length === 0) {
+    return "-";
+  }
 
-  return [
-    entry.state,
-    entry.agent_type,
-    entry.session_key,
-    location,
-    entry.cwd ?? "-",
-  ].join("  ");
+  const trimmed = path.replace(/^\/home\/[^/]+\//, "~/");
+  const parts = trimmed.split("/").filter((part) => part.length > 0);
+  if (parts.length <= 3) {
+    return trimmed;
+  }
+
+  return `.../${parts.slice(-3).join("/")}`;
+}
+
+function buildAgentMenuRows(
+  entries: ReturnType<typeof buildAgentShortcutEntries>,
+): string[] {
+  const rows = entries.map((entry) => {
+    const tmuxLabel =
+      entry.agent.tmux === undefined
+        ? "-"
+        : `${entry.agent.tmux.session_name}/${entry.agent.tmux.window_name}`;
+    const nameLabel =
+      entry.agent.cwd === undefined
+        ? tmuxLabel
+        : basename(entry.agent.cwd);
+    const pathLabel = shortenAgentPath(entry.agent.cwd);
+
+    return [
+      entry.key,
+      nameLabel,
+      tmuxLabel,
+      pathLabel,
+      `${entry.agent.agent_type} ${entry.agent.state}`,
+    ];
+  });
+
+  const widths = rows[0]!.map((_, columnIndex) =>
+    Math.max(...rows.map((row) => row[columnIndex]!.length)),
+  );
+
+  return rows.map((row) =>
+    row
+      .map((value, columnIndex) =>
+        columnIndex === row.length - 1
+          ? value
+          : value.padEnd(widths[columnIndex]),
+      )
+      .join(" | "),
+  );
 }
 
 function buildHelpText(): string {
@@ -1012,12 +1055,13 @@ async function executeCommand(
           };
         }
 
+        const labels = buildAgentMenuRows(entries);
         await dependencies.displayTmuxMenu({
           title: "Pitch Agents",
           x: "P",
           y: "P",
-          items: entries.map((entry) => ({
-            label: buildAgentMenuLabel(entry.agent),
+          items: entries.map((entry, index) => ({
+            label: labels[index]!,
             key: entry.key,
             command: buildAgentMenuCommand(entry.agent),
           })),

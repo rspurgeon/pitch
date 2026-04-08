@@ -11,6 +11,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
+import {
+  loadConfig,
+  type VmSshExecutionEnvironmentConfig,
+} from "./config.js";
+import { resolveVmSharedAgentStatusPaths } from "./execution-environment.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -78,6 +83,12 @@ export const AgentStatusSummarySchema = z.object({
 
 export const AgentStatusSnapshotSchema = z.object({
   summary: AgentStatusSummarySchema,
+  sources: z.array(
+    z.object({
+      source: z.string(),
+      summary: AgentStatusSummarySchema,
+    }).strict(),
+  ),
   sessions: z.array(AgentSessionStateSchema),
 }).strict();
 
@@ -110,6 +121,11 @@ export type AgentStatusSnapshot = z.infer<typeof AgentStatusSnapshotSchema>;
 export type CodexHookPayload = z.infer<typeof CodexHookPayloadSchema>;
 export type ClaudeHookPayload = z.infer<typeof ClaudeHookPayloadSchema>;
 
+export interface AgentStatusSourceSummary {
+  source: string;
+  summary: AgentStatusSummary;
+}
+
 export interface ActiveAgentProcess {
   agent_type?: AgentType;
   pid: number;
@@ -130,6 +146,7 @@ export const DEFAULT_AGENT_STATUS_DIR = join(
     join(homedir(), ".cache", "agent-status"),
 );
 export const DEFAULT_STALE_SESSION_RETENTION_MS = 30 * 60 * 1000;
+const HOST_AGENT_STATUS_SOURCE = "host";
 
 function encodeSessionId(sessionId: string): string {
   return encodeURIComponent(sessionId);
@@ -675,6 +692,33 @@ export async function writeAgentStatusSummary(
   return validated;
 }
 
+function aggregateAgentStatusSummaries(
+  sources: AgentStatusSourceSummary[],
+  now: Date,
+): AgentStatusSummary {
+  return {
+    generated_at: now.toISOString(),
+    active_sessions: sources.reduce(
+      (total, source) => total + source.summary.active_sessions,
+      0,
+    ),
+    counts: sources.reduce(
+      (totals, source) => ({
+        running: totals.running + source.summary.counts.running,
+        question: totals.question + source.summary.counts.question,
+        idle: totals.idle + source.summary.counts.idle,
+        error: totals.error + source.summary.counts.error,
+      }),
+      {
+        running: 0,
+        question: 0,
+        idle: 0,
+        error: 0,
+      },
+    ),
+  };
+}
+
 export async function deleteCodexSessionState(
   sessionId: string,
   cacheDir: string = DEFAULT_AGENT_STATUS_DIR,
@@ -711,11 +755,12 @@ export interface AgentStatusDependencies {
   listClaudeSessionStates: typeof listClaudeSessionStates;
   listActiveClaudeProcesses: typeof listActiveClaudeProcesses;
   writeAgentStatusSummary: typeof writeAgentStatusSummary;
+  loadConfig: typeof loadConfig;
   now: () => Date;
 }
 
 interface CollectedAgentStatusState {
-  summary: AgentStatusSummary;
+  hostSummary: AgentStatusSummary;
   freshSessionStates: AgentSessionState[];
 }
 
@@ -733,8 +778,56 @@ const defaultDependencies: AgentStatusDependencies = {
   listClaudeSessionStates,
   listActiveClaudeProcesses,
   writeAgentStatusSummary,
+  loadConfig,
   now: () => new Date(),
 };
+
+async function listRemoteAgentStatusSourceSummaries(
+  dependencyOverrides: Partial<AgentStatusDependencies> = {},
+): Promise<AgentStatusSourceSummary[]> {
+  const dependencies: AgentStatusDependencies = {
+    ...defaultDependencies,
+    ...dependencyOverrides,
+  };
+
+  let config;
+  try {
+    config = await dependencies.loadConfig();
+  } catch {
+    return [];
+  }
+
+  const environments = Object.entries(config.environments).filter(
+    (entry): entry is [string, VmSshExecutionEnvironmentConfig] =>
+      entry[1].kind === "vm-ssh",
+  );
+
+  const summaries = await Promise.all(
+    environments.map(async ([environmentName, environment]) => {
+      const sharedAgentStatusPaths = resolveVmSharedAgentStatusPaths(
+        environmentName,
+        environment,
+      );
+      if (sharedAgentStatusPaths === null) {
+        return null;
+      }
+
+      const summary = await readAgentStatusSummary(sharedAgentStatusPaths.host_cache_dir);
+      if (summary === null) {
+        return null;
+      }
+
+      return {
+        source: environmentName,
+        summary,
+      };
+    }),
+  );
+
+  return summaries.filter(
+    (summary): summary is AgentStatusSourceSummary => summary !== null,
+  );
+}
 
 export async function handleCodexHookPayload(
   payload: CodexHookPayload,
@@ -963,10 +1056,10 @@ async function collectAgentStatusState(
         DEFAULT_STALE_SESSION_RETENTION_MS,
       ),
   );
-  const summary = summarizeStates(freshSessionStates, activeProcesses, now);
+  const hostSummary = summarizeStates(freshSessionStates, activeProcesses, now);
 
   return {
-    summary,
+    hostSummary,
     freshSessionStates,
   };
 }
@@ -980,7 +1073,15 @@ export async function refreshAgentStatusSummary(
     ...dependencyOverrides,
   };
 
-  const { summary } = await collectAgentStatusState(cacheDir, dependencyOverrides);
+  const now = dependencies.now();
+  const [{ hostSummary }, remoteSources] = await Promise.all([
+    collectAgentStatusState(cacheDir, dependencyOverrides),
+    listRemoteAgentStatusSourceSummaries(dependencyOverrides),
+  ]);
+  const summary = aggregateAgentStatusSummaries(
+    [{ source: HOST_AGENT_STATUS_SOURCE, summary: hostSummary }, ...remoteSources],
+    now,
+  );
   return dependencies.writeAgentStatusSummary(summary, cacheDir);
 }
 
@@ -1067,14 +1168,21 @@ export async function getAgentStatusSnapshot(
     ...dependencyOverrides,
   };
 
-  const { summary, freshSessionStates } = await collectAgentStatusState(
-    cacheDir,
-    dependencyOverrides,
-  );
+  const now = dependencies.now();
+  const [{ hostSummary, freshSessionStates }, remoteSources] = await Promise.all([
+    collectAgentStatusState(cacheDir, dependencyOverrides),
+    listRemoteAgentStatusSourceSummaries(dependencyOverrides),
+  ]);
+  const sources = [
+    { source: HOST_AGENT_STATUS_SOURCE, summary: hostSummary },
+    ...remoteSources,
+  ];
+  const summary = aggregateAgentStatusSummaries(sources, now);
   await dependencies.writeAgentStatusSummary(summary, cacheDir);
 
   return AgentStatusSnapshotSchema.parse({
     summary,
+    sources,
     sessions: [...freshSessionStates].sort(compareUpdatedAtDescending),
   });
 }

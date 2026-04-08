@@ -55,6 +55,7 @@ const defaultDependencies: AgentsViewDependencies = {
 };
 
 const AGENT_SHORTCUT_KEYS = "asdfghjkl;wertyuiopzxcvbnm1234567890";
+const HOST_AGENT_STATUS_SOURCE = "host";
 
 function normalizeTty(tty: string | undefined): string | undefined {
   if (tty === undefined) {
@@ -143,6 +144,10 @@ export async function getAgentsView(
     dependencies.listTmuxPanes(),
   ]);
 
+  const hostSummary =
+    snapshot.sources.find((source) => source.source === HOST_AGENT_STATUS_SOURCE)
+      ?.summary ?? snapshot.summary;
+
   const panesByTty = new Map<string, TmuxPaneListing>();
   for (const pane of panes) {
     const tty = normalizeTty(pane.pane_tty);
@@ -206,7 +211,7 @@ export async function getAgentsView(
   ].sort(compareEntries);
 
   return {
-    summary: snapshot.summary,
+    summary: hostSummary,
     agents,
   };
 }

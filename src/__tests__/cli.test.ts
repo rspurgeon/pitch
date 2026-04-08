@@ -203,6 +203,21 @@ function makeDependencies(
           error: 0,
         },
       },
+      sources: [
+        {
+          source: "host",
+          summary: {
+            generated_at: "2026-04-08T12:00:00.000Z",
+            active_sessions: 2,
+            counts: {
+              running: 1,
+              question: 1,
+              idle: 0,
+              error: 0,
+            },
+          },
+        },
+      ],
       sessions: [
         {
           session_id: "claude-session-1",

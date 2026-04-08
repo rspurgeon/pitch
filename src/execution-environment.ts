@@ -27,6 +27,11 @@ export interface VmAgentStatePaths {
   guest_marker_path: string;
 }
 
+export interface VmSharedAgentStatusPaths {
+  host_cache_dir: string;
+  guest_cache_dir: string;
+}
+
 export function buildVmAgentHostMarkerPath(
   worktreePath: string,
   workspaceName: string,
@@ -361,6 +366,29 @@ export function buildVmAgentStatePaths(
       ".pitch-state",
       workspaceName,
       "vm-agent-active",
+    ),
+  };
+}
+
+export function resolveVmSharedAgentStatusPaths(
+  environmentName: string,
+  environment: VmSshExecutionEnvironmentConfig,
+): VmSharedAgentStatusPaths | null {
+  const sharedPath = environment.shared_paths.find((path) => path.mode === "rw");
+  if (sharedPath === undefined) {
+    return null;
+  }
+
+  return {
+    host_cache_dir: join(
+      normalizeHostPath(sharedPath.host_path),
+      ".pitch-agent-status",
+      environmentName,
+    ),
+    guest_cache_dir: posix.join(
+      sharedPath.guest_path,
+      ".pitch-agent-status",
+      environmentName,
     ),
   };
 }

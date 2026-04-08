@@ -2,18 +2,22 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PitchConfig } from "../config.js";
 import {
+  getAgentStatusSnapshot,
   getAgentStatusSummaryPath,
   handleClaudeHookPayload,
   handleCodexHookPayload,
   listClaudeSessionStates,
   listCodexSessionStates,
   refreshAgentStatusSummary,
+  writeAgentStatusSummary,
   writeClaudeSessionState,
   writeCodexSessionState,
   type ClaudeSessionState,
   type CodexSessionState,
 } from "../agent-status.js";
+import { resolveVmSharedAgentStatusPaths } from "../execution-environment.js";
 
 async function makeTempCacheDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "pitch-agent-status-"));
@@ -60,6 +64,72 @@ function makeClaudeSessionState(
     updated_at: "2026-04-08T12:00:00.000Z",
     ...overrides,
   };
+}
+
+function makeConfigWithVmEnvironment(
+  sharedHostPath: string = "/tmp/pitch-shared",
+): PitchConfig {
+  return {
+    defaults: {
+      repo: undefined,
+      agent: undefined,
+      environment: undefined,
+      base_branch: "main",
+      worktree_root: "/tmp/worktrees",
+    },
+    bootstrap_prompts: {},
+    repos: {},
+    environments: {
+      "sandbox-vm": {
+        kind: "vm-ssh",
+        ssh_host: "sandbox.internal",
+        ssh_options: [],
+        guest_workspace_root: "/srv/workspaces",
+        shared_paths: [
+          {
+            host_path: sharedHostPath,
+            guest_path: "/srv/pitch-shared",
+            mode: "rw",
+          },
+        ],
+        bootstrap: {
+          mise_install: false,
+        },
+      },
+    },
+    sandboxes: {},
+    agents: {},
+  };
+}
+
+async function writeVmSummary(
+  config: PitchConfig,
+  counts: {
+    running: number;
+    question: number;
+    idle: number;
+    error: number;
+  },
+  activeSessions: number,
+): Promise<void> {
+  const environment = config.environments["sandbox-vm"];
+  if (environment?.kind !== "vm-ssh") {
+    throw new Error("sandbox-vm must be vm-ssh in test config");
+  }
+
+  const sharedPaths = resolveVmSharedAgentStatusPaths("sandbox-vm", environment);
+  if (sharedPaths === null) {
+    throw new Error("sandbox-vm must expose a shared cache path");
+  }
+
+  await writeAgentStatusSummary(
+    {
+      generated_at: "2026-04-08T12:00:00.000Z",
+      active_sessions: activeSessions,
+      counts,
+    },
+    sharedPaths.host_cache_dir,
+  );
 }
 
 describe("handleCodexHookPayload", () => {
@@ -498,5 +568,128 @@ describe("refreshAgentStatusSummary", () => {
       idle: 0,
       error: 0,
     });
+  });
+
+  it("merges remote vm source summaries into the top-level summary", async () => {
+    const cacheDir = await makeTempCacheDir();
+    const sharedHostPath = await makeTempCacheDir();
+    const config = makeConfigWithVmEnvironment(sharedHostPath);
+
+    await writeCodexSessionState(
+      makeSessionState({
+        session_id: "codex-running",
+        tty: "pts/21",
+        state: "running",
+      }),
+      cacheDir,
+    );
+
+    await writeVmSummary(
+      config,
+      {
+        running: 0,
+        question: 1,
+        idle: 1,
+        error: 0,
+      },
+      2,
+    );
+
+    const summary = await refreshAgentStatusSummary(cacheDir, {
+      listActiveCodexProcesses: vi.fn(async () => [
+        {
+          agent_type: "codex",
+          pid: 201,
+          tty: "pts/21",
+          cwd: "/tmp/worktrees/demo",
+        },
+      ]),
+      loadConfig: vi.fn(async () => config),
+      now: () => new Date("2026-04-08T12:00:00.000Z"),
+    });
+
+    expect(summary).toEqual({
+      generated_at: "2026-04-08T12:00:00.000Z",
+      active_sessions: 3,
+      counts: {
+        running: 1,
+        question: 1,
+        idle: 1,
+        error: 0,
+      },
+    });
+  });
+});
+
+describe("getAgentStatusSnapshot", () => {
+  it("includes per-source summaries while keeping host sessions local", async () => {
+    const cacheDir = await makeTempCacheDir();
+    const sharedHostPath = await makeTempCacheDir();
+    const config = makeConfigWithVmEnvironment(sharedHostPath);
+
+    await writeCodexSessionState(
+      makeSessionState({
+        session_id: "codex-running",
+        tty: "pts/21",
+        state: "running",
+      }),
+      cacheDir,
+    );
+
+    await writeVmSummary(
+      config,
+      {
+        running: 0,
+        question: 0,
+        idle: 1,
+        error: 0,
+      },
+      1,
+    );
+
+    const snapshot = await getAgentStatusSnapshot(cacheDir, {
+      listActiveCodexProcesses: vi.fn(async () => [
+        {
+          agent_type: "codex",
+          pid: 201,
+          tty: "pts/21",
+          cwd: "/tmp/worktrees/demo",
+        },
+      ]),
+      loadConfig: vi.fn(async () => config),
+      now: () => new Date("2026-04-08T12:00:00.000Z"),
+    });
+
+    expect(snapshot.summary.active_sessions).toBe(2);
+    expect(snapshot.sources).toEqual([
+      {
+        source: "host",
+        summary: {
+          generated_at: "2026-04-08T12:00:00.000Z",
+          active_sessions: 1,
+          counts: {
+            running: 1,
+            question: 0,
+            idle: 0,
+            error: 0,
+          },
+        },
+      },
+      {
+        source: "sandbox-vm",
+        summary: {
+          generated_at: "2026-04-08T12:00:00.000Z",
+          active_sessions: 1,
+          counts: {
+            running: 0,
+            question: 0,
+            idle: 1,
+            error: 0,
+          },
+        },
+      },
+    ]);
+    expect(snapshot.sessions).toHaveLength(1);
+    expect(snapshot.sessions[0]?.session_id).toBe("codex-running");
   });
 });
