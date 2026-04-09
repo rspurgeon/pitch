@@ -142,6 +142,7 @@ function makeDependencies(
       agents: [
         {
           agent_type: "claude",
+          agent_name: "claude-enterprise",
           state: "question",
           session_id: "claude-session-1",
           session_key: "claude-sessi",
@@ -161,6 +162,7 @@ function makeDependencies(
         },
         {
           agent_type: "codex",
+          agent_name: "codex-api",
           state: "running",
           session_id: "codex-session-1",
           session_key: "codex-sessio",
@@ -174,6 +176,7 @@ function makeDependencies(
     })),
     jumpToAgentSession: vi.fn(async () => ({
       agent_type: "claude" as const,
+      agent_name: "claude-enterprise",
       state: "question" as const,
       session_id: "claude-session-1",
       session_key: "claude-sessi",
@@ -297,6 +300,7 @@ describe("runCli", () => {
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "pitch:tmux-sidebar.0",
     );
+    expect(dependencies.stdoutBuffer.join("")).toContain("claude-enter");
     expect(dependencies.stdoutBuffer.join("")).toContain("claude-sessi");
     expect(dependencies.stdoutBuffer.join("")).toContain("question");
   });

@@ -9,6 +9,10 @@ import {
   listTmuxPanes,
   type TmuxPaneListing,
 } from "./tmux.js";
+import {
+  listWorkspaceRecords,
+  type WorkspaceRecord,
+} from "./workspace-state.js";
 
 export interface AgentPaneMatch {
   session_name: string;
@@ -22,6 +26,9 @@ export interface AgentPaneMatch {
 
 export interface AgentViewEntry {
   agent_type: AgentSessionState["agent_type"];
+  agent_name?: string;
+  tmux_session_name?: string;
+  tmux_window_name?: string;
   state: AgentRuntimeState;
   session_id: string;
   session_key: string;
@@ -46,12 +53,14 @@ export interface AgentsViewDependencies {
   getAgentStatusSnapshot: typeof getAgentStatusSnapshot;
   listTmuxPanes: typeof listTmuxPanes;
   focusTmuxPane: typeof focusTmuxPane;
+  listWorkspaceRecords: typeof listWorkspaceRecords;
 }
 
 const defaultDependencies: AgentsViewDependencies = {
   getAgentStatusSnapshot,
   listTmuxPanes,
   focusTmuxPane,
+  listWorkspaceRecords,
 };
 
 const AGENT_SHORTCUT_KEYS = "asdfghjkl;wertyuiopzxcvbnm1234567890";
@@ -131,6 +140,48 @@ function getEntryIdentity(entry: AgentViewEntry): string | undefined {
   return undefined;
 }
 
+function getWorkspaceLookupKeys(workspace: WorkspaceRecord): string[] {
+  const keys = [`tmux:${workspace.tmux_session}:${workspace.tmux_window}`];
+
+  if (workspace.worktree_path.length > 0) {
+    keys.push(`cwd:${workspace.worktree_path}`);
+  }
+  if (
+    workspace.guest_worktree_path !== undefined &&
+    workspace.guest_worktree_path.length > 0
+  ) {
+    keys.push(`cwd:${workspace.guest_worktree_path}`);
+  }
+
+  return keys;
+}
+
+function resolveWorkspace(
+  session: AgentSessionState,
+  workspacesByKey: Map<string, WorkspaceRecord>,
+): WorkspaceRecord | undefined {
+  if (
+    session.tmux_session !== undefined &&
+    session.tmux_window !== undefined
+  ) {
+    const workspace = workspacesByKey.get(
+      `tmux:${session.tmux_session}:${session.tmux_window}`,
+    );
+    if (workspace !== undefined) {
+      return workspace;
+    }
+  }
+
+  if (session.cwd !== undefined) {
+    const workspace = workspacesByKey.get(`cwd:${session.cwd}`);
+    if (workspace !== undefined) {
+      return workspace;
+    }
+  }
+
+  return undefined;
+}
+
 export async function getAgentsView(
   dependencyOverrides: Partial<AgentsViewDependencies> = {},
 ): Promise<AgentsView> {
@@ -139,14 +190,24 @@ export async function getAgentsView(
     ...dependencyOverrides,
   };
 
-  const [snapshot, panes] = await Promise.all([
+  const [snapshot, panes, workspaces] = await Promise.all([
     dependencies.getAgentStatusSnapshot(),
     dependencies.listTmuxPanes(),
+    dependencies.listWorkspaceRecords({ status: "active" }),
   ]);
 
   const hostSummary =
     snapshot.sources.find((source) => source.source === HOST_AGENT_STATUS_SOURCE)
       ?.summary ?? snapshot.summary;
+
+  const workspacesByKey = new Map<string, WorkspaceRecord>();
+  for (const workspace of workspaces) {
+    for (const key of getWorkspaceLookupKeys(workspace)) {
+      if (!workspacesByKey.has(key)) {
+        workspacesByKey.set(key, workspace);
+      }
+    }
+  }
 
   const panesByTty = new Map<string, TmuxPaneListing>();
   for (const pane of panes) {
@@ -161,9 +222,15 @@ export async function getAgentsView(
     .map((session: AgentSessionState): AgentViewEntry => {
       const tty = normalizeTty(session.tty);
       const pane = tty !== undefined ? panesByTty.get(tty) : undefined;
+      const workspace = resolveWorkspace(session, workspacesByKey);
+      const tmuxSessionName = session.tmux_session ?? workspace?.tmux_session;
+      const tmuxWindowName = session.tmux_window ?? workspace?.tmux_window;
 
       return {
         agent_type: session.agent_type,
+        agent_name: workspace?.agent_name,
+        tmux_session_name: tmuxSessionName,
+        tmux_window_name: tmuxWindowName,
         state: session.state,
         session_id: session.session_id,
         session_key: shortenSessionId(session.session_id),

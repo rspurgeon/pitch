@@ -132,6 +132,28 @@ async function writeVmSummary(
   );
 }
 
+async function writeVmSessionState(
+  config: PitchConfig,
+  state: CodexSessionState | ClaudeSessionState,
+): Promise<void> {
+  const environment = config.environments["sandbox-vm"];
+  if (environment?.kind !== "vm-ssh") {
+    throw new Error("sandbox-vm must be vm-ssh in test config");
+  }
+
+  const sharedPaths = resolveVmSharedAgentStatusPaths("sandbox-vm", environment);
+  if (sharedPaths === null) {
+    throw new Error("sandbox-vm must expose a shared cache path");
+  }
+
+  if (state.agent_type === "codex") {
+    await writeCodexSessionState(state, sharedPaths.host_cache_dir);
+    return;
+  }
+
+  await writeClaudeSessionState(state, sharedPaths.host_cache_dir);
+}
+
 describe("handleCodexHookPayload", () => {
   it("stores running state for UserPromptSubmit events", async () => {
     const cacheDir = await makeTempCacheDir();
@@ -622,7 +644,7 @@ describe("refreshAgentStatusSummary", () => {
 });
 
 describe("getAgentStatusSnapshot", () => {
-  it("includes per-source summaries while keeping host sessions local", async () => {
+  it("includes remote vm sessions alongside host sessions", async () => {
     const cacheDir = await makeTempCacheDir();
     const sharedHostPath = await makeTempCacheDir();
     const config = makeConfigWithVmEnvironment(sharedHostPath);
@@ -645,6 +667,18 @@ describe("getAgentStatusSnapshot", () => {
         error: 0,
       },
       1,
+    );
+    await writeVmSessionState(
+      config,
+      makeClaudeSessionState({
+        session_id: "claude-vm-idle",
+        cwd: "/srv/workspaces/claude-demo",
+        tty: "pts/44",
+        tmux_session: undefined,
+        tmux_window: undefined,
+        tmux_pane_id: undefined,
+        tmux_pane_index: undefined,
+      }),
     );
 
     const snapshot = await getAgentStatusSnapshot(cacheDir, {
@@ -689,7 +723,48 @@ describe("getAgentStatusSnapshot", () => {
         },
       },
     ]);
-    expect(snapshot.sessions).toHaveLength(1);
-    expect(snapshot.sessions[0]?.session_id).toBe("codex-running");
+    expect(snapshot.sessions).toHaveLength(2);
+    expect(snapshot.sessions.map((session) => session.session_id)).toEqual([
+      "codex-running",
+      "claude-vm-idle",
+    ]);
+  });
+
+  it("does not surface remote session files when the remote summary says there are no active sessions", async () => {
+    const cacheDir = await makeTempCacheDir();
+    const sharedHostPath = await makeTempCacheDir();
+    const config = makeConfigWithVmEnvironment(sharedHostPath);
+
+    await writeVmSummary(
+      config,
+      {
+        running: 0,
+        question: 0,
+        idle: 0,
+        error: 0,
+      },
+      0,
+    );
+    await writeVmSessionState(
+      config,
+      makeSessionState({
+        session_id: "codex-vm-stale",
+        cwd: "/srv/pitch-host/worktrees/kong/kongctl/pr-776",
+        tty: undefined,
+        tmux_session: undefined,
+        tmux_window: undefined,
+        tmux_pane_id: undefined,
+        tmux_pane_index: undefined,
+        updated_at: "2026-04-09T03:30:28.718Z",
+      }),
+    );
+
+    const snapshot = await getAgentStatusSnapshot(cacheDir, {
+      loadConfig: vi.fn(async () => config),
+      now: () => new Date("2026-04-09T03:45:15.000Z"),
+    });
+
+    expect(snapshot.summary.active_sessions).toBe(0);
+    expect(snapshot.sessions).toEqual([]);
   });
 });

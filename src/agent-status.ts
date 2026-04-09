@@ -126,6 +126,15 @@ export interface AgentStatusSourceSummary {
   summary: AgentStatusSummary;
 }
 
+interface RemoteAgentStatusSource {
+  source: string;
+  cache_dir: string;
+}
+
+interface RemoteAgentStatusSourceData extends RemoteAgentStatusSource {
+  summary: AgentStatusSummary | null;
+}
+
 export interface ActiveAgentProcess {
   agent_type?: AgentType;
   pid: number;
@@ -785,6 +794,26 @@ const defaultDependencies: AgentStatusDependencies = {
 async function listRemoteAgentStatusSourceSummaries(
   dependencyOverrides: Partial<AgentStatusDependencies> = {},
 ): Promise<AgentStatusSourceSummary[]> {
+  const remoteSources = await listRemoteAgentStatusSourceData(dependencyOverrides);
+  const summaries = remoteSources.map((remoteSource) => {
+    if (remoteSource.summary === null) {
+      return null;
+    }
+
+    return {
+      source: remoteSource.source,
+      summary: remoteSource.summary,
+    };
+  });
+
+  return summaries.filter(
+    (summary): summary is AgentStatusSourceSummary => summary !== null,
+  );
+}
+
+async function listRemoteAgentStatusSourceData(
+  dependencyOverrides: Partial<AgentStatusDependencies> = {},
+): Promise<RemoteAgentStatusSourceData[]> {
   const dependencies: AgentStatusDependencies = {
     ...defaultDependencies,
     ...dependencyOverrides,
@@ -812,21 +841,53 @@ async function listRemoteAgentStatusSourceSummaries(
         return null;
       }
 
-      const summary = await readAgentStatusSummary(sharedAgentStatusPaths.host_cache_dir);
-      if (summary === null) {
-        return null;
-      }
-
       return {
         source: environmentName,
-        summary,
+        cache_dir: sharedAgentStatusPaths.host_cache_dir,
+        summary: await readAgentStatusSummary(sharedAgentStatusPaths.host_cache_dir),
       };
     }),
   );
 
   return summaries.filter(
-    (summary): summary is AgentStatusSourceSummary => summary !== null,
+    (summary): summary is RemoteAgentStatusSourceData => summary !== null,
   );
+}
+
+function isFreshRemoteSummary(summary: AgentStatusSummary, now: Date): boolean {
+  const generatedAt = Date.parse(summary.generated_at);
+  if (Number.isNaN(generatedAt)) {
+    return false;
+  }
+
+  return now.getTime() - generatedAt <= DEFAULT_STALE_SESSION_RETENTION_MS;
+}
+
+async function listRemoteAgentSessionStates(
+  now: Date,
+  dependencyOverrides: Partial<AgentStatusDependencies> = {},
+): Promise<AgentSessionState[]> {
+  const remoteSources = await listRemoteAgentStatusSourceData(dependencyOverrides);
+  const remoteSessions = await Promise.all(
+    remoteSources.map(async (remoteSource) => {
+      if (
+        remoteSource.summary === null ||
+        remoteSource.summary.active_sessions === 0 ||
+        !isFreshRemoteSummary(remoteSource.summary, now)
+      ) {
+        return [];
+      }
+
+      const [codexSessions, claudeSessions] = await Promise.all([
+        listCodexSessionStates(remoteSource.cache_dir),
+        listClaudeSessionStates(remoteSource.cache_dir),
+      ]);
+
+      return [...codexSessions, ...claudeSessions];
+    }),
+  );
+
+  return remoteSessions.flat().sort(compareUpdatedAtDescending);
 }
 
 export async function handleCodexHookPayload(
@@ -1169,9 +1230,11 @@ export async function getAgentStatusSnapshot(
   };
 
   const now = dependencies.now();
-  const [{ hostSummary, freshSessionStates }, remoteSources] = await Promise.all([
+  const [{ hostSummary, freshSessionStates }, remoteSources, remoteSessionStates] =
+    await Promise.all([
     collectAgentStatusState(cacheDir, dependencyOverrides),
     listRemoteAgentStatusSourceSummaries(dependencyOverrides),
+    listRemoteAgentSessionStates(now, dependencyOverrides),
   ]);
   const sources = [
     { source: HOST_AGENT_STATUS_SOURCE, summary: hostSummary },
@@ -1183,6 +1246,8 @@ export async function getAgentStatusSnapshot(
   return AgentStatusSnapshotSchema.parse({
     summary,
     sources,
-    sessions: [...freshSessionStates].sort(compareUpdatedAtDescending),
+    sessions: [...freshSessionStates, ...remoteSessionStates].sort(
+      compareUpdatedAtDescending,
+    ),
   });
 }

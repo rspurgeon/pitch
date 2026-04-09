@@ -653,7 +653,7 @@ function formatAgentsView(view: AgentsView): string {
       view.agents.map((agent: AgentsView["agents"][number], index: number) => [
         String(index + 1),
         agent.state,
-        agent.agent_type,
+        agent.agent_name ?? agent.agent_type,
         agent.session_key,
         agent.tmux === undefined
           ? "-"

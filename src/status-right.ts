@@ -2,6 +2,7 @@ import {
   refreshAgentStatusSummary,
   type AgentStatusSummary,
 } from "./agent-status.js";
+import { getAgentsView, type AgentViewEntry } from "./agents.js";
 
 export interface StatusRightInput {
   separator?: string;
@@ -11,10 +12,12 @@ export interface StatusRightInput {
 
 export interface StatusRightDependencies {
   refreshAgentStatusSummary: typeof refreshAgentStatusSummary;
+  getAgentsView: typeof getAgentsView;
 }
 
 const defaultDependencies: StatusRightDependencies = {
   refreshAgentStatusSummary,
+  getAgentsView,
 };
 
 const TMUX_FORMAT = "tmux";
@@ -59,7 +62,60 @@ function buildTmuxSegment(
   return `#[fg=${color}]${symbol}${count}#[default]`;
 }
 
-function formatTmuxSummary(summary: AgentStatusSummary): string {
+function sanitizeAgentLabel(label: string): string {
+  return label.replaceAll(/\s+/g, "-");
+}
+
+function getTmuxLabel(agent: AgentViewEntry): string | undefined {
+  const sessionNameRaw = agent.tmux?.session_name ?? agent.tmux_session_name;
+  const windowNameRaw = agent.tmux?.window_name ?? agent.tmux_window_name;
+  if (sessionNameRaw === undefined || windowNameRaw === undefined) {
+    return undefined;
+  }
+
+  const sessionName = sanitizeAgentLabel(sessionNameRaw);
+  const windowName = sanitizeAgentLabel(windowNameRaw);
+  return sessionName === windowName
+    ? sessionName
+    : `${sessionName}:${windowName}`;
+}
+
+function getAgentLabel(agent: AgentViewEntry): string {
+  return getTmuxLabel(agent) ?? sanitizeAgentLabel(agent.agent_type);
+}
+
+function getAgentsByState(
+  agents: AgentViewEntry[],
+  state: AgentViewEntry["state"],
+): AgentViewEntry[] {
+  return agents.filter((agent) => agent.state === state);
+}
+
+function buildAgentStateSegments(
+  agents: AgentViewEntry[],
+  color: string,
+  symbol: string,
+): string[] {
+  const agentSegments = agents.map(
+    (agent) => `#[fg=${color}]${symbol}${getAgentLabel(agent)}#[default]`,
+  );
+  const segments: string[] = [];
+
+  for (const [index, segment] of agentSegments.entries()) {
+    if (index > 0) {
+      segments.push(`#[fg=${color}]|#[default]`);
+    }
+    segments.push(segment);
+  }
+
+  return segments;
+}
+
+function formatTmuxSummary(
+  summary: AgentStatusSummary,
+  runningAgents: AgentViewEntry[],
+  idleAgents: AgentViewEntry[],
+): string {
   const segments: string[] = [];
   const prefix = process.env.PITCH_STATUS_RIGHT_PREFIX_SYMBOL;
   const pulseFrame = Math.floor(Date.now() / 1000) % 2 === 0;
@@ -74,7 +130,17 @@ function formatTmuxSummary(summary: AgentStatusSummary): string {
     );
   }
 
-  if (summary.counts.running > 0) {
+  if (runningAgents.length > 0) {
+    const runningSymbol = pulseFrame
+      ? (process.env.PITCH_STATUS_RIGHT_RUNNING_SYMBOL ?? DEFAULT_DOT_SYMBOL)
+      : (process.env.PITCH_STATUS_RIGHT_RUNNING_DIM_SYMBOL ??
+          DEFAULT_RUNNING_DIM_SYMBOL);
+    const runningColor =
+      process.env.PITCH_STATUS_RIGHT_RUNNING_COLOR ?? DEFAULT_RUNNING_COLOR;
+    segments.push(
+      ...buildAgentStateSegments(runningAgents, runningColor, runningSymbol),
+    );
+  } else if (summary.counts.running > 0) {
     segments.push(
       buildTmuxSegment(
         pulseFrame
@@ -86,7 +152,16 @@ function formatTmuxSummary(summary: AgentStatusSummary): string {
       ),
     );
   }
-  if (summary.counts.idle > 0) {
+
+  if (idleAgents.length > 0) {
+    segments.push(
+      ...buildAgentStateSegments(
+        idleAgents,
+        process.env.PITCH_STATUS_RIGHT_IDLE_COLOR ?? DEFAULT_IDLE_COLOR,
+        process.env.PITCH_STATUS_RIGHT_IDLE_SYMBOL ?? DEFAULT_DOT_SYMBOL,
+      ),
+    );
+  } else if (summary.counts.idle > 0) {
     segments.push(
       buildTmuxSegment(
         process.env.PITCH_STATUS_RIGHT_IDLE_SYMBOL ?? DEFAULT_DOT_SYMBOL,
@@ -118,12 +193,6 @@ function formatTmuxSummary(summary: AgentStatusSummary): string {
   return segments.join(" ");
 }
 
-function formatSummary(summary: AgentStatusSummary): string {
-  return isTmuxFormatEnabled()
-    ? formatTmuxSummary(summary)
-    : formatPlainSummary(summary);
-}
-
 export async function renderStatusRight(
   input: StatusRightInput = {},
   dependencyOverrides: Partial<StatusRightDependencies> = {},
@@ -138,7 +207,14 @@ export async function renderStatusRight(
     return "";
   }
 
-  const rendered = formatSummary(summary);
+  const agents = isTmuxFormatEnabled()
+    ? (await dependencies.getAgentsView()).agents
+    : [];
+  const runningAgents = getAgentsByState(agents, "running");
+  const idleAgents = getAgentsByState(agents, "idle");
+  const rendered = isTmuxFormatEnabled()
+    ? formatTmuxSummary(summary, runningAgents, idleAgents)
+    : formatPlainSummary(summary);
   if (rendered.length === 0) {
     return "";
   }
