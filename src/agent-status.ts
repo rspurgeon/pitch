@@ -794,9 +794,17 @@ const defaultDependencies: AgentStatusDependencies = {
 async function listRemoteAgentStatusSourceSummaries(
   dependencyOverrides: Partial<AgentStatusDependencies> = {},
 ): Promise<AgentStatusSourceSummary[]> {
+  const dependencies: AgentStatusDependencies = {
+    ...defaultDependencies,
+    ...dependencyOverrides,
+  };
+  const now = dependencies.now();
   const remoteSources = await listRemoteAgentStatusSourceData(dependencyOverrides);
   const summaries = remoteSources.map((remoteSource) => {
-    if (remoteSource.summary === null) {
+    if (
+      remoteSource.summary === null ||
+      !isFreshRemoteSummary(remoteSource.summary, now)
+    ) {
       return null;
     }
 

@@ -91,6 +91,49 @@ function getAgentsByState(
   return agents.filter((agent) => agent.state === state);
 }
 
+function summarizeAgents(agents: AgentViewEntry[]): AgentStatusSummary {
+  const counts = {
+    running: 0,
+    question: 0,
+    idle: 0,
+    error: 0,
+  };
+
+  for (const agent of agents) {
+    counts[agent.state] += 1;
+  }
+
+  return {
+    generated_at: new Date().toISOString(),
+    active_sessions: agents.length,
+    counts,
+  };
+}
+
+function agentMatchesTmuxContext(
+  agent: AgentViewEntry,
+  context: StatusRightInput,
+): boolean {
+  if (context.tmuxSession === undefined && context.tmuxWindow === undefined) {
+    return true;
+  }
+
+  const sessionName = agent.tmux?.session_name ?? agent.tmux_session_name;
+  const windowName = agent.tmux?.window_name ?? agent.tmux_window_name;
+
+  if (
+    context.tmuxSession !== undefined && sessionName !== context.tmuxSession
+  ) {
+    return false;
+  }
+
+  if (context.tmuxWindow !== undefined && windowName !== context.tmuxWindow) {
+    return false;
+  }
+
+  return true;
+}
+
 function buildAgentStateSegments(
   agents: AgentViewEntry[],
   color: string,
@@ -203,18 +246,26 @@ export async function renderStatusRight(
   };
 
   const summary = await dependencies.refreshAgentStatusSummary();
-  if (summary.active_sessions === 0) {
+  const shouldScopeToTmuxContext =
+    input.tmuxSession !== undefined || input.tmuxWindow !== undefined;
+  const agents = (isTmuxFormatEnabled() || shouldScopeToTmuxContext)
+    ? (await dependencies.getAgentsView()).agents.filter((agent) =>
+        agentMatchesTmuxContext(agent, input),
+      )
+    : [];
+  const scopedSummary = shouldScopeToTmuxContext
+    ? summarizeAgents(agents)
+    : summary;
+
+  if (scopedSummary.active_sessions === 0) {
     return "";
   }
 
-  const agents = isTmuxFormatEnabled()
-    ? (await dependencies.getAgentsView()).agents
-    : [];
   const runningAgents = getAgentsByState(agents, "running");
   const idleAgents = getAgentsByState(agents, "idle");
   const rendered = isTmuxFormatEnabled()
-    ? formatTmuxSummary(summary, runningAgents, idleAgents)
-    : formatPlainSummary(summary);
+    ? formatTmuxSummary(scopedSummary, runningAgents, idleAgents)
+    : formatPlainSummary(scopedSummary);
   if (rendered.length === 0) {
     return "";
   }

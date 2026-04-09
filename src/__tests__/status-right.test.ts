@@ -281,4 +281,88 @@ describe("renderStatusRight", () => {
       }
     }
   });
+
+  it("filters tmux output only when explicit tmux context is provided", async () => {
+    const previousFormat = process.env.PITCH_STATUS_RIGHT_FORMAT;
+    process.env.PITCH_STATUS_RIGHT_FORMAT = "tmux";
+
+    try {
+      await expect(
+        renderStatusRight(
+          {
+            tmuxSession: "pitch",
+            tmuxWindow: "pitch",
+          },
+          {
+            refreshAgentStatusSummary: vi.fn(async () => ({
+              generated_at: "2026-04-08T12:00:00.000Z",
+              active_sessions: 3,
+              counts: {
+                running: 1,
+                question: 0,
+                idle: 2,
+                error: 0,
+              },
+            })),
+            getAgentsView: vi.fn(async (): Promise<AgentsView> => ({
+              summary: {
+                generated_at: "2026-04-08T12:00:00.000Z",
+                active_sessions: 2,
+                counts: {
+                  running: 0,
+                  question: 0,
+                  idle: 2,
+                  error: 0,
+                },
+              },
+              agents: [
+                {
+                  agent_type: "codex",
+                  state: "idle",
+                  session_id: "pitch-idle",
+                  session_key: "pitch-idle",
+                  last_event: "Stop",
+                  updated_at: "2026-04-08T12:00:00.000Z",
+                  tmux: {
+                    session_name: "pitch",
+                    window_name: "pitch",
+                    pane_index: 1,
+                    pane_id: "%19",
+                    pane_tty: "pts/20",
+                    current_command: "codex",
+                    current_path: "/tmp/pitch",
+                  },
+                },
+                {
+                  agent_type: "codex",
+                  state: "idle",
+                  session_id: "flog-idle",
+                  session_key: "flog-idle",
+                  last_event: "Stop",
+                  updated_at: "2026-04-08T11:59:00.000Z",
+                  tmux: {
+                    session_name: "flog",
+                    window_name: "flog",
+                    pane_index: 1,
+                    pane_id: "%12",
+                    pane_tty: "pts/13",
+                    current_command: "codex",
+                    current_path: "/tmp/flog",
+                  },
+                },
+              ],
+            })),
+          },
+        ),
+      ).resolves.toBe(
+        "#[fg=#B7BDB5]🤖#[default] #[fg=#61AFEF]●pitch#[default]",
+      );
+    } finally {
+      if (previousFormat === undefined) {
+        delete process.env.PITCH_STATUS_RIGHT_FORMAT;
+      } else {
+        process.env.PITCH_STATUS_RIGHT_FORMAT = previousFormat;
+      }
+    }
+  });
 });

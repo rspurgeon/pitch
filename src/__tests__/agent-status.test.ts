@@ -111,6 +111,7 @@ async function writeVmSummary(
     error: number;
   },
   activeSessions: number,
+  generatedAt: string = "2026-04-08T12:00:00.000Z",
 ): Promise<void> {
   const environment = config.environments["sandbox-vm"];
   if (environment?.kind !== "vm-ssh") {
@@ -124,7 +125,7 @@ async function writeVmSummary(
 
   await writeAgentStatusSummary(
     {
-      generated_at: "2026-04-08T12:00:00.000Z",
+      generated_at: generatedAt,
       active_sessions: activeSessions,
       counts,
     },
@@ -531,6 +532,19 @@ describe("refreshAgentStatusSummary", () => {
 
     const summary = await refreshAgentStatusSummary(cacheDir, {
       listActiveCodexProcesses: vi.fn(async () => []),
+      loadConfig: vi.fn(
+        async (): Promise<PitchConfig> => ({
+          defaults: {
+            base_branch: "main",
+            worktree_root: "/tmp/worktrees",
+          },
+          bootstrap_prompts: {},
+          repos: {},
+          environments: {},
+          sandboxes: {},
+          agents: {},
+        }),
+      ),
       now: () => new Date("2026-04-08T12:00:00.000Z"),
     });
 
@@ -765,6 +779,47 @@ describe("getAgentStatusSnapshot", () => {
     });
 
     expect(snapshot.summary.active_sessions).toBe(0);
+    expect(snapshot.sessions).toEqual([]);
+  });
+
+  it("ignores stale remote summaries in the aggregate snapshot", async () => {
+    const cacheDir = await makeTempCacheDir();
+    const sharedHostPath = await makeTempCacheDir();
+    const config = makeConfigWithVmEnvironment(sharedHostPath);
+
+    await writeVmSummary(
+      config,
+      {
+        running: 1,
+        question: 0,
+        idle: 0,
+        error: 0,
+      },
+      1,
+      "2026-04-08T10:00:00.000Z",
+    );
+
+    const snapshot = await getAgentStatusSnapshot(cacheDir, {
+      loadConfig: vi.fn(async () => config),
+      now: () => new Date("2026-04-09T12:00:00.000Z"),
+    });
+
+    expect(snapshot.summary.active_sessions).toBe(0);
+    expect(snapshot.sources).toEqual([
+      {
+        source: "host",
+        summary: {
+          generated_at: "2026-04-09T12:00:00.000Z",
+          active_sessions: 0,
+          counts: {
+            running: 0,
+            question: 0,
+            idle: 0,
+            error: 0,
+          },
+        },
+      },
+    ]);
     expect(snapshot.sessions).toEqual([]);
   });
 });
