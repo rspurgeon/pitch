@@ -510,6 +510,24 @@ async function pickAgentSessionId(
   }
 }
 
+async function confirmAction(
+  prompt: string,
+  dependencies: CliDependencies,
+): Promise<boolean> {
+  const rl = createInterface({
+    input: dependencies.stdin,
+    output: dependencies.stdout as NodeJS.WritableStream,
+  });
+
+  try {
+    const response = await rl.question(prompt);
+    const normalized = response.trim().toLowerCase();
+    return normalized === "y" || normalized === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
 function buildAgentErrorInput(flags: Map<string, FlagValue>): MarkAgentErrorInput {
   const agentType = readStringFlag(flags, "agent-type");
   if (agentType !== "codex" && agentType !== "claude") {
@@ -748,7 +766,7 @@ function buildHelpText(): string {
     "  pitch get <name>",
     "  pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--sync]",
     "  pitch close <name>",
-    "  pitch delete <name> [--force] [-d|--delete-branch-if-empty]",
+    "  pitch delete <name> [--force]",
     "  pitch status-right [--separator TEXT]",
     "  pitch completion zsh",
     "  pitch workspace <command> ...",
@@ -906,8 +924,6 @@ function buildZshCompletionScript(): string {
     "      _arguments -s -S \\",
     "        '--name[Workspace name]:workspace:_pitch_workspaces' \\",
     "        '--force[Delete even if the worktree has local changes]' \\",
-    "        '-d[Delete the local branch only when it is unchanged from base and not pushed]' \\",
-    "        '--delete-branch-if-empty[Delete the local branch only when it is unchanged from base and not pushed]' \\",
     "        '--json[Emit JSON]' \\",
     "        '--help[Show help]' \\",
     "        '1:workspace:_pitch_workspaces'",
@@ -1152,17 +1168,57 @@ async function executeCommand(
     case "delete": {
       const config = await dependencies.loadConfig();
       const warnings: string[] = [];
-      return {
-        command: parsed.verb,
-        result: await dependencies.deleteWorkspace(
-          buildDeleteInput(parsed.flags, parsed.positionals),
-          config,
-          {
-            reportWarning: (warning) => warnings.push(warning),
-          },
-        ),
-        warnings,
-      };
+      const input = buildDeleteInput(parsed.flags, parsed.positionals);
+
+      try {
+        return {
+          command: parsed.verb,
+          result: await dependencies.deleteWorkspace(
+            input,
+            config,
+            {
+              reportWarning: (warning) => warnings.push(warning),
+            },
+          ),
+          warnings,
+        };
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        const shouldPromptForForceCleanup =
+          input.force !== true &&
+          message.includes("Failed to remove worktree for") &&
+          message.includes("Retry with --force to remove the worktree directory directly.");
+
+        if (
+          !shouldPromptForForceCleanup ||
+          readBooleanFlag(parsed.flags, "json") === true
+        ) {
+          throw error;
+        }
+
+        const confirmed = await confirmAction(
+          `Worktree cleanup via git failed for ${input.name}. Force remove the worktree directory instead? [y/N] `,
+          dependencies,
+        );
+        if (!confirmed) {
+          throw error;
+        }
+
+        return {
+          command: parsed.verb,
+          result: await dependencies.deleteWorkspace(
+            {
+              ...input,
+              force: true,
+            },
+            config,
+            {
+              reportWarning: (warning) => warnings.push(warning),
+            },
+          ),
+          warnings,
+        };
+      }
     }
     case "status-right":
       ensureNoExtraPositionals(parsed.positionals, parsed.verb);

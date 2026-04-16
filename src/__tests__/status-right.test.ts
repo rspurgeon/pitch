@@ -172,7 +172,7 @@ describe("renderStatusRight", () => {
           },
         ),
       ).resolves.toBe(
-        "#[fg=#B7BDB5]🤖#[default] #[fg=#7DAF7D]●pitch:pr-42#[default] #[fg=#7DAF7D]|#[default] #[fg=#7DAF7D]●kongctl#[default] #[fg=#61AFEF]●flog#[default] #[fg=#E5C07B]?1#[default]",
+        "#[fg=#B7BDB5]🤖#[default] #[fg=#7DAF7D]●kongctl#[default] #[fg=#7DAF7D]|#[default] #[fg=#7DAF7D]●pitch:pr-42#[default] #[fg=#B7BDB5]‖#[default] #[fg=#61AFEF]●flog#[default] #[fg=#B7BDB5]‖#[default] #[fg=#E5C07B]?1#[default]",
       );
     } finally {
       Date.now = originalDateNow;
@@ -270,7 +270,7 @@ describe("renderStatusRight", () => {
           },
         ),
       ).resolves.toBe(
-        "#[fg=#B7BDB5]🤖#[default] #[fg=#7DAF7D]·1#[default] #[fg=#61AFEF]●1#[default]",
+        "#[fg=#B7BDB5]🤖#[default] #[fg=#7DAF7D]·1#[default] #[fg=#B7BDB5]‖#[default] #[fg=#61AFEF]●1#[default]",
       );
     } finally {
       Date.now = originalDateNow;
@@ -358,6 +358,107 @@ describe("renderStatusRight", () => {
         "#[fg=#B7BDB5]🤖#[default] #[fg=#61AFEF]●pitch#[default]",
       );
     } finally {
+      if (previousFormat === undefined) {
+        delete process.env.PITCH_STATUS_RIGHT_FORMAT;
+      } else {
+        process.env.PITCH_STATUS_RIGHT_FORMAT = previousFormat;
+      }
+    }
+  });
+
+  it("renders a divider between running and idle agent groups", async () => {
+    const previousFormat = process.env.PITCH_STATUS_RIGHT_FORMAT;
+    const originalDateNow = Date.now;
+    process.env.PITCH_STATUS_RIGHT_FORMAT = "tmux";
+    Date.now = () => 2_000;
+
+    try {
+      await expect(
+        renderStatusRight(
+          {},
+          {
+            refreshAgentStatusSummary: vi.fn(async () => ({
+              generated_at: "2026-04-08T12:00:00.000Z",
+              active_sessions: 3,
+              counts: {
+                running: 1,
+                question: 0,
+                idle: 2,
+                error: 0,
+              },
+            })),
+            getAgentsView: vi.fn(async (): Promise<AgentsView> => ({
+              summary: {
+                generated_at: "2026-04-08T12:00:00.000Z",
+                active_sessions: 3,
+                counts: {
+                  running: 1,
+                  question: 0,
+                  idle: 2,
+                  error: 0,
+                },
+              },
+              agents: [
+                {
+                  agent_type: "codex",
+                  state: "running",
+                  session_id: "running-1",
+                  session_key: "running-1",
+                  last_event: "UserPromptSubmit",
+                  updated_at: "2026-04-08T12:00:00.000Z",
+                  tmux: {
+                    session_name: "kongctl",
+                    window_name: "gh-782",
+                    pane_index: 0,
+                    pane_id: "%1",
+                    pane_tty: "pts/21",
+                    current_command: "codex",
+                    current_path: "/tmp/kongctl",
+                  },
+                },
+                {
+                  agent_type: "codex",
+                  state: "idle",
+                  session_id: "idle-1",
+                  session_key: "idle-1",
+                  last_event: "Stop",
+                  updated_at: "2026-04-08T11:59:00.000Z",
+                  tmux: {
+                    session_name: "pitch",
+                    window_name: "pitch",
+                    pane_index: 1,
+                    pane_id: "%2",
+                    pane_tty: "pts/22",
+                    current_command: "codex",
+                    current_path: "/tmp/pitch",
+                  },
+                },
+                {
+                  agent_type: "codex",
+                  state: "idle",
+                  session_id: "idle-2",
+                  session_key: "idle-2",
+                  last_event: "Stop",
+                  updated_at: "2026-04-08T11:58:00.000Z",
+                  tmux: {
+                    session_name: "flog",
+                    window_name: "flog",
+                    pane_index: 2,
+                    pane_id: "%3",
+                    pane_tty: "pts/23",
+                    current_command: "codex",
+                    current_path: "/tmp/flog",
+                  },
+                },
+              ],
+            })),
+          },
+        ),
+      ).resolves.toBe(
+        "#[fg=#B7BDB5]🤖#[default] #[fg=#7DAF7D]●kongctl:gh-782#[default] #[fg=#B7BDB5]‖#[default] #[fg=#61AFEF]●flog#[default] #[fg=#61AFEF]|#[default] #[fg=#61AFEF]●pitch#[default]",
+      );
+    } finally {
+      Date.now = originalDateNow;
       if (previousFormat === undefined) {
         delete process.env.PITCH_STATUS_RIGHT_FORMAT;
       } else {

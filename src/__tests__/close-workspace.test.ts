@@ -112,6 +112,7 @@ function makeDependencies(
     removeCodexTrustedPath: vi.fn(
       async (_input: EnsureCodexTrustedPathInput) => undefined,
     ),
+    removeWorktreeDirectory: vi.fn(async () => undefined),
     removeWorktree: vi.fn(async () => ({
       branch: "gh-42-fix-bug",
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
@@ -363,7 +364,12 @@ describe("delete workspace", () => {
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       force: undefined,
     });
-    expect(dependencies.deleteBranchIfEmpty).not.toHaveBeenCalled();
+    expect(dependencies.removeWorktreeDirectory).not.toHaveBeenCalled();
+    expect(dependencies.deleteBranchIfEmpty).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      branch: "gh-42-fix-bug",
+      base_branch: "main",
+    });
     expect(dependencies.removeCodexTrustedPath).toHaveBeenCalled();
     expect(dependencies.deleteOpencodeConfig).toHaveBeenCalledWith(
       "gh-42-fix-bug",
@@ -501,9 +507,94 @@ describe("delete workspace", () => {
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
       force: true,
     });
+    expect(dependencies.removeWorktreeDirectory).not.toHaveBeenCalled();
   });
 
-  it("deletes a local branch when requested and it is safely empty", async () => {
+  it("continues deletion when the worktree path is an orphaned non-git directory", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      isWorktreeDirty: vi.fn(async () => {
+        throw new GitWorktreeError(
+          "COMMAND_FAILED",
+          "Failed to inspect worktree status at /tmp/worktrees/gh-42-fix-bug\nfatal: not a git repository",
+        );
+      }),
+    });
+
+    await deleteWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.removeWorktree).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      workspace_name: "gh-42-fix-bug",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      force: undefined,
+    });
+  });
+
+  it("falls back to direct directory removal when force is set and git cleanup fails", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      removeWorktree: vi.fn(async () => {
+        throw new GitWorktreeError(
+          "COMMAND_FAILED",
+          "git worktree remove failed: Permission denied",
+        );
+      }),
+    });
+
+    await deleteWorkspace(
+      {
+        name: "gh-42-fix-bug",
+        force: true,
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.removeWorktreeDirectory).toHaveBeenCalledWith(
+      "/tmp/worktrees/gh-42-fix-bug",
+      {
+        recursive: true,
+        force: true,
+      },
+    );
+    expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith(
+      "gh-42-fix-bug",
+    );
+  });
+
+  it("suggests force cleanup when git worktree removal fails without force", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      removeWorktree: vi.fn(async () => {
+        throw new GitWorktreeError(
+          "COMMAND_FAILED",
+          "git worktree remove failed: Permission denied",
+        );
+      }),
+    });
+
+    await expect(
+      deleteWorkspace(
+        {
+          name: "gh-42-fix-bug",
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow(
+      "Retry with --force to remove the worktree directory directly.",
+    );
+    expect(dependencies.removeWorktreeDirectory).not.toHaveBeenCalled();
+  });
+
+  it("deletes a local branch automatically when it is safely empty", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
       readWorkspaceRecord: vi.fn(async () =>
@@ -525,7 +616,6 @@ describe("delete workspace", () => {
     await deleteWorkspace(
       {
         name: "spike-auth",
-        delete_branch_if_empty: true,
       },
       config,
       dependencies,
@@ -538,7 +628,7 @@ describe("delete workspace", () => {
     });
   });
 
-  it("warns and preserves the branch when delete-branch-if-empty is not safe", async () => {
+  it("warns and preserves the branch when automatic branch deletion is not safe", async () => {
     const config = makeConfig();
     const warnings: string[] = [];
     const dependencies = makeDependencies({
@@ -563,7 +653,6 @@ describe("delete workspace", () => {
     await deleteWorkspace(
       {
         name: "spike-auth",
-        delete_branch_if_empty: true,
       },
       config,
       {
@@ -578,9 +667,8 @@ describe("delete workspace", () => {
     expect(dependencies.deleteWorkspaceRecord).toHaveBeenCalledWith("spike-auth");
   });
 
-  it("warns and skips branch deletion for PR workspaces", async () => {
+  it("attempts safe branch deletion for PR workspaces too", async () => {
     const config = makeConfig();
-    const warnings: string[] = [];
     const dependencies = makeDependencies({
       readWorkspaceRecord: vi.fn(async () =>
         makeWorkspaceRecord({
@@ -593,24 +681,24 @@ describe("delete workspace", () => {
           tmux_window: "pr-700-default-aas",
         }),
       ),
+      deleteBranchIfEmpty: vi.fn(async () => ({
+        deleted: true,
+      })),
     });
 
     await deleteWorkspace(
       {
         name: "pr-700-default-aas",
-        delete_branch_if_empty: true,
       },
       config,
-      {
-        ...dependencies,
-        reportWarning: (warning) => warnings.push(warning),
-      },
+      dependencies,
     );
 
-    expect(dependencies.deleteBranchIfEmpty).not.toHaveBeenCalled();
-    expect(warnings).toEqual([
-      "Skipping local branch deletion for feature/default-aas: PR workspaces do not delete branches automatically.",
-    ]);
+    expect(dependencies.deleteBranchIfEmpty).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      branch: "feature/default-aas",
+      base_branch: "main",
+    });
   });
 
   it("treats a missing worktree as already cleaned up", async () => {

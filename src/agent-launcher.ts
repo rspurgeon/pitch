@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import type {
@@ -92,6 +92,7 @@ interface SandboxWrappedCommand {
 }
 
 type ExecutableReadDirectoryResolver = (agentBinary: string) => string[];
+type PathExistsResolver = (path: string) => boolean;
 
 export function resolveAgentEnv(
   config: PitchConfig,
@@ -155,12 +156,19 @@ function defaultExecutableReadDirectoryResolver(
 
 let executableReadDirectoryResolver: ExecutableReadDirectoryResolver =
   defaultExecutableReadDirectoryResolver;
+let pathExistsResolver: PathExistsResolver = existsSync;
 
 export function setExecutableReadDirectoryResolverForTests(
   resolver: ExecutableReadDirectoryResolver | null,
 ): void {
   executableReadDirectoryResolver =
     resolver ?? defaultExecutableReadDirectoryResolver;
+}
+
+export function setPathExistsResolverForTests(
+  resolver: PathExistsResolver | null,
+): void {
+  pathExistsResolver = resolver ?? existsSync;
 }
 
 function withoutReservedArgs(
@@ -259,6 +267,42 @@ function buildAdditionalPathArgs(
   return [];
 }
 
+function extractAdditionalReadWritePaths(
+  agentType: SupportedAgentType,
+  args: string[],
+): string[] {
+  if (agentType !== "claude" && agentType !== "codex") {
+    return [];
+  }
+
+  const paths: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === undefined) {
+      continue;
+    }
+
+    if (arg.startsWith("--add-dir=")) {
+      const path = arg.slice("--add-dir=".length);
+      if (path.length > 0) {
+        paths.push(path);
+      }
+      continue;
+    }
+
+    if (arg === "--add-dir") {
+      const path = args[index + 1];
+      if (path !== undefined && path.length > 0) {
+        paths.push(path);
+        index += 1;
+      }
+    }
+  }
+
+  return [...new Set(paths)];
+}
+
 function wrapBaseCommand(
   agentType: SupportedAgentType,
   command: string[],
@@ -339,6 +383,7 @@ function resolveSandboxReadablePaths(
   agentType: SupportedAgentType,
   environment: ResolvedExecutionEnvironment,
   sandbox: SandboxConfig | null,
+  additionalPaths: string[],
 ): string[] {
   if (sandbox === null) {
     return [];
@@ -355,23 +400,33 @@ function resolveSandboxReadablePaths(
           `${homedir()}/.local/share/mise/bin`,
         ];
 
-  return [...new Set([...executablePaths, ...codexPaths])];
+  const staticPaths = [...new Set([...executablePaths, ...codexPaths])]
+    .filter((path) => pathExistsResolver(path));
+  const permittedAdditionalPaths = [...new Set(additionalPaths)]
+    .filter((path) => environment.kind === "vm-ssh" || pathExistsResolver(path));
+
+  return [...new Set([...staticPaths, ...permittedAdditionalPaths])];
 }
 
 function resolveSandboxWritablePaths(
   agentType: SupportedAgentType,
   environment: ResolvedExecutionEnvironment,
   sandbox: SandboxConfig | null,
+  additionalPaths: string[],
 ): string[] {
   if (sandbox === null) {
     return [];
   }
 
-  if (agentType !== "codex") {
-    return [];
-  }
+  const staticPaths =
+    agentType !== "codex"
+      ? []
+      : [`${homedir()}/.cache/mise`]
+          .filter((path) => pathExistsResolver(path));
+  const permittedAdditionalPaths = [...new Set(additionalPaths)]
+    .filter((path) => environment.kind === "vm-ssh" || pathExistsResolver(path));
 
-  return [`${homedir()}/.cache/mise`];
+  return [...new Set([...staticPaths, ...permittedAdditionalPaths])];
 }
 
 function mergePathWithToolchainDefaults(path: string | undefined): string {
@@ -458,7 +513,7 @@ function getCodexShellEnvironmentArgs(
   return [
     ...args,
     "-c",
-    `shell_environment_policy.set={PATH=${toTomlBasicString(path)}}`,
+    `shell_environment_policy.set.PATH=${toTomlBasicString(path)}`,
   ];
 }
 
@@ -712,15 +767,21 @@ function buildClaudeStartCommand(
   ];
 
   const baseCommand = wrapBaseCommand("claude", command);
+  const sandboxAdditionalPaths = extractAdditionalReadWritePaths(
+    "claude",
+    layeredArgs,
+  );
   const sandboxReadablePaths = resolveSandboxReadablePaths(
     "claude",
     environment,
     sandbox,
+    sandboxAdditionalPaths,
   );
   const sandboxWritablePaths = resolveSandboxWritablePaths(
     "claude",
     environment,
     sandbox,
+    sandboxAdditionalPaths,
   );
   const sandboxCommand = wrapSandboxCommand(
     "claude",
@@ -769,15 +830,21 @@ function buildClaudeResumeCommand(
       ? resolved.env
       : mapAgentEnvForEnvironment(resolved.env, environment, workspacePaths);
   const baseCommand = wrapBaseCommand("claude", command);
+  const sandboxAdditionalPaths = extractAdditionalReadWritePaths(
+    "claude",
+    resolved.args,
+  );
   const sandboxReadablePaths = resolveSandboxReadablePaths(
     "claude",
     environment,
     sandbox,
+    sandboxAdditionalPaths,
   );
   const sandboxWritablePaths = resolveSandboxWritablePaths(
     "claude",
     environment,
     sandbox,
+    sandboxAdditionalPaths,
   );
   const sandboxCommand = wrapSandboxCommand(
     "claude",
@@ -846,15 +913,21 @@ function buildCodexStartCommand(
   ];
 
   const baseCommand = wrapBaseCommand("codex", command);
+  const sandboxAdditionalPaths = extractAdditionalReadWritePaths(
+    "codex",
+    layeredArgs,
+  );
   const sandboxReadablePaths = resolveSandboxReadablePaths(
     "codex",
     environment,
     sandbox,
+    sandboxAdditionalPaths,
   );
   const sandboxWritablePaths = resolveSandboxWritablePaths(
     "codex",
     environment,
     sandbox,
+    sandboxAdditionalPaths,
   );
   const sandboxCommand = wrapSandboxCommand(
     "codex",
@@ -912,15 +985,21 @@ function buildCodexResumeCommand(
     input.session_id,
   ];
   const baseCommand = wrapBaseCommand("codex", command);
+  const sandboxAdditionalPaths = extractAdditionalReadWritePaths(
+    "codex",
+    resolved.args,
+  );
   const sandboxReadablePaths = resolveSandboxReadablePaths(
     "codex",
     environment,
     sandbox,
+    sandboxAdditionalPaths,
   );
   const sandboxWritablePaths = resolveSandboxWritablePaths(
     "codex",
     environment,
     sandbox,
+    sandboxAdditionalPaths,
   );
   const sandboxCommand = wrapSandboxCommand(
     "codex",
@@ -1001,11 +1080,13 @@ function buildOpencodeStartCommand(
     "opencode",
     environment,
     sandbox,
+    [],
   );
   const sandboxWritablePaths = resolveSandboxWritablePaths(
     "opencode",
     environment,
     sandbox,
+    [],
   );
   const sandboxCommand = wrapSandboxCommand(
     "opencode",
@@ -1094,11 +1175,13 @@ function buildOpencodeResumeCommand(
     "opencode",
     environment,
     sandbox,
+    [],
   );
   const sandboxWritablePaths = resolveSandboxWritablePaths(
     "opencode",
     environment,
     sandbox,
+    [],
   );
   const sandboxCommand = wrapSandboxCommand(
     "opencode",

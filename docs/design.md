@@ -203,10 +203,11 @@ Deletes a workspace record and, when applicable, its git
 worktree. Dirty worktrees are refused unless `--force` is
 set. If multiple Pitch workspaces share one PR checkout,
 Pitch deletes only the targeted workspace record and keeps
-the shared worktree. If `delete_branch_if_empty` is set,
-Pitch also deletes the local branch for non-PR workspaces
-only when the branch has no commits outside `base_branch`
-and no remote-tracking ref.
+the shared worktree. Pitch also attempts to delete the
+local branch automatically when it appears safe: the
+branch is not the base branch, is not checked out in
+another worktree, has no remote-tracking ref, and has no
+commits outside `base_branch`.
 
 ---
 
@@ -519,6 +520,14 @@ Repo `additional_paths` are translated per agent type:
   `~/.pitch/opencode/` and referenced via
   `OPENCODE_CONFIG` on both create and fresh relaunch.
 
+When a repo is launched under `nono`, Pitch also threads
+the effective Claude/Codex `--add-dir` paths into the
+outer sandbox as both `--read` and `--write`
+permissions. This keeps the outer sandbox aligned with
+the agent-visible external directory list, including
+repo-level `additional_paths` and any configured
+agent-specific `--add-dir` overrides.
+
 Bootstrap prompt templates resolve in this order:
 
 1. `repos.<repo>.bootstrap_prompts.<issue|pr>`
@@ -676,9 +685,6 @@ workspace record and leaves the shared worktree in place.
 - `name` (string, required) — workspace name
 - `force` (boolean, optional) — remove a dirty worktree
   anyway
-- `delete_branch_if_empty` (boolean, optional) — delete
-  the local branch only when it is unchanged from
-  `base_branch` and appears unpushed
 
 **Returns:** Final closed workspace record
 

@@ -725,6 +725,60 @@ describe("runCli", () => {
     );
   });
 
+  it("prompts to retry delete with force when git cleanup fails", async () => {
+    const dependencies = makeDependencies({
+      stdin: Readable.from(["y\n"]) as NodeJS.ReadableStream,
+      deleteWorkspace: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new Error(
+            "Failed to remove worktree for pr-797-attributes: Git command failed in /home/rspurgeon/dev/kong/kongctl: git worktree remove /home/rspurgeon/.local/share/worktrees/kong/kongctl/pr-797\nRetry with --force to remove the worktree directory directly.",
+          ),
+        )
+        .mockResolvedValueOnce(makeWorkspaceRecord({
+          name: "pr-797-attributes",
+          worktree_name: "pr-797",
+          source_kind: "pr",
+          source_number: 797,
+          branch: "branch-797",
+          worktree_path: "/tmp/worktrees/pr-797",
+          tmux_window: "pr-797-attributes",
+          status: "closed",
+        })),
+    });
+
+    const exitCode = await runCli(
+      ["delete", "pr-797-attributes"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.deleteWorkspace).toHaveBeenNthCalledWith(
+      1,
+      {
+        name: "pr-797-attributes",
+        force: undefined,
+        delete_branch_if_empty: undefined,
+      },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+    expect(dependencies.deleteWorkspace).toHaveBeenNthCalledWith(
+      2,
+      {
+        name: "pr-797-attributes",
+        force: true,
+        delete_branch_if_empty: undefined,
+      },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
   it("passes an explicit session id through create", async () => {
     const dependencies = makeDependencies();
 
@@ -960,7 +1014,7 @@ describe("runCli", () => {
       "pitch [create] --name NAME [--branch BRANCH] [--session-id ID] [options]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch delete <name> [--force] [-d|--delete-branch-if-empty]",
+      "pitch delete <name> [--force]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--sync]",
@@ -1007,7 +1061,7 @@ describe("runCli", () => {
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "if [[ \"${words[3]}\" == --* ]]; then",
     );
-    expect(dependencies.stdoutBuffer.join("")).toContain(
+    expect(dependencies.stdoutBuffer.join("")).not.toContain(
       "'-d[Delete the local branch only when it is unchanged from base and not pushed]'",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(

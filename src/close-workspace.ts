@@ -1,3 +1,4 @@
+import { rm } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -55,6 +56,7 @@ export interface WorkspaceLifecycleDependencies {
   listWorkspaceRecords: typeof listWorkspaceRecords;
   readWorkspaceRecord: typeof readWorkspaceRecord;
   removeCodexTrustedPath: typeof removeCodexTrustedPath;
+  removeWorktreeDirectory: typeof rm;
   removeWorktree: typeof removeWorktree;
   sendKeysToPane: typeof sendKeysToPane;
   writeWorkspaceRecord: typeof writeWorkspaceRecord;
@@ -76,6 +78,7 @@ const defaultDependencies: WorkspaceLifecycleDependencies = {
   listWorkspaceRecords,
   readWorkspaceRecord,
   removeCodexTrustedPath,
+  removeWorktreeDirectory: rm,
   removeWorktree,
   sendKeysToPane,
   writeWorkspaceRecord,
@@ -172,6 +175,14 @@ function buildClosedWorkspaceRecord(
 
 function isMissingWorktreeError(error: unknown): boolean {
   return error instanceof GitWorktreeError && error.code === "WORKTREE_MISSING";
+}
+
+function isNonRepositoryWorktreeInspectionError(error: unknown): boolean {
+  return (
+    error instanceof GitWorktreeError &&
+    error.code === "COMMAND_FAILED" &&
+    error.message.includes("not a git repository")
+  );
 }
 
 function sharesWorktree(
@@ -414,6 +425,10 @@ async function ensureWorktreeDeletable(
   try {
     isDirty = await dependencies.isWorktreeDirty(workspace.worktree_path);
   } catch (error: unknown) {
+    if (isNonRepositoryWorktreeInspectionError(error)) {
+      return;
+    }
+
     throw new DeleteWorkspaceError(
       `Failed to inspect worktree for ${workspace.name}: ${formatError(error)}`,
     );
@@ -439,6 +454,22 @@ async function deleteWorkspaceState(
   }
 }
 
+async function forceRemoveWorktreeDirectory(
+  workspace: WorkspaceRecord,
+  dependencies: WorkspaceLifecycleDependencies,
+): Promise<void> {
+  try {
+    await dependencies.removeWorktreeDirectory(workspace.worktree_path, {
+      recursive: true,
+      force: true,
+    });
+  } catch (error: unknown) {
+    throw new DeleteWorkspaceError(
+      `Failed to remove worktree directory for ${workspace.name}: ${formatError(error)}`,
+    );
+  }
+}
+
 async function maybeDeleteWorkspaceBranch(
   workspace: WorkspaceRecord,
   input: DeleteWorkspaceInput,
@@ -446,16 +477,7 @@ async function maybeDeleteWorkspaceBranch(
   hasSharedReferences: boolean,
   dependencies: WorkspaceLifecycleDependencies,
 ): Promise<void> {
-  if (input.delete_branch_if_empty !== true) {
-    return;
-  }
-
-  if (workspace.source_kind === "pr") {
-    reportWarnings(dependencies.reportWarning, [
-      `Skipping local branch deletion for ${workspace.branch}: PR workspaces do not delete branches automatically.`,
-    ]);
-    return;
-  }
+  void input;
 
   if (hasSharedReferences) {
     reportWarnings(dependencies.reportWarning, [
@@ -582,9 +604,11 @@ export async function deleteWorkspace(
       ...(input.force === true ? { force: true } : {}),
     });
   } catch (error: unknown) {
-    if (!isMissingWorktreeError(error)) {
+    if (input.force === true) {
+      await forceRemoveWorktreeDirectory(existingWorkspace, dependencies);
+    } else if (!isMissingWorktreeError(error)) {
       throw new DeleteWorkspaceError(
-        `Failed to remove worktree for ${input.name}: ${formatError(error)}`,
+        `Failed to remove worktree for ${input.name}: ${formatError(error)}\nRetry with --force to remove the worktree directory directly.`,
       );
     }
   }

@@ -8,15 +8,16 @@ import {
   codexLauncher,
   opencodeLauncher,
   setExecutableReadDirectoryResolverForTests,
+  setPathExistsResolverForTests,
 } from "../agent-launcher.js";
 
 function buildCodexPathOverride(path: string): string {
-  return `shell_environment_policy.set={PATH="${path
+  return `shell_environment_policy.set.PATH="${path
     .replaceAll("\\", "\\\\")
     .replaceAll('"', '\\"')
     .replaceAll("\n", "\\n")
     .replaceAll("\r", "\\r")
-    .replaceAll("\t", "\\t")}"}`;
+    .replaceAll("\t", "\\t")}"`;
 }
 
 function makeConfig(): PitchConfig {
@@ -194,6 +195,7 @@ function makeConfig(): PitchConfig {
 describe("agent launcher", () => {
   afterEach(() => {
     setExecutableReadDirectoryResolverForTests(null);
+    setPathExistsResolverForTests(null);
   });
 
   it("builds a Claude start command with generated session id", () => {
@@ -661,6 +663,7 @@ describe("agent launcher", () => {
     setExecutableReadDirectoryResolverForTests(() => [
       "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
     ]);
+    setPathExistsResolverForTests(() => true);
 
     const command = buildAgentStartCommand({
       config,
@@ -690,8 +693,16 @@ describe("agent launcher", () => {
       "/home/rspurgeon/.local/bin",
       "--read",
       "/home/rspurgeon/.local/share/mise/bin",
+      "--read",
+      "/home/rspurgeon/go",
+      "--read",
+      "/home/rspurgeon/.config/kongctl",
       "--write",
       "/home/rspurgeon/.cache/mise",
+      "--write",
+      "/home/rspurgeon/go",
+      "--write",
+      "/home/rspurgeon/.config/kongctl",
       "--network-profile",
       "docs-and-github",
       "--capability-elevation",
@@ -733,11 +744,82 @@ describe("agent launcher", () => {
     expect(command.agent_env.GOFLAGS).toBe(undefined);
   });
 
+  it("threads Claude add-dir paths into nono read and write permissions", () => {
+    const config = makeConfig();
+    setExecutableReadDirectoryResolverForTests(() => []);
+    setPathExistsResolverForTests(() => true);
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "claude-personal",
+      repo: "kong/kongctl",
+      sandbox: "kongctl",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+      session_id: "claude-session",
+    });
+
+    expect(command.command).toEqual([
+      "nono",
+      "run",
+      "--profile",
+      "claude-code",
+      "--workdir",
+      "/tmp/worktree",
+      "--allow-cwd",
+      "--read",
+      "/home/rspurgeon/go",
+      "--write",
+      "/home/rspurgeon/go",
+      "--network-profile",
+      "docs-and-github",
+      "--capability-elevation",
+      "--rollback",
+      "--",
+      "claude",
+      "--model",
+      "opus",
+      "--add-dir",
+      "/home/rspurgeon/go",
+      "--session-id",
+      "claude-session",
+      "--name",
+      "gh-565-fix-validation",
+    ]);
+  });
+
+  it("skips nonexistent Codex sandbox read paths", () => {
+    const config = makeConfig();
+    setExecutableReadDirectoryResolverForTests(() => [
+      "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
+    ]);
+    setPathExistsResolverForTests((path) =>
+      path !== "/home/rspurgeon/.local/share/mise/bin"
+    );
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "codex",
+      repo: "kong/kongctl",
+      sandbox: "kongctl",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.command).not.toContain(
+      "/home/rspurgeon/.local/share/mise/bin",
+    );
+    expect(command.agent_env.PATH).toContain(
+      "/home/rspurgeon/.local/share/mise/bin",
+    );
+  });
+
   it("uses explicit sandbox profiles verbatim", () => {
     const config = makeConfig();
     setExecutableReadDirectoryResolverForTests(() => [
       "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
     ]);
+    setPathExistsResolverForTests(() => true);
 
     const command = buildAgentResumeCommand({
       config,
@@ -767,8 +849,16 @@ describe("agent launcher", () => {
       "/home/rspurgeon/.local/bin",
       "--read",
       "/home/rspurgeon/.local/share/mise/bin",
+      "--read",
+      "/home/rspurgeon/go",
+      "--read",
+      "/home/rspurgeon/.config/kongctl",
       "--write",
       "/home/rspurgeon/.cache/mise",
+      "--write",
+      "/home/rspurgeon/go",
+      "--write",
+      "/home/rspurgeon/.config/kongctl",
       "--",
       "codex",
       "-c",
@@ -787,6 +877,7 @@ describe("agent launcher", () => {
     setExecutableReadDirectoryResolverForTests(() => [
       "/home/rspurgeon/.local/share/mise/installs/opencode/1.3.0",
     ]);
+    setPathExistsResolverForTests(() => true);
 
     const command = buildAgentStartCommand({
       config,
@@ -812,6 +903,7 @@ describe("agent launcher", () => {
     setExecutableReadDirectoryResolverForTests(() => [
       "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
     ]);
+    setPathExistsResolverForTests(() => true);
 
     const command = buildAgentStartCommand({
       config,
@@ -853,7 +945,7 @@ describe("agent launcher", () => {
       "'\"'\"'-c'\"'\"' '\"'\"'shell_environment_policy.inherit=all'\"'\"'",
     );
     expect(command.command[7]).toContain(
-      "shell_environment_policy.set={PATH=",
+      "shell_environment_policy.set.PATH=",
     );
     expect(command.command[7]).toContain(
       "'\"'\"'--sandbox'\"'\"' '\"'\"'danger-full-access'\"'\"'",
@@ -865,6 +957,7 @@ describe("agent launcher", () => {
     setExecutableReadDirectoryResolverForTests(() => [
       "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
     ]);
+    setPathExistsResolverForTests(() => true);
 
     const command = buildAgentResumeCommand({
       config,
@@ -899,7 +992,7 @@ describe("agent launcher", () => {
       "'\"'\"'-c'\"'\"' '\"'\"'shell_environment_policy.inherit=all'\"'\"'",
     );
     expect(command.command[7]).toContain(
-      "shell_environment_policy.set={PATH=",
+      "shell_environment_policy.set.PATH=",
     );
     expect(command.command[7]).toContain(
       "'\"'\"'--sandbox'\"'\"' '\"'\"'danger-full-access'\"'\"'",

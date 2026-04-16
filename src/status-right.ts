@@ -30,6 +30,8 @@ const DEFAULT_DOT_SYMBOL = "●";
 const DEFAULT_RUNNING_DIM_SYMBOL = "·";
 const DEFAULT_QUESTION_SYMBOL = "?";
 const DEFAULT_PREFIX_SYMBOL = "🤖";
+const DEFAULT_GROUP_DIVIDER_SYMBOL = "‖";
+const DEFAULT_GROUP_DIVIDER_COLOR = "#B7BDB5";
 
 function isTmuxFormatEnabled(): boolean {
   return process.env.PITCH_STATUS_RIGHT_FORMAT === TMUX_FORMAT;
@@ -89,6 +91,12 @@ function getAgentsByState(
   state: AgentViewEntry["state"],
 ): AgentViewEntry[] {
   return agents.filter((agent) => agent.state === state);
+}
+
+function sortAgentsByLabel(agents: AgentViewEntry[]): AgentViewEntry[] {
+  return [...agents].sort((left, right) =>
+    getAgentLabel(left).localeCompare(getAgentLabel(right)),
+  );
 }
 
 function summarizeAgents(agents: AgentViewEntry[]): AgentStatusSummary {
@@ -160,8 +168,14 @@ function formatTmuxSummary(
   idleAgents: AgentViewEntry[],
 ): string {
   const segments: string[] = [];
+  const runningSegments: string[] = [];
+  const idleSegments: string[] = [];
+  const pendingSegments: string[] = [];
   const prefix = process.env.PITCH_STATUS_RIGHT_PREFIX_SYMBOL;
   const pulseFrame = Math.floor(Date.now() / 1000) % 2 === 0;
+  const groupDivider =
+    `#[fg=${process.env.PITCH_STATUS_RIGHT_GROUP_DIVIDER_COLOR ?? DEFAULT_GROUP_DIVIDER_COLOR}]` +
+    `${process.env.PITCH_STATUS_RIGHT_GROUP_DIVIDER_SYMBOL ?? DEFAULT_GROUP_DIVIDER_SYMBOL}#[default]`;
 
   if (prefix !== "") {
     segments.push(
@@ -180,11 +194,15 @@ function formatTmuxSummary(
           DEFAULT_RUNNING_DIM_SYMBOL);
     const runningColor =
       process.env.PITCH_STATUS_RIGHT_RUNNING_COLOR ?? DEFAULT_RUNNING_COLOR;
-    segments.push(
-      ...buildAgentStateSegments(runningAgents, runningColor, runningSymbol),
+    runningSegments.push(
+      ...buildAgentStateSegments(
+        sortAgentsByLabel(runningAgents),
+        runningColor,
+        runningSymbol,
+      ),
     );
   } else if (summary.counts.running > 0) {
-    segments.push(
+    runningSegments.push(
       buildTmuxSegment(
         pulseFrame
           ? (process.env.PITCH_STATUS_RIGHT_RUNNING_SYMBOL ?? DEFAULT_DOT_SYMBOL)
@@ -197,15 +215,15 @@ function formatTmuxSummary(
   }
 
   if (idleAgents.length > 0) {
-    segments.push(
+    idleSegments.push(
       ...buildAgentStateSegments(
-        idleAgents,
+        sortAgentsByLabel(idleAgents),
         process.env.PITCH_STATUS_RIGHT_IDLE_COLOR ?? DEFAULT_IDLE_COLOR,
         process.env.PITCH_STATUS_RIGHT_IDLE_SYMBOL ?? DEFAULT_DOT_SYMBOL,
       ),
     );
   } else if (summary.counts.idle > 0) {
-    segments.push(
+    idleSegments.push(
       buildTmuxSegment(
         process.env.PITCH_STATUS_RIGHT_IDLE_SYMBOL ?? DEFAULT_DOT_SYMBOL,
         summary.counts.idle,
@@ -214,7 +232,7 @@ function formatTmuxSummary(
     );
   }
   if (summary.counts.question > 0) {
-    segments.push(
+    pendingSegments.push(
       buildTmuxSegment(
         process.env.PITCH_STATUS_RIGHT_QUESTION_SYMBOL ??
           DEFAULT_QUESTION_SYMBOL,
@@ -224,7 +242,7 @@ function formatTmuxSummary(
     );
   }
   if (summary.counts.error > 0) {
-    segments.push(
+    pendingSegments.push(
       buildTmuxSegment(
         process.env.PITCH_STATUS_RIGHT_ERROR_SYMBOL ?? DEFAULT_DOT_SYMBOL,
         summary.counts.error,
@@ -232,6 +250,19 @@ function formatTmuxSummary(
       ),
     );
   }
+
+  segments.push(...runningSegments);
+  if (runningSegments.length > 0 && idleSegments.length > 0) {
+    segments.push(groupDivider);
+  }
+  segments.push(...idleSegments);
+  if (
+    (runningSegments.length > 0 || idleSegments.length > 0) &&
+    pendingSegments.length > 0
+  ) {
+    segments.push(groupDivider);
+  }
+  segments.push(...pendingSegments);
 
   return segments.join(" ");
 }
