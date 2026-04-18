@@ -390,7 +390,7 @@ describe("git worktree management", () => {
     ).resolves.toContain("spike-auth");
   });
 
-  it("preserves a local branch when a remote-tracking ref exists", async () => {
+  it("deletes a local branch when its remote-tracking ref matches", async () => {
     await git(["branch", "spike-auth"], repo.main_worktree);
     const mainRef = await git(["rev-parse", "main"], repo.main_worktree);
     await git(
@@ -405,9 +405,43 @@ describe("git worktree management", () => {
         base_branch: "main",
       }),
     ).resolves.toEqual({
+      deleted: true,
+    });
+
+    await expect(
+      git(["branch", "--list", "spike-auth"], repo.main_worktree),
+    ).resolves.toBe("");
+  });
+
+  it("preserves a local branch when its remote-tracking ref differs", async () => {
+    await git(["branch", "spike-auth"], repo.main_worktree);
+    const otherCommitPath = join(tempRoot, "remote-branch-target");
+    await git(
+      ["worktree", "add", "-b", "remote-branch-target", otherCommitPath, "main"],
+      repo.main_worktree,
+    );
+    await writeFile(join(otherCommitPath, "remote.txt"), "remote\n", "utf-8");
+    await git(["add", "remote.txt"], otherCommitPath);
+    await git(["commit", "-m", "remote branch commit"], otherCommitPath);
+    const remoteRef = await git(
+      ["rev-parse", "remote-branch-target"],
+      otherCommitPath,
+    );
+    await git(
+      ["update-ref", "refs/remotes/origin/spike-auth", remoteRef],
+      repo.main_worktree,
+    );
+
+    await expect(
+      deleteBranchIfEmpty({
+        repo,
+        branch: "spike-auth",
+        base_branch: "main",
+      }),
+    ).resolves.toEqual({
       deleted: false,
       reason:
-        "Skipping local branch deletion for spike-auth: a remote-tracking ref exists, so the branch may have been pushed.",
+        "Skipping local branch deletion for spike-auth: a remote-tracking ref exists and does not match the local branch.",
     });
 
     await expect(

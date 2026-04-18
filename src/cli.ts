@@ -792,7 +792,6 @@ function buildHelpText(): string {
     "  --model MODEL",
     "  --skip-prompt",
     "  --force",
-    "  -d, --delete-branch-if-empty",
     "  --pick",
     "  --status active|closed|all",
     "  --json",

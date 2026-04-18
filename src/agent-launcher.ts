@@ -398,6 +398,8 @@ function resolveSandboxReadablePaths(
           `${homedir()}/.cache/mise`,
           `${homedir()}/.local/bin`,
           `${homedir()}/.local/share/mise/bin`,
+          `${homedir()}/.local/share/mise/plugins`,
+          `${homedir()}/.local/state/mise`,
         ];
 
   const staticPaths = [...new Set([...executablePaths, ...codexPaths])]
@@ -421,7 +423,7 @@ function resolveSandboxWritablePaths(
   const staticPaths =
     agentType !== "codex"
       ? []
-      : [`${homedir()}/.cache/mise`]
+      : [`${homedir()}/.cache/mise`, `${homedir()}/.local/state/mise`]
           .filter((path) => pathExistsResolver(path));
   const permittedAdditionalPaths = [...new Set(additionalPaths)]
     .filter((path) => environment.kind === "vm-ssh" || pathExistsResolver(path));

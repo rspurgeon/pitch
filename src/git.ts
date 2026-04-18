@@ -572,10 +572,10 @@ export async function listWorktreesForBranch(
     }));
 }
 
-async function hasRemoteTrackingBranch(
+async function listRemoteTrackingBranches(
   mainWorktree: string,
   branch: string,
-): Promise<boolean> {
+): Promise<string[]> {
   try {
     const { stdout } = await execFileAsync(
       "git",
@@ -587,13 +587,54 @@ async function hasRemoteTrackingBranch(
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
-      .some((ref) => ref.endsWith(`/${branch}`));
+      .filter((ref) => ref.endsWith(`/${branch}`));
   } catch (err: unknown) {
     throw new GitWorktreeError(
       "COMMAND_FAILED",
       `Failed to inspect remote-tracking branches for ${branch}\n${formatGitError(err)}`,
     );
   }
+}
+
+async function resolveCommitOid(
+  mainWorktree: string,
+  ref: string,
+): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["rev-parse", "--verify", `${ref}^{commit}`],
+      { cwd: mainWorktree },
+    );
+    const oid = stdout.trim();
+    return oid.length === 0 ? null : oid;
+  } catch {
+    return null;
+  }
+}
+
+async function remoteTrackingRefsMatchLocalBranch(
+  mainWorktree: string,
+  branch: string,
+): Promise<boolean> {
+  const remoteTrackingRefs = await listRemoteTrackingBranches(
+    mainWorktree,
+    branch,
+  );
+  if (remoteTrackingRefs.length === 0) {
+    return true;
+  }
+
+  const localOid = await resolveCommitOid(mainWorktree, branch);
+  if (localOid === null) {
+    return false;
+  }
+
+  const remoteOids = await Promise.all(
+    remoteTrackingRefs.map((ref) => resolveCommitOid(mainWorktree, ref)),
+  );
+
+  return remoteOids.every((remoteOid) => remoteOid === localOid);
 }
 
 async function countUniqueBranchCommits(
@@ -662,10 +703,11 @@ export async function deleteBranchIfEmpty(
     };
   }
 
-  if (await hasRemoteTrackingBranch(mainWorktree, branch)) {
+  if (!(await remoteTrackingRefsMatchLocalBranch(mainWorktree, branch))) {
     return {
       deleted: false,
-      reason: `Skipping local branch deletion for ${branch}: a remote-tracking ref exists, so the branch may have been pushed.`,
+      reason:
+        `Skipping local branch deletion for ${branch}: a remote-tracking ref exists and does not match the local branch.`,
     };
   }
 

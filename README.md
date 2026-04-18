@@ -58,10 +58,11 @@ accepted as a compatibility alias, for example
 and keeps the worktree as a tracked closed record.
 `delete` is destructive: it removes the workspace state
 file and, when applicable, the worktree. Dirty worktrees
-are refused unless `--force` is provided. If
-`-d` / `--delete-branch-if-empty` is set, Pitch also deletes the
-local branch for non-PR workspaces when it has no commits
-outside `base_branch` and no remote-tracking ref.
+are refused unless `--force` is provided. As part of
+delete, Pitch also removes the local branch when that is
+safe: no other worktree is using it, it has no commits
+outside `base_branch`, and any remote-tracking refs match
+the local branch tip.
 
 The `completion zsh` command emits a zsh completion script
 with dynamic workspace-name completion for `get`,
