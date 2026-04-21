@@ -244,6 +244,10 @@ export function mapAdditionalPathsForEnvironment(
   environment: ResolvedExecutionEnvironment,
   workspacePaths: Pick<ResolvedWorkspacePaths, "host_worktree_path" | "guest_worktree_path">,
 ): string[] {
+  if (environment.kind !== "vm-ssh") {
+    return additionalPaths.map((path) => expandShellPath(path));
+  }
+
   return additionalPaths.map((path) => {
     const mappedPath = mapPathForEnvironment(path, environment, workspacePaths);
     if (mappedPath === null) {

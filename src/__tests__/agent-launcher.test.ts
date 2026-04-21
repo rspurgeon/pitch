@@ -750,6 +750,27 @@ describe("agent launcher", () => {
     expect(command.agent_env.GOFLAGS).toBe(undefined);
   });
 
+  it("expands ~ in repo additional_paths for host Codex launches", () => {
+    const config = makeConfig();
+    config.repos["kong/kongctl"].additional_paths = ["~/go"];
+    setExecutableReadDirectoryResolverForTests(() => [
+      "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
+    ]);
+    setPathExistsResolverForTests(() => true);
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "codex",
+      repo: "kong/kongctl",
+      sandbox: "kongctl",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.command).toContain("/home/rspurgeon/go");
+    expect(command.command).not.toContain("~/go");
+  });
+
   it("threads Claude add-dir paths into nono read and write permissions", () => {
     const config = makeConfig();
     setExecutableReadDirectoryResolverForTests(() => []);
@@ -881,6 +902,34 @@ describe("agent launcher", () => {
       "danger-full-access",
       "resume",
       "session-123",
+    ]);
+  });
+
+  it("expands ~ in explicit sandbox profile paths", () => {
+    const config = makeConfig();
+    config.sandboxes.locked.profiles = {
+      codex: "~/srv/nono/kongctl-codex.toml",
+    };
+    setExecutableReadDirectoryResolverForTests(() => [
+      "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
+    ]);
+    setPathExistsResolverForTests(() => true);
+
+    const command = buildAgentResumeCommand({
+      config,
+      agent: "codex",
+      repo: "kong/kongctl",
+      sandbox: "locked",
+      workspace_name: "gh-565-fix-validation",
+      session_id: "session-123",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.command.slice(0, 4)).toEqual([
+      "nono",
+      "run",
+      "--profile",
+      "/home/rspurgeon/srv/nono/kongctl-codex.toml",
     ]);
   });
 

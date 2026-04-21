@@ -319,11 +319,11 @@ function resolveNonoProfile(
 ): string {
   const agentSpecificProfile = sandbox.profiles?.[agentType];
   if (agentSpecificProfile !== undefined) {
-    return agentSpecificProfile;
+    return expandHomePath(agentSpecificProfile);
   }
 
   if (sandbox.profile !== undefined) {
-    return sandbox.profile;
+    return expandHomePath(sandbox.profile);
   }
 
   if (agentType === "claude") {
@@ -335,6 +335,18 @@ function resolveNonoProfile(
   }
 
   return "opencode";
+}
+
+function expandHomePath(path: string): string {
+  if (path === "~") {
+    return homedir();
+  }
+
+  if (path.startsWith("~/")) {
+    return join(homedir(), path.slice(2));
+  }
+
+  return path;
 }
 
 function hasArgWithValue(

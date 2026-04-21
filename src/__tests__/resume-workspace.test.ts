@@ -1497,7 +1497,7 @@ describe("resume workspace", () => {
     expect(dependencies.ensureOpencodeConfig).toHaveBeenCalledWith(
       {
         workspace_name: "gh-42-fix-bug",
-        additional_paths: ["~/go"],
+        additional_paths: ["/home/rspurgeon/go"],
         base_config_path: undefined,
       },
       undefined,
@@ -1556,7 +1556,7 @@ describe("resume workspace", () => {
     expect(dependencies.ensureOpencodeConfig).toHaveBeenCalledWith(
       {
         workspace_name: "gh-42-fix-bug",
-        additional_paths: ["~/go"],
+        additional_paths: ["/home/rspurgeon/go"],
         base_config_path: "~/.config/opencode/custom.json",
       },
       undefined,
