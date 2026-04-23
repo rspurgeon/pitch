@@ -662,6 +662,98 @@ async function countUniqueBranchCommits(
   }
 }
 
+async function resolveMergeBase(
+  mainWorktree: string,
+  baseBranch: string,
+  branch: string,
+): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["merge-base", baseBranch, branch],
+      { cwd: mainWorktree },
+    );
+    const mergeBase = stdout.trim();
+    if (mergeBase.length === 0) {
+      throw new Error("merge base is empty");
+    }
+
+    return mergeBase;
+  } catch (err: unknown) {
+    throw new GitWorktreeError(
+      "COMMAND_FAILED",
+      `Failed to determine merge base for ${branch} against ${baseBranch}\n${formatGitError(err)}`,
+    );
+  }
+}
+
+async function listChangedPathsBetweenRefs(
+  mainWorktree: string,
+  fromRef: string,
+  toRef: string,
+): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["diff", "--name-only", "--no-renames", "-z", fromRef, toRef],
+      { cwd: mainWorktree, encoding: "buffer" },
+    );
+    const output = Buffer.isBuffer(stdout)
+      ? stdout.toString("utf8")
+      : stdout;
+
+    return output
+      .split("\u0000")
+      .map((path) => path.trim())
+      .filter((path) => path.length > 0);
+  } catch (err: unknown) {
+    throw new GitWorktreeError(
+      "COMMAND_FAILED",
+      `Failed to list changed paths for ${toRef} against ${fromRef}\n${formatGitError(err)}`,
+    );
+  }
+}
+
+async function branchChangesContainedInBase(
+  mainWorktree: string,
+  baseBranch: string,
+  branch: string,
+): Promise<boolean> {
+  const mergeBase = await resolveMergeBase(mainWorktree, baseBranch, branch);
+  const changedPaths = await listChangedPathsBetweenRefs(
+    mainWorktree,
+    mergeBase,
+    branch,
+  );
+
+  if (changedPaths.length === 0) {
+    return true;
+  }
+
+  try {
+    await execFileAsync(
+      "git",
+      ["diff", "--quiet", baseBranch, branch, "--", ...changedPaths],
+      { cwd: mainWorktree },
+    );
+    return true;
+  } catch (err: unknown) {
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      "code" in err &&
+      err.code === 1
+    ) {
+      return false;
+    }
+
+    throw new GitWorktreeError(
+      "COMMAND_FAILED",
+      `Failed to compare branch ${branch} content against ${baseBranch}\n${formatGitError(err)}`,
+    );
+  }
+}
+
 export async function deleteBranchIfEmpty(
   params: DeleteBranchIfEmptyParams,
 ): Promise<DeleteBranchIfEmptyResult> {
@@ -711,7 +803,10 @@ export async function deleteBranchIfEmpty(
     };
   }
 
-  if ((await countUniqueBranchCommits(mainWorktree, baseBranch, branch)) > 0) {
+  if (
+    (await countUniqueBranchCommits(mainWorktree, baseBranch, branch)) > 0 &&
+    !(await branchChangesContainedInBase(mainWorktree, baseBranch, branch))
+  ) {
     return {
       deleted: false,
       reason: `Skipping local branch deletion for ${branch}: branch has commits not contained in ${baseBranch}.`,

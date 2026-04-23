@@ -1497,7 +1497,7 @@ describe("create workspace", () => {
     );
   });
 
-  it("adopts an existing Codex pane as a running agent", async () => {
+  it("adopts an existing Codex pane as a running agent when tmux reports node", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
       buildAgentStartCommand: vi.fn(() => makeCodexCommand()),
@@ -1506,7 +1506,7 @@ describe("create workspace", () => {
         async () =>
           ({
             pane_id: "%9",
-            current_command: "codex",
+            current_command: "node",
             current_path: "/tmp/worktrees/gh-42-fix-bug",
           }) satisfies TmuxPaneInfo,
       ),

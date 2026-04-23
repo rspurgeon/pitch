@@ -69,17 +69,13 @@ function sanitizeAgentLabel(label: string): string {
 }
 
 function getTmuxLabel(agent: AgentViewEntry): string | undefined {
-  const sessionNameRaw = agent.tmux?.session_name ?? agent.tmux_session_name;
   const windowNameRaw = agent.tmux?.window_name ?? agent.tmux_window_name;
-  if (sessionNameRaw === undefined || windowNameRaw === undefined) {
+  if (windowNameRaw === undefined) {
     return undefined;
   }
 
-  const sessionName = sanitizeAgentLabel(sessionNameRaw);
   const windowName = sanitizeAgentLabel(windowNameRaw);
-  return sessionName === windowName
-    ? sessionName
-    : `${sessionName}:${windowName}`;
+  return windowName;
 }
 
 function getAgentLabel(agent: AgentViewEntry): string {
@@ -164,13 +160,15 @@ function buildAgentStateSegments(
 
 function formatTmuxSummary(
   summary: AgentStatusSummary,
+  questionAgents: AgentViewEntry[],
   runningAgents: AgentViewEntry[],
   idleAgents: AgentViewEntry[],
 ): string {
   const segments: string[] = [];
+  const questionSegments: string[] = [];
   const runningSegments: string[] = [];
   const idleSegments: string[] = [];
-  const pendingSegments: string[] = [];
+  const trailingSegments: string[] = [];
   const prefix = process.env.PITCH_STATUS_RIGHT_PREFIX_SYMBOL;
   const pulseFrame = Math.floor(Date.now() / 1000) % 2 === 0;
   const groupDivider =
@@ -187,6 +185,28 @@ function formatTmuxSummary(
     );
   }
 
+  if (questionAgents.length > 0) {
+    questionSegments.push(
+      ...buildAgentStateSegments(
+        sortAgentsByLabel(questionAgents),
+        process.env.PITCH_STATUS_RIGHT_QUESTION_COLOR ??
+          DEFAULT_QUESTION_COLOR,
+        `${process.env.PITCH_STATUS_RIGHT_QUESTION_SYMBOL ??
+          DEFAULT_QUESTION_SYMBOL} `,
+      ),
+    );
+  } else if (summary.counts.question > 0) {
+    questionSegments.push(
+      buildTmuxSegment(
+        process.env.PITCH_STATUS_RIGHT_QUESTION_SYMBOL ??
+          DEFAULT_QUESTION_SYMBOL,
+        summary.counts.question,
+        process.env.PITCH_STATUS_RIGHT_QUESTION_COLOR ??
+          DEFAULT_QUESTION_COLOR,
+      ),
+    );
+  }
+
   if (runningAgents.length > 0) {
     const runningSymbol = pulseFrame
       ? (process.env.PITCH_STATUS_RIGHT_RUNNING_SYMBOL ?? DEFAULT_DOT_SYMBOL)
@@ -198,7 +218,7 @@ function formatTmuxSummary(
       ...buildAgentStateSegments(
         sortAgentsByLabel(runningAgents),
         runningColor,
-        runningSymbol,
+        `${runningSymbol} `,
       ),
     );
   } else if (summary.counts.running > 0) {
@@ -219,30 +239,12 @@ function formatTmuxSummary(
       ...buildAgentStateSegments(
         sortAgentsByLabel(idleAgents),
         process.env.PITCH_STATUS_RIGHT_IDLE_COLOR ?? DEFAULT_IDLE_COLOR,
-        process.env.PITCH_STATUS_RIGHT_IDLE_SYMBOL ?? DEFAULT_DOT_SYMBOL,
-      ),
-    );
-  } else if (summary.counts.idle > 0) {
-    idleSegments.push(
-      buildTmuxSegment(
-        process.env.PITCH_STATUS_RIGHT_IDLE_SYMBOL ?? DEFAULT_DOT_SYMBOL,
-        summary.counts.idle,
-        process.env.PITCH_STATUS_RIGHT_IDLE_COLOR ?? DEFAULT_IDLE_COLOR,
-      ),
-    );
-  }
-  if (summary.counts.question > 0) {
-    pendingSegments.push(
-      buildTmuxSegment(
-        process.env.PITCH_STATUS_RIGHT_QUESTION_SYMBOL ??
-          DEFAULT_QUESTION_SYMBOL,
-        summary.counts.question,
-        process.env.PITCH_STATUS_RIGHT_QUESTION_COLOR ?? DEFAULT_QUESTION_COLOR,
+        "",
       ),
     );
   }
   if (summary.counts.error > 0) {
-    pendingSegments.push(
+    trailingSegments.push(
       buildTmuxSegment(
         process.env.PITCH_STATUS_RIGHT_ERROR_SYMBOL ?? DEFAULT_DOT_SYMBOL,
         summary.counts.error,
@@ -251,18 +253,29 @@ function formatTmuxSummary(
     );
   }
 
+  segments.push(...questionSegments);
+  if (questionSegments.length > 0 && runningSegments.length > 0) {
+    segments.push(groupDivider);
+  }
   segments.push(...runningSegments);
-  if (runningSegments.length > 0 && idleSegments.length > 0) {
+  if (
+    (questionSegments.length > 0 || runningSegments.length > 0) &&
+    idleSegments.length > 0
+  ) {
     segments.push(groupDivider);
   }
   segments.push(...idleSegments);
   if (
-    (runningSegments.length > 0 || idleSegments.length > 0) &&
-    pendingSegments.length > 0
+    (
+      questionSegments.length > 0 ||
+      runningSegments.length > 0 ||
+      idleSegments.length > 0
+    ) &&
+    trailingSegments.length > 0
   ) {
     segments.push(groupDivider);
   }
-  segments.push(...pendingSegments);
+  segments.push(...trailingSegments);
 
   return segments.join(" ");
 }
@@ -292,10 +305,11 @@ export async function renderStatusRight(
     return "";
   }
 
+  const questionAgents = getAgentsByState(agents, "question");
   const runningAgents = getAgentsByState(agents, "running");
   const idleAgents = getAgentsByState(agents, "idle");
   const rendered = isTmuxFormatEnabled()
-    ? formatTmuxSummary(scopedSummary, runningAgents, idleAgents)
+    ? formatTmuxSummary(scopedSummary, questionAgents, runningAgents, idleAgents)
     : formatPlainSummary(scopedSummary);
   if (rendered.length === 0) {
     return "";

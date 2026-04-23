@@ -2,6 +2,7 @@ import { rm } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { matchesAgentPaneProcess } from "./agent-pane-process.js";
 import { removeCodexTrustedPath } from "./codex-trust.js";
 import type { PitchConfig, RepoConfig } from "./config.js";
 import {
@@ -245,7 +246,13 @@ async function tryGracefulAgentShutdown(
       workspace.environment_kind ?? "host",
     );
 
-  if (paneInfo.current_command !== expectedPaneProcess) {
+  if (
+    !matchesAgentPaneProcess(
+      paneInfo.current_command,
+      workspace.agent_type,
+      expectedPaneProcess,
+    )
+  ) {
     return;
   }
 

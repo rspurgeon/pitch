@@ -4,6 +4,7 @@ import {
   type AgentSessionState,
   type AgentStatusSnapshot,
 } from "./agent-status.js";
+import { matchesAgentPaneProcess } from "./agent-pane-process.js";
 import {
   focusTmuxPane,
   listTmuxPanes,
@@ -108,17 +109,6 @@ function compareUpdatedAtDescending(
   return right.updated_at.localeCompare(left.updated_at);
 }
 
-function getExpectedPaneCommand(
-  agentType: AgentSessionState["agent_type"],
-): string {
-  switch (agentType) {
-    case "codex":
-      return "codex";
-    case "claude":
-      return "claude";
-  }
-}
-
 function toPaneMatch(pane: TmuxPaneListing): AgentPaneMatch {
   return {
     session_name: pane.session_name,
@@ -196,6 +186,7 @@ function resolveWorkspace(
 function isLikelyLiveAgent(
   session: AgentSessionState,
   pane: TmuxPaneListing | undefined,
+  expectedPaneProcess?: string,
 ): boolean {
   if (pane === undefined) {
     return (
@@ -206,7 +197,11 @@ function isLikelyLiveAgent(
     );
   }
 
-  return pane.current_command === getExpectedPaneCommand(session.agent_type);
+  return matchesAgentPaneProcess(
+    pane.current_command,
+    session.agent_type,
+    expectedPaneProcess,
+  );
 }
 
 export async function getAgentsView(
@@ -249,17 +244,25 @@ export async function getAgentsView(
     .flatMap((session: AgentSessionState): AgentViewEntry[] => {
       const tty = normalizeTty(session.tty);
       const pane = tty !== undefined ? panesByTty.get(tty) : undefined;
-      if (!isLikelyLiveAgent(session, pane)) {
+      const workspace = resolveWorkspace(session, workspacesByKey);
+      const expectedPaneProcess =
+        workspace?.agent_type === session.agent_type
+          ? workspace.agent_pane_process
+          : undefined;
+
+      if (!isLikelyLiveAgent(session, pane, expectedPaneProcess)) {
         return [];
       }
 
-      const workspace = resolveWorkspace(session, workspacesByKey);
       const tmuxSessionName = session.tmux_session ?? workspace?.tmux_session;
       const tmuxWindowName = session.tmux_window ?? workspace?.tmux_window;
 
       return [{
         agent_type: session.agent_type,
-        agent_name: workspace?.agent_name,
+        agent_name:
+          workspace?.agent_type === session.agent_type
+            ? workspace.agent_name
+            : undefined,
         tmux_session_name: tmuxSessionName,
         tmux_window_name: tmuxWindowName,
         state: session.state,

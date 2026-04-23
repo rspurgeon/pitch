@@ -8,6 +8,7 @@ import {
   type BuiltAgentCommand,
 } from "./agent-launcher.js";
 import { buildBootstrapPrompt } from "./bootstrap-prompt.js";
+import { matchesAgentPaneProcess } from "./agent-pane-process.js";
 import { ensureClaudeTrustedPaths } from "./claude-trust.js";
 import type { PitchConfig, RepoConfig } from "./config.js";
 import { ensureCodexTrustedPath } from "./codex-trust.js";
@@ -638,7 +639,13 @@ async function classifyExistingPane(
     return "shell";
   }
 
-  if (currentCommand === agentCommand.pane_process_name) {
+  if (
+    matchesAgentPaneProcess(
+      currentCommand,
+      agentCommand.agent_type,
+      agentCommand.pane_process_name,
+    )
+  ) {
     if (agentCommand.environment_kind === "vm-ssh") {
       return (await isVmAgentActiveOnHost(worktreePath, workspaceName))
         ? "agent"

@@ -7,6 +7,7 @@ import {
   resolveAgentEnv,
   type BuiltAgentCommand,
 } from "./agent-launcher.js";
+import { matchesAgentPaneProcess } from "./agent-pane-process.js";
 import { ensureClaudeTrustedPaths } from "./claude-trust.js";
 import type { PitchConfig } from "./config.js";
 import { ensureCodexTrustedPath } from "./codex-trust.js";
@@ -287,7 +288,13 @@ async function isCompatibleRunningAgentPane(
       workspace.environment_kind ?? "host",
     );
 
-  if (paneInfo.current_command !== expectedPaneProcess) {
+  if (
+    !matchesAgentPaneProcess(
+      paneInfo.current_command,
+      workspace.agent_type,
+      expectedPaneProcess,
+    )
+  ) {
     return false;
   }
 

@@ -101,7 +101,7 @@ function makeDependencies(
       async () =>
         ({
           pane_id: "%1",
-          current_command: "codex",
+          current_command: "node",
           current_path: "/tmp/worktrees/gh-42-fix-bug",
         }) satisfies TmuxPaneInfo,
     ),

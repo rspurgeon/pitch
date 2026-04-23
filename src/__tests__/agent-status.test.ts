@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -604,6 +604,106 @@ describe("refreshAgentStatusSummary", () => {
       idle: 0,
       error: 0,
     });
+  });
+
+  it("reconciles dismissed Claude permission prompts from the transcript", async () => {
+    const cacheDir = await makeTempCacheDir();
+    const transcriptPath = join(cacheDir, "claude-dismissed.jsonl");
+
+    await writeFile(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-04-08T12:00:10.000Z",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                name: "Read",
+                input: {
+                  file_path: "/tmp/demo.txt",
+                },
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          timestamp: "2026-04-08T12:00:20.000Z",
+          toolUseResult: "User rejected tool use",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                content:
+                  "The user doesn't want to proceed with this tool use.",
+                is_error: true,
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          timestamp: "2026-04-08T12:00:21.000Z",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "[Request interrupted by user for tool use]",
+              },
+            ],
+          },
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+
+    await writeClaudeSessionState(
+      makeClaudeSessionState({
+        session_id: "claude-dismissed",
+        tty: "pts/31",
+        state: "question",
+        last_event: "Notification",
+        last_notification_message: "Claude needs your permission to use Read",
+        transcript_path: transcriptPath,
+        updated_at: "2026-04-08T12:00:00.000Z",
+      }),
+      cacheDir,
+    );
+
+    const summary = await refreshAgentStatusSummary(cacheDir, {
+      listActiveClaudeProcesses: vi.fn(async () => [
+        {
+          agent_type: "claude",
+          pid: 301,
+          tty: "pts/31",
+          cwd: "/tmp/worktrees/claude-demo",
+        },
+      ]),
+    });
+
+    expect(summary.active_sessions).toBe(1);
+    expect(summary.counts).toEqual({
+      running: 0,
+      question: 0,
+      idle: 1,
+      error: 0,
+    });
+    await expect(listClaudeSessionStates(cacheDir)).resolves.toEqual([
+      makeClaudeSessionState({
+        session_id: "claude-dismissed",
+        tty: "pts/31",
+        state: "idle",
+        last_event: "QuestionDismissed",
+        last_notification_message: "Claude needs your permission to use Read",
+        transcript_path: transcriptPath,
+        updated_at: "2026-04-08T12:00:21.000Z",
+      }),
+    ]);
   });
 
   it("merges remote vm source summaries into the top-level summary", async () => {

@@ -713,6 +713,43 @@ describe("resume workspace", () => {
     expect(dependencies.runGitHubLifecycle).not.toHaveBeenCalled();
   });
 
+  it("treats a Codex pane running under node as a compatible running agent", async () => {
+    const config = makeConfig();
+    const originalWorkspace = makeWorkspaceRecord({
+      agent_name: "codex",
+      agent_type: "codex",
+      agent_pane_process: "codex",
+      agent_env: {
+        CODEX_HOME: "~/.codex",
+      },
+      agent_sessions: [],
+    });
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () => originalWorkspace),
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%1",
+            current_command: "node",
+            current_path: "/tmp/worktrees/gh-42-fix-bug",
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.buildAgentResumeCommand).not.toHaveBeenCalled();
+    expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
+    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
+    expect(workspace).toEqual(originalWorkspace);
+  });
+
   it("treats the legacy vm agent marker as an active running agent", async () => {
     const worktreePath = await mkdtemp(
       join(process.cwd(), ".tmp-resume-workspace-legacy-vm-agent-"),

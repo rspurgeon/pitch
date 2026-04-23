@@ -303,6 +303,35 @@ function extractAssistantTextFromClaudeTranscriptEntry(
   return textParts.join("\n");
 }
 
+function extractClaudeTranscriptEntryTimestamp(
+  entry: unknown,
+): string | undefined {
+  if (entry === null || typeof entry !== "object") {
+    return undefined;
+  }
+
+  const record = entry as Record<string, unknown>;
+  return typeof record.timestamp === "string" ? record.timestamp : undefined;
+}
+
+function isClaudeRejectedToolUseTranscriptEntry(entry: unknown): boolean {
+  if (entry === null || typeof entry !== "object") {
+    return false;
+  }
+
+  const record = entry as Record<string, unknown>;
+  if (record.toolUseResult === "User rejected tool use") {
+    return true;
+  }
+
+  const textParts = extractTextFromClaudeContentNode(record);
+  return textParts.some(
+    (text) =>
+      text.includes("[Request interrupted by user for tool use]") ||
+      text.includes("The user doesn't want to proceed with this tool use."),
+  );
+}
+
 async function readClaudeStopMessageFromTranscript(
   transcriptPath: string | undefined,
 ): Promise<string | undefined> {
@@ -331,6 +360,54 @@ async function readClaudeStopMessageFromTranscript(
     }
 
     return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readClaudeRejectedToolUseTimestampFromTranscript(
+  transcriptPath: string | undefined,
+  sinceTimestamp: string,
+): Promise<string | undefined> {
+  if (transcriptPath === undefined) {
+    return undefined;
+  }
+
+  const sinceTime = Date.parse(sinceTimestamp);
+  if (!Number.isFinite(sinceTime)) {
+    return undefined;
+  }
+
+  try {
+    const raw = await readFile(transcriptPath, "utf8");
+    const lines = raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    let latestRejectedTimestamp: string | undefined;
+
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line);
+        const timestamp = extractClaudeTranscriptEntryTimestamp(parsed);
+        if (timestamp === undefined) {
+          continue;
+        }
+
+        const entryTime = Date.parse(timestamp);
+        if (!Number.isFinite(entryTime) || entryTime <= sinceTime) {
+          continue;
+        }
+
+        if (isClaudeRejectedToolUseTranscriptEntry(parsed)) {
+          latestRejectedTimestamp = timestamp;
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return latestRejectedTimestamp;
   } catch {
     return undefined;
   }
@@ -1046,7 +1123,34 @@ async function collectAgentStatusState(
       dependencies.listActiveCodexProcesses(),
       dependencies.listActiveClaudeProcesses(),
     ]);
-  const sessionStates = [...codexSessionStates, ...claudeSessionStates];
+  const reconciledClaudeSessionStates = await Promise.all(
+    claudeSessionStates.map(async (sessionState) => {
+      if (
+        sessionState.state !== "question" ||
+        sessionState.last_event !== "Notification"
+      ) {
+        return sessionState;
+      }
+
+      const rejectedAt = await readClaudeRejectedToolUseTimestampFromTranscript(
+        sessionState.transcript_path,
+        sessionState.updated_at,
+      );
+      if (rejectedAt === undefined) {
+        return sessionState;
+      }
+
+      const reconciledState: ClaudeSessionState = {
+        ...sessionState,
+        state: "idle",
+        last_event: "QuestionDismissed",
+        updated_at: rejectedAt,
+      };
+      await dependencies.writeClaudeSessionState(reconciledState, cacheDir);
+      return reconciledState;
+    }),
+  );
+  const sessionStates = [...codexSessionStates, ...reconciledClaudeSessionStates];
   const activeProcesses = [...activeCodexProcesses, ...activeClaudeProcesses];
   const activeSessionIds = new Set<string>();
 

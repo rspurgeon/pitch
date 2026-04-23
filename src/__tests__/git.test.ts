@@ -390,6 +390,42 @@ describe("git worktree management", () => {
     ).resolves.toContain("spike-auth");
   });
 
+  it("deletes a local branch after its changes are squash-merged into base", async () => {
+    const created = await createWorktree({
+      repo,
+      workspace_name: "spike-auth",
+      branch: "spike-auth",
+      start_point: "main",
+    });
+    await writeFile(join(created.worktree_path, "feature.txt"), "hello\n", "utf-8");
+    await git(["add", "feature.txt"], created.worktree_path);
+    await git(["commit", "-m", "Feature work"], created.worktree_path);
+    await removeWorktree({
+      repo,
+      workspace_name: "spike-auth",
+    });
+
+    await git(["merge", "--squash", "spike-auth"], repo.main_worktree);
+    await git(["commit", "-m", "Squash merge spike-auth"], repo.main_worktree);
+    await writeFile(join(repo.main_worktree, "README.md"), "# Pitch Test\n\nUpdated.\n", "utf-8");
+    await git(["add", "README.md"], repo.main_worktree);
+    await git(["commit", "-m", "Follow-up main change"], repo.main_worktree);
+
+    await expect(
+      deleteBranchIfEmpty({
+        repo,
+        branch: "spike-auth",
+        base_branch: "main",
+      }),
+    ).resolves.toEqual({
+      deleted: true,
+    });
+
+    await expect(
+      git(["branch", "--list", "spike-auth"], repo.main_worktree),
+    ).resolves.toBe("");
+  });
+
   it("deletes a local branch when its remote-tracking ref matches", async () => {
     await git(["branch", "spike-auth"], repo.main_worktree);
     const mainRef = await git(["rev-parse", "main"], repo.main_worktree);

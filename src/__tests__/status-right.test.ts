@@ -82,7 +82,7 @@ describe("renderStatusRight", () => {
     ).resolves.toBe("R:1 I:1 | ");
   });
 
-  it("renders running and idle agent badges when tmux format is enabled", async () => {
+  it("renders question, running, and idle agent badges when tmux format is enabled", async () => {
     const previousFormat = process.env.PITCH_STATUS_RIGHT_FORMAT;
     const originalDateNow = Date.now;
 
@@ -116,6 +116,23 @@ describe("renderStatusRight", () => {
                 },
               },
               agents: [
+                {
+                  agent_type: "claude",
+                  state: "question",
+                  session_id: "claude-session-2",
+                  session_key: "claude-sessi2",
+                  last_event: "Notification",
+                  updated_at: "2026-04-08T12:01:00.000Z",
+                  tmux: {
+                    session_name: "kongctl",
+                    window_name: "gh-239-page",
+                    pane_index: 2,
+                    pane_id: "%9",
+                    pane_tty: "pts/24",
+                    current_command: "claude",
+                    current_path: "/tmp/claude-question",
+                  },
+                },
                 {
                   agent_type: "codex",
                   state: "running",
@@ -172,7 +189,7 @@ describe("renderStatusRight", () => {
           },
         ),
       ).resolves.toBe(
-        "#[fg=#B7BDB5]🤖#[default] #[fg=#7DAF7D]●kongctl#[default] #[fg=#7DAF7D]|#[default] #[fg=#7DAF7D]●pitch:pr-42#[default] #[fg=#B7BDB5]‖#[default] #[fg=#61AFEF]●flog#[default] #[fg=#B7BDB5]‖#[default] #[fg=#E5C07B]?1#[default]",
+        "#[fg=#B7BDB5]🤖#[default] #[fg=#E5C07B]? gh-239-page#[default] #[fg=#B7BDB5]‖#[default] #[fg=#7DAF7D]● kongctl#[default] #[fg=#7DAF7D]|#[default] #[fg=#7DAF7D]● pr-42#[default] #[fg=#B7BDB5]‖#[default] #[fg=#61AFEF]flog#[default]",
       );
     } finally {
       Date.now = originalDateNow;
@@ -232,7 +249,53 @@ describe("renderStatusRight", () => {
     }
   });
 
-  it("falls back to counts when live agent identities are unavailable", async () => {
+  it("falls back to a question count when live question agent labels are unavailable", async () => {
+    const previousFormat = process.env.PITCH_STATUS_RIGHT_FORMAT;
+    process.env.PITCH_STATUS_RIGHT_FORMAT = "tmux";
+
+    try {
+      await expect(
+        renderStatusRight(
+          {},
+          {
+            refreshAgentStatusSummary: vi.fn(async () => ({
+              generated_at: "2026-04-08T12:00:00.000Z",
+              active_sessions: 1,
+              counts: {
+                running: 0,
+                question: 1,
+                idle: 0,
+                error: 0,
+              },
+            })),
+            getAgentsView: vi.fn(async (): Promise<AgentsView> => ({
+              summary: {
+                generated_at: "2026-04-08T12:00:00.000Z",
+                active_sessions: 1,
+                counts: {
+                  running: 0,
+                  question: 1,
+                  idle: 0,
+                  error: 0,
+                },
+              },
+              agents: [],
+            })),
+          },
+        ),
+      ).resolves.toBe(
+        "#[fg=#B7BDB5]🤖#[default] #[fg=#E5C07B]?1#[default]",
+      );
+    } finally {
+      if (previousFormat === undefined) {
+        delete process.env.PITCH_STATUS_RIGHT_FORMAT;
+      } else {
+        process.env.PITCH_STATUS_RIGHT_FORMAT = previousFormat;
+      }
+    }
+  });
+
+  it("suppresses idle placeholders when live agent identities are unavailable", async () => {
     const previousFormat = process.env.PITCH_STATUS_RIGHT_FORMAT;
     const originalDateNow = Date.now;
 
@@ -268,9 +331,9 @@ describe("renderStatusRight", () => {
               agents: [],
             })),
           },
-        ),
-      ).resolves.toBe(
-        "#[fg=#B7BDB5]🤖#[default] #[fg=#7DAF7D]·1#[default] #[fg=#B7BDB5]‖#[default] #[fg=#61AFEF]●1#[default]",
+      ),
+    ).resolves.toBe(
+        "#[fg=#B7BDB5]🤖#[default] #[fg=#7DAF7D]·1#[default]",
       );
     } finally {
       Date.now = originalDateNow;
@@ -353,9 +416,9 @@ describe("renderStatusRight", () => {
               ],
             })),
           },
-        ),
-      ).resolves.toBe(
-        "#[fg=#B7BDB5]🤖#[default] #[fg=#61AFEF]●pitch#[default]",
+      ),
+    ).resolves.toBe(
+        "#[fg=#B7BDB5]🤖#[default] #[fg=#61AFEF]pitch#[default]",
       );
     } finally {
       if (previousFormat === undefined) {
@@ -453,9 +516,9 @@ describe("renderStatusRight", () => {
               ],
             })),
           },
-        ),
-      ).resolves.toBe(
-        "#[fg=#B7BDB5]🤖#[default] #[fg=#7DAF7D]●kongctl:gh-782#[default] #[fg=#B7BDB5]‖#[default] #[fg=#61AFEF]●flog#[default] #[fg=#61AFEF]|#[default] #[fg=#61AFEF]●pitch#[default]",
+      ),
+    ).resolves.toBe(
+        "#[fg=#B7BDB5]🤖#[default] #[fg=#7DAF7D]● gh-782#[default] #[fg=#B7BDB5]‖#[default] #[fg=#61AFEF]flog#[default] #[fg=#61AFEF]|#[default] #[fg=#61AFEF]pitch#[default]",
       );
     } finally {
       Date.now = originalDateNow;
