@@ -581,7 +581,7 @@ describe("refreshAgentStatusSummary", () => {
     const summary = await refreshAgentStatusSummary(cacheDir, {
       listActiveCodexProcesses: vi.fn(async () => [
         {
-          agent_type: "codex",
+          agent_type: "codex" as const,
           pid: 201,
           tty: "pts/21",
           cwd: "/tmp/worktrees/demo",
@@ -589,7 +589,7 @@ describe("refreshAgentStatusSummary", () => {
       ]),
       listActiveClaudeProcesses: vi.fn(async () => [
         {
-          agent_type: "claude",
+          agent_type: "claude" as const,
           pid: 301,
           tty: "pts/31",
           cwd: "/tmp/worktrees/claude-demo",
@@ -678,7 +678,7 @@ describe("refreshAgentStatusSummary", () => {
     const summary = await refreshAgentStatusSummary(cacheDir, {
       listActiveClaudeProcesses: vi.fn(async () => [
         {
-          agent_type: "claude",
+          agent_type: "claude" as const,
           pid: 301,
           tty: "pts/31",
           cwd: "/tmp/worktrees/claude-demo",
@@ -734,7 +734,7 @@ describe("refreshAgentStatusSummary", () => {
     const summary = await refreshAgentStatusSummary(cacheDir, {
       listActiveCodexProcesses: vi.fn(async () => [
         {
-          agent_type: "codex",
+          agent_type: "codex" as const,
           pid: 201,
           tty: "pts/21",
           cwd: "/tmp/worktrees/demo",
@@ -798,7 +798,7 @@ describe("getAgentStatusSnapshot", () => {
     const snapshot = await getAgentStatusSnapshot(cacheDir, {
       listActiveCodexProcesses: vi.fn(async () => [
         {
-          agent_type: "codex",
+          agent_type: "codex" as const,
           pid: 201,
           tty: "pts/21",
           cwd: "/tmp/worktrees/demo",

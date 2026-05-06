@@ -460,6 +460,70 @@ describe("resume workspace", () => {
     });
   });
 
+  it("starts a fresh session when reset_session is requested", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      getTmuxWindowPaneInfo: vi.fn(
+        async () =>
+          ({
+            pane_id: "%1",
+            current_command: "zsh",
+            current_path: "/tmp/worktrees/gh-42-fix-bug",
+          }) satisfies TmuxPaneInfo,
+      ),
+    });
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+        reset_session: true,
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.buildAgentResumeCommand).not.toHaveBeenCalled();
+    expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith({
+      config,
+      agent: "claude-enterprise",
+      repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
+      workspace_name: "gh-42-fix-bug",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      initial_prompt: undefined,
+    });
+    expect(workspace.agent_sessions.at(-1)).toEqual({
+      id: "claude-session-2",
+      started_at: "2026-03-23T04:00:00.000Z",
+      status: "active",
+    });
+    expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
+      repo: "kong/kongctl",
+      source_kind: "issue",
+      source_number: 42,
+    });
+  });
+
+  it("rejects reset_session with an explicit session id", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies();
+
+    await expect(
+      resumeWorkspace(
+        {
+          name: "gh-42-fix-bug",
+          reset_session: true,
+          session_id: "claude-session-explicit",
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow("Cannot combine reset_session with session_id");
+    expect(dependencies.readWorkspaceRecord).not.toHaveBeenCalled();
+  });
+
   it("restores a shared PR session using the underlying worktree name", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
@@ -687,6 +751,26 @@ describe("resume workspace", () => {
       source_kind: "issue",
       source_number: 42,
     });
+  });
+
+  it("rejects reset_session while a compatible agent pane is running", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies();
+
+    await expect(
+      resumeWorkspace(
+        {
+          name: "gh-42-fix-bug",
+          reset_session: true,
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow(
+      "Cannot reset session for gh-42-fix-bug while a compatible agent pane is already running; close the running agent or tmux window first.",
+    );
+    expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
+    expect(dependencies.buildAgentResumeCommand).not.toHaveBeenCalled();
   });
 
   it("does not launch a second agent when the pane already has a compatible running agent", async () => {

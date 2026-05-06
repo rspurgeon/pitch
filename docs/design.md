@@ -180,8 +180,10 @@ Returns full detail for a specific workspace.
 ### Resume
 
 Relaunches the coding agent in an existing workspace's
-tmux pane, using the most recent stored session ID for the
-agent's resume command. Closed workspaces remain tracked
+tmux pane. By default, Pitch uses the most recent stored
+session ID for the agent's resume command. With
+`--reset-session`, Pitch starts a new agent session in the
+same workspace instead. Closed workspaces remain tracked
 and can be resumed later.
 
 When `--sync` is requested for a PR workspace, Pitch
@@ -400,6 +402,9 @@ Repo-specific extra path access is still handled by
 Pitch's existing `additional_paths` behavior. Capability
 elevation is currently the escape hatch for everything the
 nono profile does not already allow.
+For sandboxed Codex launches, Pitch also grants read/write
+access to the user npm cache because Codex may be started
+through an npm-installed wrapper.
 
 ### Multi-Account Agent Support
 
@@ -642,10 +647,16 @@ Pitch may recover the real session ID from the local Codex session store before
 falling back to a fresh launch. Previously closed
 workspaces can also be resumed.
 
+When `reset_session` is set, Pitch skips stored-session
+lookup and starts a new agent session in the same worktree
+and tmux pane. It is refused when a compatible agent pane
+is already running, and it cannot be combined with an
+explicit `session_id`.
+
 Resume never re-sends the bootstrap prompt. On a true
 session resume, Pitch also skips GitHub lifecycle
-automation. On a fresh relaunch fallback, it may still
-re-run GitHub lifecycle automation.
+automation. On a fresh relaunch fallback or reset, it may
+still re-run GitHub lifecycle automation.
 
 When `sync` is set for a PR workspace, Pitch fetches the
 latest PR head and fast-forwards the existing branch before
@@ -656,6 +667,9 @@ compatible agent pane is already running.
 - `name` (string, required) — workspace name
 - `agent` (string, optional) — override agent type for this resumption
 - `environment` (string, optional) — override execution environment
+- `session_id` (string, optional) — resume this specific agent session
+- `reset_session` (boolean, optional) — start a new agent session instead
+  of resuming a stored session
 - `sync` (boolean, optional) — fast-forward a PR workspace to the latest
   upstream PR head before resuming
 

@@ -408,6 +408,7 @@ function resolveSandboxReadablePaths(
       : [
           `${homedir()}/.config/mise`,
           `${homedir()}/.cache/mise`,
+          `${homedir()}/.npm`,
           `${homedir()}/.local/bin`,
           `${homedir()}/.local/share/mise/bin`,
           `${homedir()}/.local/share/mise/plugins`,
@@ -435,7 +436,11 @@ function resolveSandboxWritablePaths(
   const staticPaths =
     agentType !== "codex"
       ? []
-      : [`${homedir()}/.cache/mise`, `${homedir()}/.local/state/mise`]
+      : [
+          `${homedir()}/.cache/mise`,
+          `${homedir()}/.npm`,
+          `${homedir()}/.local/state/mise`,
+        ]
           .filter((path) => pathExistsResolver(path));
   const permittedAdditionalPaths = [...new Set(additionalPaths)]
     .filter((path) => environment.kind === "vm-ssh" || pathExistsResolver(path));
@@ -455,7 +460,7 @@ function mergePathWithToolchainDefaults(path: string | undefined): string {
   const mergedParts: string[] = [];
   const seen = new Set<string>();
 
-  for (const part of [...additions, ...baseParts]) {
+  for (const part of [...baseParts, ...additions]) {
     if (seen.has(part)) {
       continue;
     }

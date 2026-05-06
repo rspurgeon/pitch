@@ -117,6 +117,7 @@ const BOOLEAN_FLAGS = new Set([
   "pick",
   "skip-prompt",
   "force",
+  "reset-session",
   "sync",
 ]);
 
@@ -455,6 +456,7 @@ function buildResumeInput(
     agent: readStringFlag(flags, "agent"),
     environment: readStringFlag(flags, "environment"),
     session_id: readStringFlag(flags, "session-id"),
+    reset_session: readBooleanFlag(flags, "reset-session"),
     sync: readBooleanFlag(flags, "sync"),
   };
 }
@@ -764,7 +766,7 @@ function buildHelpText(): string {
     "  pitch agent-error --agent-type TYPE --session-id ID --message TEXT",
     "  pitch list [--repo REPO] [--status active|closed|all]",
     "  pitch get <name>",
-    "  pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--sync]",
+    "  pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--reset-session] [--sync]",
     "  pitch close <name>",
     "  pitch delete <name> [--force]",
     "  pitch status-right [--separator TEXT]",
@@ -787,6 +789,7 @@ function buildHelpText(): string {
     "  --transcript-path PATH",
     "  --tty TTY",
     "  --session-id ID",
+    "  --reset-session",
     "  --message TEXT",
     "  --sync",
     "  --model MODEL",
@@ -899,12 +902,13 @@ function buildZshCompletionScript(): string {
     "        '1:workspace:_pitch_workspaces'",
     "      ;;",
     "    resume)",
-      "      _pitch_complete_workspace_target \"$command_index\" && return",
-      "      _arguments -s -S \\",
+    "      _pitch_complete_workspace_target \"$command_index\" && return",
+    "      _arguments -s -S \\",
     "        '--name[Workspace name]:workspace:_pitch_workspaces' \\",
     "        '--agent[Configured agent]:agent:' \\",
     "        '--environment[Execution environment]:environment:' \\",
     "        '--session-id[Resume an existing agent session id]:session id:' \\",
+    "        '--reset-session[Start a new agent session instead of resuming]' \\",
     "        '--sync[Fast-forward PR workspaces to latest upstream head before resuming]' \\",
     "        '--json[Emit JSON]' \\",
     "        '--help[Show help]' \\",

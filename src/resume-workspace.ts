@@ -61,6 +61,7 @@ export const ResumeWorkspaceInputSchema = z.object({
   agent: z.string().trim().min(1).optional(),
   environment: z.string().trim().min(1).optional(),
   session_id: z.string().trim().min(1).optional(),
+  reset_session: z.boolean().optional(),
   sync: z.boolean().optional(),
 }).strict();
 
@@ -164,6 +165,15 @@ function validateInput(params: ResumeWorkspaceInput): ResumeWorkspaceInput {
   if (!result.success) {
     throw new ResumeWorkspaceError(
       `Invalid resume_workspace input:\n${formatZodIssues(result.error)}`,
+    );
+  }
+
+  if (
+    result.data.reset_session === true &&
+    result.data.session_id !== undefined
+  ) {
+    throw new ResumeWorkspaceError(
+      "Cannot combine reset_session with session_id",
     );
   }
 
@@ -640,15 +650,20 @@ export async function resumeWorkspace(
   const isEnvironmentContextChanged =
     input.environment !== undefined && input.environment !== currentEnvironmentName;
   const trailingPendingSession = hasTrailingPendingSession(workspace);
+  const shouldResetSession = input.reset_session === true;
 
   let latestSessionId =
     input.session_id ??
-    (isAgentContextChanged || isEnvironmentContextChanged || trailingPendingSession
+    (shouldResetSession ||
+      isAgentContextChanged ||
+      isEnvironmentContextChanged ||
+      trailingPendingSession
       ? null
       : findLatestResumableSessionId(workspace));
 
   if (
     input.session_id === undefined &&
+    !shouldResetSession &&
     !isAgentContextChanged &&
     !isEnvironmentContextChanged &&
     trailingPendingSession &&
@@ -686,6 +701,7 @@ export async function resumeWorkspace(
 
   if (
     input.session_id === undefined &&
+    !shouldResetSession &&
     !isAgentContextChanged &&
     !isEnvironmentContextChanged &&
     trailingPendingSession &&
@@ -726,6 +742,12 @@ export async function resumeWorkspace(
     existingPaneInfo,
   );
 
+  if (shouldResetSession && hasCompatibleRunningPane) {
+    throw new ResumeWorkspaceError(
+      `Cannot reset session for ${workspace.name} while a compatible agent pane is already running; close the running agent or tmux window first.`,
+    );
+  }
+
   await maybeSyncWorkspaceOnResume(
     input,
     workspace,
@@ -735,6 +757,7 @@ export async function resumeWorkspace(
   );
 
   if (
+    !shouldResetSession &&
     !isAgentContextChanged &&
     !isEnvironmentContextChanged &&
     latestSessionId === null &&
@@ -949,7 +972,9 @@ export function registerResumeWorkspaceTool(
     "resume_workspace",
     {
       description:
-        "Resume or relaunch the coding agent in an existing workspace, including previously closed workspaces.",
+        "Resume or relaunch the coding agent in an existing workspace, " +
+        "including previously closed workspaces. Use reset_session to start " +
+        "a new agent session instead of resuming stored history.",
       inputSchema: ResumeWorkspaceInputSchema,
       outputSchema: WorkspaceRecordSchema,
     },

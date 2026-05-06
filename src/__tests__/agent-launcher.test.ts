@@ -606,7 +606,11 @@ describe("agent launcher", () => {
 
   it("wraps agent commands for vm-ssh environments", () => {
     const config = makeConfig();
-    config.environments["sandbox-vm"].shared_paths.unshift({
+    const environment = config.environments["sandbox-vm"];
+    if (environment.kind !== "vm-ssh") {
+      throw new Error("sandbox-vm must be a vm-ssh environment");
+    }
+    environment.shared_paths.unshift({
       host_path: "/srv/pitch-host",
       guest_path: "/srv/pitch-shared",
       mode: "rw",
@@ -690,6 +694,8 @@ describe("agent launcher", () => {
       "--read",
       "/home/rspurgeon/.cache/mise",
       "--read",
+      "/home/rspurgeon/.npm",
+      "--read",
       "/home/rspurgeon/.local/bin",
       "--read",
       "/home/rspurgeon/.local/share/mise/bin",
@@ -703,6 +709,8 @@ describe("agent launcher", () => {
       "/home/rspurgeon/.config/kongctl",
       "--write",
       "/home/rspurgeon/.cache/mise",
+      "--write",
+      "/home/rspurgeon/.npm",
       "--write",
       "/home/rspurgeon/.local/state/mise",
       "--write",
@@ -769,6 +777,30 @@ describe("agent launcher", () => {
 
     expect(command.command).toContain("/home/rspurgeon/go");
     expect(command.command).not.toContain("~/go");
+  });
+
+  it("preserves configured Codex PATH precedence when adding toolchain defaults", () => {
+    const config = makeConfig();
+    config.agents.codex.env.PATH =
+      "/opt/codex-node/bin:/home/rspurgeon/.local/share/mise/shims";
+    setExecutableReadDirectoryResolverForTests(() => []);
+    setPathExistsResolverForTests(() => true);
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "codex",
+      repo: "kong/kongctl",
+      sandbox: "kongctl",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.agent_env.PATH).toBe(
+      "/opt/codex-node/bin:" +
+        "/home/rspurgeon/.local/share/mise/shims:" +
+        "/home/rspurgeon/.local/bin:" +
+        "/home/rspurgeon/.local/share/mise/bin",
+    );
   });
 
   it("threads Claude add-dir paths into nono read and write permissions", () => {
@@ -873,6 +905,8 @@ describe("agent launcher", () => {
       "--read",
       "/home/rspurgeon/.cache/mise",
       "--read",
+      "/home/rspurgeon/.npm",
+      "--read",
       "/home/rspurgeon/.local/bin",
       "--read",
       "/home/rspurgeon/.local/share/mise/bin",
@@ -886,6 +920,8 @@ describe("agent launcher", () => {
       "/home/rspurgeon/.config/kongctl",
       "--write",
       "/home/rspurgeon/.cache/mise",
+      "--write",
+      "/home/rspurgeon/.npm",
       "--write",
       "/home/rspurgeon/.local/state/mise",
       "--write",

@@ -251,8 +251,8 @@ function makeDependencies(
     })),
     markAgentSessionError: vi.fn(async () => ({
       session_id: "codex-session-1",
-      agent_type: "codex",
-      state: "error",
+      agent_type: "codex" as const,
+      state: "error" as const,
       cwd: "/tmp/codex",
       transcript_path: undefined,
       tty: "pts/21",
@@ -368,8 +368,8 @@ describe("runCli", () => {
     const dependencies = makeDependencies({
       markAgentSessionError: vi.fn(async () => ({
         session_id: "claude-session-1",
-        agent_type: "claude",
-        state: "error",
+        agent_type: "claude" as const,
+        state: "error" as const,
         cwd: "/tmp/claude",
         transcript_path: undefined,
         tty: "pts/31",
@@ -692,6 +692,7 @@ describe("runCli", () => {
         agent: "codex",
         environment: undefined,
         session_id: undefined,
+        reset_session: undefined,
         sync: undefined,
       },
       makeConfig(),
@@ -716,6 +717,7 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         session_id: undefined,
+        reset_session: undefined,
         sync: true,
       },
       makeConfig(),
@@ -825,6 +827,32 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         session_id: "019d6505-21ab-7493-9ea5-e10084cc79f0",
+        reset_session: undefined,
+        sync: undefined,
+      },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
+  it("passes reset_session through resume", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["resume", "pr-700-default-aas", "--reset-session"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.resumeWorkspace).toHaveBeenCalledWith(
+      {
+        name: "pr-700-default-aas",
+        agent: undefined,
+        environment: undefined,
+        session_id: undefined,
+        reset_session: true,
         sync: undefined,
       },
       makeConfig(),
@@ -1017,10 +1045,13 @@ describe("runCli", () => {
       "pitch delete <name> [--force]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--sync]",
+      "pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--reset-session] [--sync]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "  --session-id ID",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "  --reset-session",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "If --issue, --pr, or --name is provided without an explicit command,",
@@ -1072,6 +1103,9 @@ describe("runCli", () => {
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "'--session-id[Resume an existing agent session id]:session id:'",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "'--reset-session[Start a new agent session instead of resuming]'",
     );
   });
 

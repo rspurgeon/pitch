@@ -482,6 +482,9 @@ Pitch resolves nono profiles in this order:
 
 When sandboxing is active, Pitch always passes
 `--workdir <workspace>` and `--allow-cwd`.
+For Codex, Pitch also grants read/write access to
+`~/.npm` so npm-installed Codex wrappers can use their
+default cache inside the outer sandbox.
 
 Example:
 
