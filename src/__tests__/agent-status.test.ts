@@ -276,6 +276,56 @@ describe("handleCodexHookPayload", () => {
     ]);
   });
 
+  it("accepts null Codex Stop fields and clears stale assistant messages", async () => {
+    const cacheDir = await makeTempCacheDir();
+
+    await writeCodexSessionState(
+      makeSessionState({
+        last_event: "Stop",
+        last_assistant_message: "Would you like me to run the tests?",
+        state: "question",
+      }),
+      cacheDir,
+    );
+
+    await handleCodexHookPayload(
+      {
+        hook_event_name: "Stop",
+        session_id: "session-1",
+        cwd: "/tmp/worktrees/demo",
+        transcript_path: null,
+        last_assistant_message: null,
+      },
+      cacheDir,
+      {
+        getCurrentTty: vi.fn(async () => "pts/21"),
+        getCurrentTmuxContext: vi.fn(async () => ({
+          session_name: "pitch",
+          window_name: "tmux-sidebar",
+          pane_id: "%12",
+          pane_index: 0,
+          pane_tty: "pts/21",
+        })),
+        listActiveCodexProcesses: vi.fn(async () => [
+          {
+            pid: 101,
+            tty: "pts/21",
+            cwd: "/tmp/worktrees/demo",
+          },
+        ]),
+        now: () => new Date("2026-04-08T12:00:00.000Z"),
+      },
+    );
+
+    await expect(listCodexSessionStates(cacheDir)).resolves.toEqual([
+      makeSessionState({
+        state: "idle",
+        last_event: "Stop",
+        last_assistant_message: undefined,
+      }),
+    ]);
+  });
+
   it("accepts an explicit tty from the hook payload", async () => {
     const cacheDir = await makeTempCacheDir();
 

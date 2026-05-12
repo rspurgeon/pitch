@@ -289,6 +289,8 @@ describe("agent launcher", () => {
       "gpt-5.5",
       "--ask-for-approval",
       "never",
+      "-c",
+      "check_for_update_on_startup=false",
       "--cd",
       "/tmp/worktree",
     ]);
@@ -320,6 +322,8 @@ describe("agent launcher", () => {
       "workspace-write",
       "--ask-for-approval",
       "on-request",
+      "-c",
+      "check_for_update_on_startup=false",
       "--cd",
       "/tmp/worktree",
       "Read the issue and wait.",
@@ -350,7 +354,13 @@ describe("agent launcher", () => {
       session_id: "session-456",
     });
 
-    expect(command.command).toEqual(["codex", "resume", "session-456"]);
+    expect(command.command).toEqual([
+      "codex",
+      "-c",
+      "check_for_update_on_startup=false",
+      "resume",
+      "session-456",
+    ]);
     expect(command.session_id).toBe("session-456");
   });
 
@@ -593,6 +603,8 @@ describe("agent launcher", () => {
       "--add-dir",
       "/home/rspurgeon/go",
       "--search",
+      "-c",
+      "check_for_update_on_startup=false",
       "--cd",
       "/tmp/worktree",
     ]);
@@ -732,6 +744,8 @@ describe("agent launcher", () => {
       "--add-dir",
       "/home/rspurgeon/.config/kongctl",
       "-c",
+      "check_for_update_on_startup=false",
+      "-c",
       "shell_environment_policy.inherit=all",
       "-c",
       buildCodexPathOverride(command.agent_env.PATH),
@@ -772,6 +786,28 @@ describe("agent launcher", () => {
       repo: "kong/kongctl",
       sandbox: "kongctl",
       workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.command).toContain("/home/rspurgeon/go");
+    expect(command.command).not.toContain("~/go");
+  });
+
+  it("expands ~ in repo additional_paths for host Codex resumes", () => {
+    const config = makeConfig();
+    config.repos["kong/kongctl"].additional_paths = ["~/go"];
+    setExecutableReadDirectoryResolverForTests(() => [
+      "/home/rspurgeon/.local/share/mise/installs/codex/0.118.0",
+    ]);
+    setPathExistsResolverForTests((path) => path !== "~/go");
+
+    const command = buildAgentResumeCommand({
+      config,
+      agent: "codex",
+      repo: "kong/kongctl",
+      sandbox: "kongctl",
+      workspace_name: "gh-565-fix-validation",
+      session_id: "session-123",
       worktree_path: "/tmp/worktree",
     });
 
@@ -930,6 +966,8 @@ describe("agent launcher", () => {
       "/home/rspurgeon/.config/kongctl",
       "--",
       "codex",
+      "-c",
+      "check_for_update_on_startup=false",
       "-c",
       "shell_environment_policy.inherit=all",
       "-c",
@@ -1221,7 +1259,13 @@ describe("agent launcher", () => {
     });
 
     expect(claude.command).toEqual(["claude", "--resume", "claude-session"]);
-    expect(codex.command).toEqual(["codex", "resume", "codex-session"]);
+    expect(codex.command).toEqual([
+      "codex",
+      "-c",
+      "check_for_update_on_startup=false",
+      "resume",
+      "codex-session",
+    ]);
     expect(opencode.command).toEqual([
       "opencode",
       "--agent",

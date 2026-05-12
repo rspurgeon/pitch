@@ -14,6 +14,8 @@ import {
   getTmuxWindowPane,
   isTmuxAvailable,
   killTmuxWindow,
+  parseTmuxPaneListingOutput,
+  respawnPane,
   sendKeysToPane,
   tmuxSessionExists,
   tmuxWindowExists,
@@ -168,6 +170,26 @@ async function waitForPaneText(
 }
 
 const tmuxDescribe = tmuxIntegrationAvailable ? describe : describe.skip;
+
+describe("tmux pane parsing", () => {
+  it("preserves empty current paths from list-panes output", () => {
+    expect(
+      parseTmuxPaneListingOutput(
+        "kongctl\tconcurrent-e2e\t1\t%240\t/dev/pts/49\tnono\t\n",
+      ),
+    ).toEqual([
+      {
+        session_name: "kongctl",
+        window_name: "concurrent-e2e",
+        pane_index: 1,
+        pane_id: "%240",
+        pane_tty: "/dev/pts/49",
+        current_command: "nono",
+        current_path: "",
+      },
+    ]);
+  });
+});
 
 tmuxDescribe("tmux management", () => {
   let tempRoot: string;
@@ -486,6 +508,62 @@ tmuxDescribe("tmux management", () => {
     await waitForPaneText(window.pane_id, "literal tmux text", options);
     const content = await capturePane(window.pane_id, options);
     expect(content).not.toContain("Enter");
+  });
+
+  it("sends long literal commands to a specific pane", async () => {
+    await ensureIsolatedTestSession(sessionName, worktreePath, options);
+    const window = await createTmuxWindow(
+      {
+        session_name: sessionName,
+        window_name: windowName,
+        start_directory: worktreePath,
+      },
+      options,
+    );
+    const longValue = "x".repeat(8000);
+
+    await sendKeysToPane(
+      {
+        pane_id: window.pane_id,
+        command: `printf '%s\\n' '${longValue}'`,
+      },
+      options,
+    );
+
+    await waitForPaneText(window.pane_id, longValue.slice(-80), options);
+  });
+
+  it("respawns a pane with a command and start directory", async () => {
+    await ensureIsolatedTestSession(sessionName, worktreePath, options);
+    const window = await createTmuxWindow(
+      {
+        session_name: sessionName,
+        window_name: windowName,
+        start_directory: worktreePath,
+      },
+      options,
+    );
+
+    await respawnPane(
+      {
+        pane_id: window.pane_id,
+        command: "printf 'pitch-respawn-test\\n'; sleep 5",
+        start_directory: worktreePath,
+      },
+      options,
+    );
+
+    await waitForPaneText(window.pane_id, "pitch-respawn-test", options);
+    await expect(
+      getTmuxPaneInfo(
+        {
+          pane_id: window.pane_id,
+        },
+        options,
+      ),
+    ).resolves.toMatchObject({
+      current_path: worktreePath,
+    });
   });
 
   it("reads pane info by pane id", async () => {

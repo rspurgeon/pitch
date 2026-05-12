@@ -536,6 +536,12 @@ function getCodexShellEnvironmentArgs(
   ];
 }
 
+function getManagedCodexConfigArgs(
+  sandbox: SandboxConfig | null,
+): string[] {
+  return ["-c", "check_for_update_on_startup=false"];
+}
+
 function wrapSandboxCommand(
   agentType: SupportedAgentType,
   args: string[],
@@ -667,6 +673,7 @@ function resolveResumeEnvironment(
   environment: ResolvedExecutionEnvironment;
   sandbox: SandboxConfig | null;
   workspace_paths: ResolvedWorkspacePaths | null;
+  additional_paths: string[];
 } {
   const environment = resolveExecutionEnvironment(
     input.config,
@@ -684,18 +691,27 @@ function resolveResumeEnvironment(
       environment,
       sandbox,
       workspace_paths: null,
+      additional_paths: [],
     };
   }
+
+  const workspacePaths = {
+    host_worktree_path:
+      input.host_worktree_path ?? input.worktree_path ?? "",
+    agent_worktree_path: input.worktree_path ?? input.host_worktree_path ?? "",
+    guest_worktree_path: input.worktree_path ?? input.host_worktree_path ?? "",
+  };
+  const repoConfig = resolveRepoConfig(input.config, input.repo);
 
   return {
     environment,
     sandbox,
-    workspace_paths: {
-      host_worktree_path:
-        input.host_worktree_path ?? input.worktree_path ?? "",
-      agent_worktree_path: input.worktree_path ?? input.host_worktree_path ?? "",
-      guest_worktree_path: input.worktree_path ?? input.host_worktree_path ?? "",
-    },
+    workspace_paths: workspacePaths,
+    additional_paths: mapAdditionalPathsForEnvironment(
+      repoConfig?.additional_paths ?? [],
+      environment,
+      workspacePaths,
+    ),
   };
 }
 
@@ -924,6 +940,7 @@ function buildCodexStartCommand(
   const command = [
     AGENT_BINARIES.codex,
     ...layeredArgs,
+    ...getManagedCodexConfigArgs(sandbox),
     ...getCodexShellEnvironmentArgs(sandbox, agentEnv),
     ...getCodexShellSandboxArgs(sandbox),
     "--cd",
@@ -998,6 +1015,7 @@ function buildCodexResumeCommand(
   );
   const command = [
     AGENT_BINARIES.codex,
+    ...getManagedCodexConfigArgs(sandbox),
     ...getCodexShellEnvironmentArgs(sandbox, agentEnv),
     ...getCodexShellSandboxArgs(sandbox),
     "resume",
@@ -1270,12 +1288,13 @@ class ClaudeLauncher implements AgentLauncher {
   }
 
   buildResumeCommand(input: BuildResumeCommandInput): BuiltAgentCommand {
-    const { environment, sandbox, workspace_paths } =
+    const { environment, sandbox, workspace_paths, additional_paths } =
       resolveResumeEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
+      additional_paths,
     );
     const mappedResolved = {
       ...resolved,
@@ -1338,12 +1357,13 @@ class CodexLauncher implements AgentLauncher {
   }
 
   buildResumeCommand(input: BuildResumeCommandInput): BuiltAgentCommand {
-    const { environment, sandbox, workspace_paths } =
+    const { environment, sandbox, workspace_paths, additional_paths } =
       resolveResumeEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
+      additional_paths,
     );
     const mappedResolved = {
       ...resolved,
@@ -1406,12 +1426,13 @@ class OpencodeLauncher implements AgentLauncher {
   }
 
   buildResumeCommand(input: BuildResumeCommandInput): BuiltAgentCommand {
-    const { environment, sandbox, workspace_paths } =
+    const { environment, sandbox, workspace_paths, additional_paths } =
       resolveResumeEnvironment(input);
     const resolved = resolveAgentTarget(
       input.config,
       input.agent,
       input.repo,
+      additional_paths,
     );
     const mappedResolved = {
       ...resolved,

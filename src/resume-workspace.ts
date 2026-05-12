@@ -39,6 +39,7 @@ import {
   getTmuxPaneInfo,
   getTmuxWindowPaneInfo,
   getTmuxWindowPane,
+  respawnPane,
   sendKeysToPane,
   tmuxWindowExists,
   type TmuxPaneLayout,
@@ -86,6 +87,7 @@ export interface ResumeWorkspaceDependencies {
   readWorkspaceRecord: typeof readWorkspaceRecord;
   restoreWorktree: typeof restoreWorktree;
   runGitHubLifecycle: typeof runGitHubLifecycle;
+  respawnPane: typeof respawnPane;
   sendKeysToPane: typeof sendKeysToPane;
   sleep: (ms: number) => Promise<void>;
   tmuxWindowExists: typeof tmuxWindowExists;
@@ -116,6 +118,7 @@ const defaultDependencies: ResumeWorkspaceDependencies = {
   readWorkspaceRecord,
   restoreWorktree,
   runGitHubLifecycle,
+  respawnPane,
   sendKeysToPane,
   sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
   tmuxWindowExists,
@@ -861,11 +864,14 @@ export async function resumeWorkspace(
   reportWarnings(dependencies.reportWarning, command.warnings);
 
   let paneCommand: string;
+  let reuseConnectedPane: boolean;
   try {
-    paneCommand = formatAgentPaneCommand(
+    reuseConnectedPane = await shouldReuseConnectedVmPane(
+      workspace,
+      existingPaneInfo,
       command,
-      await shouldReuseConnectedVmPane(workspace, existingPaneInfo, command),
     );
+    paneCommand = formatAgentPaneCommand(command, reuseConnectedPane);
   } catch (error: unknown) {
     throw new ResumeWorkspaceError(
       `Failed to format agent command for ${workspace.name}: ${formatError(error)}`,
@@ -873,10 +879,18 @@ export async function resumeWorkspace(
   }
 
   try {
-    await dependencies.sendKeysToPane({
-      pane_id: agentPaneId,
-      command: paneCommand,
-    });
+    if (reuseConnectedPane) {
+      await dependencies.sendKeysToPane({
+        pane_id: agentPaneId,
+        command: paneCommand,
+      });
+    } else {
+      await dependencies.respawnPane({
+        pane_id: agentPaneId,
+        command: paneCommand,
+        start_directory: workspacePaths.host_worktree_path,
+      });
+    }
   } catch (error: unknown) {
     throw new ResumeWorkspaceError(
       `Failed to send agent command to tmux pane for ${workspace.name}: ${formatError(error)}`,

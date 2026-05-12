@@ -268,6 +268,7 @@ async function tryGracefulAgentShutdown(
       pane_id: paneInfo.pane_id,
       command: "C-c",
       enter: false,
+      literal: false,
     });
   } catch {
     return;

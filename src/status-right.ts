@@ -292,12 +292,22 @@ export async function renderStatusRight(
   const summary = await dependencies.refreshAgentStatusSummary();
   const shouldScopeToTmuxContext =
     input.tmuxSession !== undefined || input.tmuxWindow !== undefined;
-  const agents = (isTmuxFormatEnabled() || shouldScopeToTmuxContext)
-    ? (await dependencies.getAgentsView()).agents.filter((agent) =>
-        agentMatchesTmuxContext(agent, input),
-      )
-    : [];
-  const scopedSummary = shouldScopeToTmuxContext
+  let agents: AgentViewEntry[] = [];
+  let hasAgentView = false;
+  if (isTmuxFormatEnabled() || shouldScopeToTmuxContext) {
+    try {
+      agents = (await dependencies.getAgentsView()).agents.filter((agent) =>
+          agentMatchesTmuxContext(agent, input),
+        );
+      hasAgentView = true;
+    } catch {
+      agents = [];
+    }
+  }
+  const scopedSummary = shouldScopeToTmuxContext || (
+    isTmuxFormatEnabled() &&
+    hasAgentView
+  )
     ? summarizeAgents(agents)
     : summary;
 

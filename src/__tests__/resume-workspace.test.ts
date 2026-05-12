@@ -282,6 +282,7 @@ function makeDependencies(
       worktree_path: "/tmp/worktrees/gh-42-fix-bug",
     })),
     runGitHubLifecycle: vi.fn(async () => []),
+    respawnPane: vi.fn(async () => undefined),
     sendKeysToPane: vi.fn(async () => undefined),
     sleep: vi.fn(async () => undefined),
     tmuxWindowExists: vi.fn(async () => true),
@@ -337,10 +338,11 @@ describe("resume workspace", () => {
       repo: config.repos["kong/kongctl"],
       claude_config_dir: "~/.claude",
     });
-    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
+    expect(dependencies.respawnPane).toHaveBeenCalledWith({
       pane_id: "%1",
       command:
         "CLAUDE_CONFIG_DIR=~/.claude command -- 'claude' '--resume' 'claude-session-1'",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
     });
     expect(workspace).toEqual(
       makeWorkspaceRecord({
@@ -1314,17 +1316,18 @@ describe("resume workspace", () => {
       dependencies,
     );
 
-    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(1, {
+    expect(dependencies.respawnPane).toHaveBeenCalledWith({
       pane_id: "%1",
       command:
         "CLAUDE_CONFIG_DIR=~/.claude command -- 'claude' '--resume' " +
         "'claude-session-1'",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
     });
-    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(2, {
+    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(1, {
       pane_id: "%2",
       command: "nvim .",
     });
-    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(3, {
+    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(2, {
       pane_id: "%3",
       command: "make build",
     });
@@ -1734,15 +1737,16 @@ describe("resume workspace", () => {
       dependencies,
     );
 
-    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(1, {
+    expect(dependencies.respawnPane).toHaveBeenCalledWith({
       pane_id: "%1",
       command:
         "OPENCODE_SERVER_PASSWORD='secret' command -- 'opencode' " +
         "'attach' 'http://localhost:4096' '--dir' '/tmp/worktrees/gh-42-fix-bug'",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
     });
     expect(dependencies.getTmuxPaneInfo).not.toHaveBeenCalled();
     expect(dependencies.sleep).not.toHaveBeenCalled();
-    expect(dependencies.sendKeysToPane).toHaveBeenCalledTimes(1);
+    expect(dependencies.sendKeysToPane).not.toHaveBeenCalled();
   });
 
   it("wraps tmux pane lookup failures", async () => {
@@ -1785,10 +1789,10 @@ describe("resume workspace", () => {
     );
   });
 
-  it("wraps sendKeysToPane failures", async () => {
+  it("wraps respawnPane failures", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
-      sendKeysToPane: vi.fn(async () => {
+      respawnPane: vi.fn(async () => {
         throw new Error("send failed");
       }),
     });

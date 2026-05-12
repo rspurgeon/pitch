@@ -201,7 +201,7 @@ describe("renderStatusRight", () => {
     }
   });
 
-  it("pulses the running symbol in tmux format", async () => {
+  it("omits unjoinable running counts in tmux format", async () => {
     const previousFormat = process.env.PITCH_STATUS_RIGHT_FORMAT;
     const originalDateNow = Date.now;
 
@@ -238,7 +238,7 @@ describe("renderStatusRight", () => {
             })),
           },
         ),
-      ).resolves.toBe("#[fg=#B7BDB5]🤖#[default] #[fg=#7DAF7D]·2#[default]");
+      ).resolves.toBe("");
     } finally {
       Date.now = originalDateNow;
       if (previousFormat === undefined) {
@@ -249,7 +249,47 @@ describe("renderStatusRight", () => {
     }
   });
 
-  it("falls back to a question count when live question agent labels are unavailable", async () => {
+  it("falls back to counts when tmux agent view is unavailable", async () => {
+    const previousFormat = process.env.PITCH_STATUS_RIGHT_FORMAT;
+    const originalDateNow = Date.now;
+
+    process.env.PITCH_STATUS_RIGHT_FORMAT = "tmux";
+    Date.now = () => 2_000;
+
+    try {
+      await expect(
+        renderStatusRight(
+          {},
+          {
+            refreshAgentStatusSummary: vi.fn(async () => ({
+              generated_at: "2026-04-08T12:00:00.000Z",
+              active_sessions: 2,
+              counts: {
+                running: 1,
+                question: 0,
+                idle: 1,
+                error: 0,
+              },
+            })),
+            getAgentsView: vi.fn(async () => {
+              throw new Error("tmux unavailable");
+            }),
+          },
+        ),
+      ).resolves.toBe(
+        "#[fg=#B7BDB5]🤖#[default] #[fg=#7DAF7D]●1#[default]",
+      );
+    } finally {
+      Date.now = originalDateNow;
+      if (previousFormat === undefined) {
+        delete process.env.PITCH_STATUS_RIGHT_FORMAT;
+      } else {
+        process.env.PITCH_STATUS_RIGHT_FORMAT = previousFormat;
+      }
+    }
+  });
+
+  it("omits unjoinable question counts in tmux format", async () => {
     const previousFormat = process.env.PITCH_STATUS_RIGHT_FORMAT;
     process.env.PITCH_STATUS_RIGHT_FORMAT = "tmux";
 
@@ -283,9 +323,7 @@ describe("renderStatusRight", () => {
             })),
           },
         ),
-      ).resolves.toBe(
-        "#[fg=#B7BDB5]🤖#[default] #[fg=#E5C07B]?1#[default]",
-      );
+      ).resolves.toBe("");
     } finally {
       if (previousFormat === undefined) {
         delete process.env.PITCH_STATUS_RIGHT_FORMAT;
@@ -295,7 +333,7 @@ describe("renderStatusRight", () => {
     }
   });
 
-  it("suppresses idle placeholders when live agent identities are unavailable", async () => {
+  it("suppresses placeholders when live agent identities are unavailable", async () => {
     const previousFormat = process.env.PITCH_STATUS_RIGHT_FORMAT;
     const originalDateNow = Date.now;
 
@@ -332,9 +370,7 @@ describe("renderStatusRight", () => {
             })),
           },
       ),
-    ).resolves.toBe(
-        "#[fg=#B7BDB5]🤖#[default] #[fg=#7DAF7D]·1#[default]",
-      );
+      ).resolves.toBe("");
     } finally {
       Date.now = originalDateNow;
       if (previousFormat === undefined) {

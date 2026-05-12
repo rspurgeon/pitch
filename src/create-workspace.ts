@@ -37,6 +37,7 @@ import {
   getTmuxPaneInfo,
   getTmuxWindowPaneInfo,
   killTmuxWindow,
+  respawnPane,
   sendKeysToPane,
   tmuxWindowExists,
   type TmuxPaneLayout,
@@ -54,7 +55,6 @@ import { buildWorkspaceToolResponse } from "./workspace-tool-response.js";
 import { formatAgentPaneCommand } from "./agent-pane-command.js";
 import { ensureOpencodeConfig } from "./opencode-config.js";
 import { sendConfiguredPaneCommands } from "./pane-commands.js";
-import { shellEscape } from "./shell.js";
 
 export const CreateWorkspaceInputSchema = z
   .object({
@@ -169,6 +169,7 @@ export interface CreateWorkspaceDependencies {
   getTmuxWindowPaneInfo: typeof getTmuxWindowPaneInfo;
   killTmuxWindow: typeof killTmuxWindow;
   createTmuxLayout: typeof createTmuxLayout;
+  respawnPane: typeof respawnPane;
   sendKeysToPane: typeof sendKeysToPane;
   getTmuxPaneInfo: typeof getTmuxPaneInfo;
   buildAgentStartCommand: typeof buildAgentStartCommand;
@@ -237,6 +238,7 @@ const defaultDependencies: CreateWorkspaceDependencies = {
   getTmuxWindowPaneInfo,
   killTmuxWindow,
   createTmuxLayout,
+  respawnPane,
   sendKeysToPane,
   getTmuxPaneInfo,
   buildAgentStartCommand,
@@ -964,20 +966,18 @@ export async function createWorkspace(
     rollbackState.workspace_record_written = true;
 
     if (existingPane?.kind !== "agent") {
-      if (existingPane?.kind === "shell") {
+      if (existingPane?.kind === "connected-shell") {
         await dependencies.sendKeysToPane({
           pane_id: agentPaneId,
-          command: `cd -- ${shellEscape(worktree.worktree_path)} && clear`,
+          command: formatAgentPaneCommand(agentCommand, true),
+        });
+      } else {
+        await dependencies.respawnPane({
+          pane_id: agentPaneId,
+          command: formatAgentPaneCommand(agentCommand),
+          start_directory: workspacePaths.host_worktree_path,
         });
       }
-
-      await dependencies.sendKeysToPane({
-        pane_id: agentPaneId,
-        command: formatAgentPaneCommand(
-          agentCommand,
-          existingPane?.kind === "connected-shell",
-        ),
-      });
 
       if (agentCommand.post_launch_prompt !== undefined) {
         try {

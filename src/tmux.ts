@@ -1,4 +1,4 @@
-import { execFile, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -39,6 +39,12 @@ export interface SendKeysToPaneParams {
   command: string;
   enter?: boolean;
   literal?: boolean;
+}
+
+export interface RespawnPaneParams {
+  pane_id: string;
+  command: string;
+  start_directory?: string;
 }
 
 export interface GetTmuxWindowPaneParams {
@@ -226,6 +232,54 @@ async function runTmux(
       `tmux command failed: tmux ${buildTmuxArgs(args, options).join(" ")}\n${formatTmuxError(err)}`,
     );
   }
+}
+
+async function runTmuxWithInput(
+  args: string[],
+  input: string,
+  options: TmuxClientOptions = {},
+): Promise<{ stdout: string; stderr: string }> {
+  const tmuxArgs = buildTmuxArgs(args, options);
+
+  return await new Promise((resolve, reject) => {
+    const child = spawn("tmux", tmuxArgs, {
+      env: tmuxEnv(options),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      reject(
+        new TmuxError(
+          "COMMAND_FAILED",
+          `tmux command failed: tmux ${tmuxArgs.join(" ")}\n${formatTmuxError(error)}`,
+        ),
+      );
+    });
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+
+      reject(
+        new TmuxError(
+          "COMMAND_FAILED",
+          `tmux command failed: tmux ${tmuxArgs.join(" ")}\n${stderr.trim()}`,
+        ),
+      );
+    });
+    child.stdin.end(input);
+  });
 }
 
 function validateSessionName(sessionName: string): string {
@@ -435,16 +489,20 @@ export async function sendKeysToPane(
 ): Promise<void> {
   const enter = params.enter !== false;
 
-  if (params.literal === true) {
-    await runTmux(
-      ["send-keys", "-t", params.pane_id, "-l", params.command],
+  if (params.literal !== false) {
+    const bufferName = `pitch-send-${process.pid}-${Date.now()}`;
+    await runTmuxWithInput(
+      ["load-buffer", "-b", bufferName, "-"],
+      params.command,
       options,
     );
-
+    await runTmux(
+      ["paste-buffer", "-d", "-b", bufferName, "-t", params.pane_id],
+      options,
+    );
     if (enter) {
       await runTmux(["send-keys", "-t", params.pane_id, "Enter"], options);
     }
-
     return;
   }
 
@@ -452,6 +510,24 @@ export async function sendKeysToPane(
   if (enter) {
     args.push("Enter");
   }
+
+  await runTmux(args, options);
+}
+
+export async function respawnPane(
+  params: RespawnPaneParams,
+  options: TmuxClientOptions = {},
+): Promise<void> {
+  const args = [
+    "respawn-pane",
+    "-k",
+    ...(params.start_directory === undefined
+      ? []
+      : ["-c", params.start_directory]),
+    "-t",
+    params.pane_id,
+    params.command,
+  ];
 
   await runTmux(args, options);
 }
@@ -509,10 +585,14 @@ export async function listTmuxPanes(
     options,
   );
 
+  return parseTmuxPaneListingOutput(stdout);
+}
+
+export function parseTmuxPaneListingOutput(stdout: string): TmuxPaneListing[] {
   return stdout
     .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line) => line.length > 0)
+    .map((line) => line.replace(/\r$/, ""))
+    .filter((line) => line.trim().length > 0)
     .map((line) => {
       const [
         sessionName,

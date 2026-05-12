@@ -302,6 +302,7 @@ function makeDependencies(
         bottom_right_pane_id: "%3",
       },
     })),
+    respawnPane: vi.fn(async () => undefined),
     sendKeysToPane: vi.fn(async () => undefined),
     buildAgentResumeCommand: vi.fn(() => makeClaudeCommand()),
     buildAgentStartCommand: vi.fn(() => makeClaudeCommand()),
@@ -359,11 +360,12 @@ describe("create workspace", () => {
       repo: config.repos["kong/kongctl"],
       claude_config_dir: "~/.claude",
     });
-    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
+    expect(dependencies.respawnPane).toHaveBeenCalledWith({
       pane_id: "%1",
       command:
         "CLAUDE_CONFIG_DIR=~/.claude command -- 'claude' '--model' 'opus' " +
         "'--session-id' 'claude-session' '--name' 'gh-42-fix-bug'",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
     });
     expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
       repo: "kong/kongctl",
@@ -374,10 +376,10 @@ describe("create workspace", () => {
     const writeCallOrder = vi.mocked(
       dependencies.writeWorkspaceRecord,
     ).mock.invocationCallOrder[0];
-    const sendCallOrder = vi.mocked(
-      dependencies.sendKeysToPane,
+    const launchCallOrder = vi.mocked(
+      dependencies.respawnPane,
     ).mock.invocationCallOrder[0];
-    expect(writeCallOrder).toBeLessThan(sendCallOrder);
+    expect(writeCallOrder).toBeLessThan(launchCallOrder);
   });
 
   it("can create a workspace by resuming an explicit agent session id", async () => {
@@ -427,11 +429,12 @@ describe("create workspace", () => {
         ],
       }),
     );
-    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
+    expect(dependencies.respawnPane).toHaveBeenCalledWith({
       pane_id: "%1",
       command:
         "CODEX_HOME=~/.codex-api OPENAI_API_KEY=${OPENAI_API_KEY_SECONDARY} " +
         "command -- 'codex' 'resume' 'codex-session'",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
     });
   });
 
@@ -491,17 +494,18 @@ describe("create workspace", () => {
       dependencies,
     );
 
-    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(1, {
+    expect(dependencies.respawnPane).toHaveBeenCalledWith({
       pane_id: "%1",
       command:
         "CLAUDE_CONFIG_DIR=~/.claude command -- 'claude' '--model' 'opus' " +
         "'--session-id' 'claude-session' '--name' 'gh-42-fix-bug'",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
     });
-    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(2, {
+    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(1, {
       pane_id: "%2",
       command: "nvim .",
     });
-    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(3, {
+    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(2, {
       pane_id: "%3",
       command: "make build",
     });
@@ -999,12 +1003,13 @@ describe("create workspace", () => {
         ],
       }),
     );
-    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
+    expect(dependencies.respawnPane).toHaveBeenCalledWith({
       pane_id: "%1",
       command:
         "CODEX_HOME=~/.codex-api OPENAI_API_KEY=${OPENAI_API_KEY_SECONDARY} " +
         "command -- 'codex' '--cd' " +
         "'/tmp/worktrees/gh-42-fix-bug'",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
     });
   });
 
@@ -1040,11 +1045,12 @@ describe("create workspace", () => {
         ],
       }),
     );
-    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
+    expect(dependencies.respawnPane).toHaveBeenCalledWith({
       pane_id: "%1",
       command:
         "OPENCODE_CONFIG_DIR=~/.config/opencode command -- 'opencode' " +
         "'--agent' 'build' '/tmp/worktrees/gh-42-fix-bug'",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
     });
   });
 
@@ -1166,17 +1172,18 @@ describe("create workspace", () => {
       dependencies,
     );
 
-    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(1, {
+    expect(dependencies.respawnPane).toHaveBeenCalledWith({
       pane_id: "%1",
       command:
         "OPENCODE_SERVER_PASSWORD='secret' command -- 'opencode' " +
         "'attach' 'http://localhost:4096' '--dir' '/tmp/worktrees/gh-42-fix-bug'",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
     });
     expect(dependencies.getTmuxPaneInfo).toHaveBeenCalledWith({
       pane_id: "%1",
     });
     expect(dependencies.sleep).toHaveBeenCalledWith(10000);
-    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(2, {
+    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(1, {
       pane_id: "%1",
       command: "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.",
       literal: true,
@@ -1259,10 +1266,11 @@ describe("create workspace", () => {
         ],
       }),
     );
-    expect(dependencies.sendKeysToPane).toHaveBeenCalledWith({
+    expect(dependencies.respawnPane).toHaveBeenCalledWith({
       pane_id: "%1",
       command:
         "command -- 'ssh' '-tt' 'pitch@sandbox.internal' '--' 'remote-command'",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
     });
   });
 
@@ -1354,15 +1362,12 @@ describe("create workspace", () => {
 
     expect(dependencies.createTmuxWindow).not.toHaveBeenCalled();
     expect(dependencies.createTmuxLayout).not.toHaveBeenCalled();
-    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(1, {
-      pane_id: "%9",
-      command: "cd -- '/tmp/worktrees/gh-42-fix-bug' && clear",
-    });
-    expect(dependencies.sendKeysToPane).toHaveBeenNthCalledWith(2, {
+    expect(dependencies.respawnPane).toHaveBeenCalledWith({
       pane_id: "%9",
       command:
         "CLAUDE_CONFIG_DIR=~/.claude command -- 'claude' '--model' 'opus' " +
         "'--session-id' 'claude-session' '--name' 'gh-42-fix-bug'",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
     });
   });
 
@@ -1572,10 +1577,9 @@ describe("create workspace", () => {
             current_path: "/tmp/worktrees/gh-42-fix-bug",
           }) satisfies TmuxPaneInfo,
       ),
-      sendKeysToPane: vi
-        .fn()
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValueOnce(new Error("agent launch failed")),
+      respawnPane: vi.fn(async () => {
+        throw new Error("agent launch failed");
+      }),
     });
 
     await expect(
@@ -1598,7 +1602,7 @@ describe("create workspace", () => {
   it("cleans up state, tmux window, and worktree when agent launch fails", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
-      sendKeysToPane: vi.fn(async () => {
+      respawnPane: vi.fn(async () => {
         throw new Error("agent launch failed");
       }),
     });

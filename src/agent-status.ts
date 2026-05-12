@@ -92,22 +92,27 @@ export const AgentStatusSnapshotSchema = z.object({
   sessions: z.array(AgentSessionStateSchema),
 }).strict();
 
+const OptionalHookStringSchema = z.preprocess(
+  (value) => (value === null ? undefined : value),
+  z.string().optional(),
+);
+
 export const CodexHookPayloadSchema = z.object({
   hook_event_name: z.string(),
   session_id: z.string(),
-  cwd: z.string().optional(),
-  transcript_path: z.string().optional(),
-  tty: z.string().optional(),
-  last_assistant_message: z.string().optional(),
+  cwd: OptionalHookStringSchema,
+  transcript_path: OptionalHookStringSchema,
+  tty: OptionalHookStringSchema,
+  last_assistant_message: OptionalHookStringSchema,
 }).passthrough();
 
 export const ClaudeHookPayloadSchema = z.object({
   hook_event_name: z.string(),
   session_id: z.string(),
-  cwd: z.string().optional(),
-  transcript_path: z.string().optional(),
-  tty: z.string().optional(),
-  message: z.string().optional(),
+  cwd: OptionalHookStringSchema,
+  transcript_path: OptionalHookStringSchema,
+  tty: OptionalHookStringSchema,
+  message: OptionalHookStringSchema,
   stop_hook_active: z.boolean().optional(),
 }).passthrough();
 
@@ -778,6 +783,31 @@ export async function writeAgentStatusSummary(
   return validated;
 }
 
+async function writeAgentStatusSummaryIfPossible(
+  summary: AgentStatusSummary,
+  cacheDir: string,
+  dependencies: Pick<AgentStatusDependencies, "writeAgentStatusSummary">,
+): Promise<AgentStatusSummary> {
+  try {
+    return await dependencies.writeAgentStatusSummary(summary, cacheDir);
+  } catch (error: unknown) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      (
+        error.code === "EACCES" ||
+        error.code === "EPERM" ||
+        error.code === "EROFS"
+      )
+    ) {
+      return AgentStatusSummarySchema.parse(summary);
+    }
+
+    throw error;
+  }
+}
+
 function aggregateAgentStatusSummaries(
   sources: AgentStatusSourceSummary[],
   now: Date,
@@ -994,6 +1024,11 @@ export async function handleCodexHookPayload(
     normalizeTty(validatedPayload.tty) ??
     await dependencies.getCurrentTty();
   const tmuxContext = await dependencies.getCurrentTmuxContext();
+  const lastAssistantMessage =
+    validatedPayload.hook_event_name === "Stop"
+      ? validatedPayload.last_assistant_message
+      : validatedPayload.last_assistant_message ??
+        existing?.last_assistant_message;
 
   const nextState: CodexSessionState = {
     session_id: validatedPayload.session_id,
@@ -1008,9 +1043,7 @@ export async function handleCodexHookPayload(
     tmux_pane_id: tmuxContext?.pane_id ?? existing?.tmux_pane_id,
     tmux_pane_index: tmuxContext?.pane_index ?? existing?.tmux_pane_index,
     last_event: validatedPayload.hook_event_name,
-    last_assistant_message:
-      validatedPayload.last_assistant_message ??
-      existing?.last_assistant_message,
+    last_assistant_message: lastAssistantMessage,
     error_message: undefined,
     updated_at: dependencies.now().toISOString(),
   };
@@ -1255,7 +1288,7 @@ export async function refreshAgentStatusSummary(
     [{ source: HOST_AGENT_STATUS_SOURCE, summary: hostSummary }, ...remoteSources],
     now,
   );
-  return dependencies.writeAgentStatusSummary(summary, cacheDir);
+  return writeAgentStatusSummaryIfPossible(summary, cacheDir, dependencies);
 }
 
 export interface MarkAgentErrorInput {
@@ -1353,7 +1386,7 @@ export async function getAgentStatusSnapshot(
     ...remoteSources,
   ];
   const summary = aggregateAgentStatusSummaries(sources, now);
-  await dependencies.writeAgentStatusSummary(summary, cacheDir);
+  await writeAgentStatusSummaryIfPossible(summary, cacheDir, dependencies);
 
   return AgentStatusSnapshotSchema.parse({
     summary,

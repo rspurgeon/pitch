@@ -150,6 +150,7 @@ describe("close workspace", () => {
       pane_id: "%1",
       command: "C-c",
       enter: false,
+      literal: false,
     });
     expect(dependencies.killTmuxWindow).toHaveBeenCalledWith({
       session_name: "kongctl",
@@ -237,6 +238,7 @@ describe("close workspace", () => {
       pane_id: "%1",
       command: "C-c",
       enter: false,
+      literal: false,
     });
 
     await rm(worktreePath, {
@@ -286,6 +288,7 @@ describe("close workspace", () => {
       pane_id: "%1",
       command: "C-c",
       enter: false,
+      literal: false,
     });
 
     await rm(worktreePath, {
