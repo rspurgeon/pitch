@@ -25,7 +25,7 @@ describe("codex session store", () => {
     );
   });
 
-  it("finds the earliest matching session for a workspace after the pending start", async () => {
+  it("finds the latest matching session for a workspace after the pending start", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "pitch-codex-session-"));
     tempRoots.push(tempRoot);
 
@@ -65,6 +65,35 @@ describe("codex session store", () => {
           id: "codex-session-2",
           timestamp: "2026-03-23T14:28:30.000Z",
           cwd: "/tmp/worktrees/gh-42-fix-bug",
+          source: "cli",
+        },
+      }),
+    );
+    await writeRollout(
+      tempRoot,
+      "2026/03/23",
+      "rollout-match-vscode.jsonl",
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          id: "codex-session-vscode",
+          timestamp: "2026-03-23T14:29:00.000Z",
+          cwd: "/tmp/worktrees/gh-42-fix-bug",
+          source: "vscode",
+        },
+      }),
+    );
+    await writeRollout(
+      tempRoot,
+      "2026/03/23",
+      "rollout-non-interactive-later.jsonl",
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          id: "codex-exec-session",
+          timestamp: "2026-03-23T14:29:30.000Z",
+          cwd: "/tmp/worktrees/gh-42-fix-bug",
+          source: "exec",
         },
       }),
     );
@@ -79,14 +108,14 @@ describe("codex session store", () => {
     });
 
     expect(session).toEqual({
-      id: "codex-session-1",
-      timestamp: "2026-03-23T14:27:05.000Z",
+      id: "codex-session-vscode",
+      timestamp: "2026-03-23T14:29:00.000Z",
       cwd: "/tmp/worktrees/gh-42-fix-bug",
       file_path: join(
         tempRoot,
         "sessions",
         "2026/03/23",
-        "rollout-match-first.jsonl",
+        "rollout-match-vscode.jsonl",
       ),
     });
   });

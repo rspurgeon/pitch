@@ -59,6 +59,7 @@ export const WorkspaceRecordSchema = z.object({
   guest_worktree_path: z.string().optional(),
   agent_pane_process: z.string().optional(),
   agent_env: z.record(z.string(), z.string()).default({}),
+  additional_paths: z.array(z.string().trim().min(1)).optional(),
   agent_sessions: z.array(AgentSessionSchema).default([]),
   status: WorkspaceStatusSchema,
   created_at: TimestampSchema,

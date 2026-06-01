@@ -48,12 +48,13 @@ type CliVerb =
   | "list"
   | "get"
   | "resume"
+  | "restart"
   | "close"
   | "delete"
   | "status-right"
   | "completion"
   | "__complete-workspaces";
-type FlagValue = boolean | string;
+type FlagValue = boolean | string | string[];
 
 interface ParsedArgs {
   verb: CliVerb | "help";
@@ -122,6 +123,7 @@ const BOOLEAN_FLAGS = new Set([
 ]);
 
 const STRING_FLAGS = new Set([
+  "additional-dir",
   "agent",
   "agent-type",
   "base-branch",
@@ -144,12 +146,17 @@ const STRING_FLAGS = new Set([
   "tmux-window",
 ]);
 
+const REPEATABLE_STRING_FLAGS = new Set([
+  "additional-dir",
+]);
+
 const SHORT_FLAG_ALIASES = new Map<string, string>([
   ["d", "delete-branch-if-empty"],
 ]);
 
 function normalizeFlagName(flagName: string): string {
-  return flagName.replaceAll("_", "-");
+  const normalized = flagName.replaceAll("_", "-");
+  return normalized === "add-dir" ? "additional-dir" : normalized;
 }
 
 function setFlag(
@@ -157,7 +164,27 @@ function setFlag(
   flagName: string,
   value: FlagValue,
 ): void {
-  flags.set(normalizeFlagName(flagName), value);
+  const normalizedName = normalizeFlagName(flagName);
+  if (REPEATABLE_STRING_FLAGS.has(normalizedName)) {
+    if (typeof value !== "string") {
+      throw new Error(`Option --${normalizedName} requires a value.`);
+    }
+
+    const existing = flags.get(normalizedName);
+    if (existing === undefined) {
+      flags.set(normalizedName, [value]);
+      return;
+    }
+
+    if (!Array.isArray(existing)) {
+      throw new Error(`Option --${normalizedName} cannot be mixed with other values.`);
+    }
+
+    existing.push(value);
+    return;
+  }
+
+  flags.set(normalizedName, value);
 }
 
 function hasImplicitCreateFlags(flags: Map<string, FlagValue>): boolean {
@@ -295,6 +322,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     verbToken !== "list" &&
         verbToken !== "get" &&
         verbToken !== "resume" &&
+        verbToken !== "restart" &&
         verbToken !== "close" &&
         verbToken !== "delete" &&
         verbToken !== "status-right" &&
@@ -315,14 +343,34 @@ function readStringFlag(
   flags: Map<string, FlagValue>,
   flagName: string,
 ): string | undefined {
-  const value = flags.get(flagName);
+  const value = flags.get(normalizeFlagName(flagName));
   if (value === undefined) {
     return undefined;
+  }
+  if (Array.isArray(value)) {
+    throw new Error(`Option --${flagName} accepts multiple values.`);
   }
   if (typeof value !== "string") {
     throw new Error(`Option --${flagName} requires a value.`);
   }
   return value;
+}
+
+function readStringListFlag(
+  flags: Map<string, FlagValue>,
+  flagName: string,
+): string[] | undefined {
+  const value = flags.get(normalizeFlagName(flagName));
+  if (value === undefined) {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return [value];
+  }
+  throw new Error(`Option --${flagName} requires a value.`);
 }
 
 function readNumberFlag(
@@ -396,6 +444,7 @@ function resolveWorkspaceName(
 }
 
 function buildCreateInput(flags: Map<string, FlagValue>): CreateWorkspaceInput {
+  const additionalPaths = readStringListFlag(flags, "additional-dir");
   return {
     repo: readStringFlag(flags, "repo"),
     issue: readNumberFlag(flags, "issue"),
@@ -409,6 +458,7 @@ function buildCreateInput(flags: Map<string, FlagValue>): CreateWorkspaceInput {
     session_id: readStringFlag(flags, "session-id"),
     skip_prompt: readBooleanFlag(flags, "skip-prompt"),
     model: readStringFlag(flags, "model"),
+    ...(additionalPaths === undefined ? {} : { additional_paths: additionalPaths }),
   };
 }
 
@@ -451,13 +501,26 @@ function buildResumeInput(
   flags: Map<string, FlagValue>,
   positionals: string[],
 ): ResumeWorkspaceInput {
+  const additionalPaths = readStringListFlag(flags, "additional-dir");
   return {
     name: resolveWorkspaceName(flags, positionals),
     agent: readStringFlag(flags, "agent"),
     environment: readStringFlag(flags, "environment"),
     session_id: readStringFlag(flags, "session-id"),
     reset_session: readBooleanFlag(flags, "reset-session"),
+    restart_agent: undefined,
     sync: readBooleanFlag(flags, "sync"),
+    ...(additionalPaths === undefined ? {} : { additional_paths: additionalPaths }),
+  };
+}
+
+function buildRestartInput(
+  flags: Map<string, FlagValue>,
+  positionals: string[],
+): ResumeWorkspaceInput {
+  return {
+    ...buildResumeInput(flags, positionals),
+    restart_agent: true,
   };
 }
 
@@ -757,8 +820,8 @@ function buildAgentMenuRows(
 function buildHelpText(): string {
   return [
     "Usage:",
-    "  pitch [create] (--issue N | --pr N) [--slug SLUG] [--session-id ID] [options]",
-    "  pitch [create] --name NAME [--branch BRANCH] [--session-id ID] [options]",
+    "  pitch [create] (--issue N | --pr N) [--slug SLUG] [--session-id ID] [--additional-dir PATH]... [options]",
+    "  pitch [create] --name NAME [--branch BRANCH] [--session-id ID] [--additional-dir PATH]... [options]",
     "  pitch agents [--pick]",
     "  pitch agents-popup",
     "  pitch jump <session-id-or-prefix>",
@@ -766,7 +829,8 @@ function buildHelpText(): string {
     "  pitch agent-error --agent-type TYPE --session-id ID --message TEXT",
     "  pitch list [--repo REPO] [--status active|closed|all]",
     "  pitch get <name>",
-    "  pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--reset-session] [--sync]",
+    "  pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--additional-dir PATH]... [--reset-session] [--sync]",
+    "  pitch restart <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--additional-dir PATH]... [--reset-session] [--sync]",
     "  pitch close <name>",
     "  pitch delete <name> [--force]",
     "  pitch status-right [--separator TEXT]",
@@ -784,6 +848,7 @@ function buildHelpText(): string {
     "  --base-branch BRANCH",
     "  --agent AGENT",
     "  --agent-type codex|claude",
+    "  --additional-dir PATH",
     "  --environment ENV",
     "  --cwd PATH",
     "  --transcript-path PATH",
@@ -849,6 +914,8 @@ function buildZshCompletionScript(): string {
     "        '--agent[Configured agent]:agent:' \\",
     "        '--environment[Execution environment]:environment:' \\",
     "        '--session-id[Resume an existing agent session id]:session id:' \\",
+    "        '*--additional-dir[Additional directory to grant to the agent]:path:_files -/' \\",
+    "        '*--add-dir[Alias for --additional-dir]:path:_files -/' \\",
     "        '--model[Model override]:model:' \\",
     "        '--skip-prompt[Skip bootstrap prompt]' \\",
     "        '--json[Emit JSON]' \\",
@@ -901,13 +968,15 @@ function buildZshCompletionScript(): string {
     "        '--help[Show help]' \\",
     "        '1:workspace:_pitch_workspaces'",
     "      ;;",
-    "    resume)",
+    "    resume|restart)",
     "      _pitch_complete_workspace_target \"$command_index\" && return",
     "      _arguments -s -S \\",
     "        '--name[Workspace name]:workspace:_pitch_workspaces' \\",
     "        '--agent[Configured agent]:agent:' \\",
     "        '--environment[Execution environment]:environment:' \\",
     "        '--session-id[Resume an existing agent session id]:session id:' \\",
+    "        '*--additional-dir[Additional directory to grant to the agent]:path:_files -/' \\",
+    "        '*--add-dir[Alias for --additional-dir]:path:_files -/' \\",
     "        '--reset-session[Start a new agent session instead of resuming]' \\",
     "        '--sync[Fast-forward PR workspaces to latest upstream head before resuming]' \\",
     "        '--json[Emit JSON]' \\",
@@ -960,6 +1029,7 @@ function buildZshCompletionScript(): string {
     "      'list[List workspaces]' \\",
     "      'get[Show a workspace]' \\",
     "      'resume[Resume a workspace]' \\",
+    "      'restart[Restart the agent process in a workspace]' \\",
     "      'close[Close a workspace]' \\",
     "      'delete[Delete a workspace]' \\",
     "      'status-right[Render an agent status-right segment]' \\",
@@ -985,6 +1055,7 @@ function buildZshCompletionScript(): string {
     "        'list[List workspaces]' \\",
     "        'get[Show a workspace]' \\",
     "        'resume[Resume a workspace]' \\",
+    "        'restart[Restart the agent process in a workspace]' \\",
     "        'close[Close a workspace]' \\",
     "        'delete[Delete a workspace]' \\",
     "        'completion[Generate shell completion]'",
@@ -1142,6 +1213,22 @@ async function executeCommand(
       const warnings: string[] = [];
       const result = await dependencies.resumeWorkspace(
         buildResumeInput(parsed.flags, parsed.positionals),
+        config,
+        {
+          reportWarning: (warning) => warnings.push(warning),
+        },
+      );
+      return {
+        command: parsed.verb,
+        result,
+        warnings,
+      };
+    }
+    case "restart": {
+      const config = await dependencies.loadConfig();
+      const warnings: string[] = [];
+      const result = await dependencies.resumeWorkspace(
+        buildRestartInput(parsed.flags, parsed.positionals),
         config,
         {
           reportWarning: (warning) => warnings.push(warning),

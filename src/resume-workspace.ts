@@ -12,6 +12,7 @@ import { ensureClaudeTrustedPaths } from "./claude-trust.js";
 import type { PitchConfig } from "./config.js";
 import { ensureCodexTrustedPath } from "./codex-trust.js";
 import { findCodexSessionForWorkspace } from "./codex-session-store.js";
+import { syncCodexThreadTitles } from "./codex-thread-titles.js";
 import {
   deriveAgentPaneProcess,
   isVmAgentActiveOnHost,
@@ -57,13 +58,17 @@ import { formatAgentPaneCommand } from "./agent-pane-command.js";
 import { ensureOpencodeConfig } from "./opencode-config.js";
 import { sendConfiguredPaneCommands } from "./pane-commands.js";
 
+const AdditionalPathsInputSchema = z.array(z.string().trim().min(1));
+
 export const ResumeWorkspaceInputSchema = z.object({
   name: z.string().trim().min(1),
   agent: z.string().trim().min(1).optional(),
   environment: z.string().trim().min(1).optional(),
   session_id: z.string().trim().min(1).optional(),
   reset_session: z.boolean().optional(),
+  restart_agent: z.boolean().optional(),
   sync: z.boolean().optional(),
+  additional_paths: AdditionalPathsInputSchema.optional(),
 }).strict();
 
 export type ResumeWorkspaceInput = z.infer<typeof ResumeWorkspaceInputSchema>;
@@ -97,6 +102,7 @@ export interface ResumeWorkspaceDependencies {
   ensureOpencodeConfig: typeof ensureOpencodeConfig;
   ensureClaudeTrustedPaths: typeof ensureClaudeTrustedPaths;
   ensureCodexTrustedPath: typeof ensureCodexTrustedPath;
+  syncCodexThreadTitles: typeof syncCodexThreadTitles;
 }
 
 const defaultDependencies: ResumeWorkspaceDependencies = {
@@ -127,6 +133,7 @@ const defaultDependencies: ResumeWorkspaceDependencies = {
   ensureOpencodeConfig,
   ensureClaudeTrustedPaths,
   ensureCodexTrustedPath,
+  syncCodexThreadTitles,
 };
 
 export class ResumeWorkspaceError extends Error {
@@ -286,6 +293,24 @@ function buildNextAgentSession(
   };
 }
 
+function mergeAdditionalPaths(...pathLists: Array<string[] | undefined>): string[] {
+  const paths: string[] = [];
+  const seen = new Set<string>();
+
+  for (const pathList of pathLists) {
+    for (const path of pathList ?? []) {
+      if (seen.has(path)) {
+        continue;
+      }
+
+      seen.add(path);
+      paths.push(path);
+    }
+  }
+
+  return paths;
+}
+
 async function isCompatibleRunningAgentPane(
   workspace: WorkspaceRecord,
   paneInfo: TmuxPaneInfo | null,
@@ -434,6 +459,7 @@ async function maybeSyncWorkspaceOnResume(
       fallback_remote: `${new URL(pullRequest.url).origin}/${workspace.repo}.git`,
       source_ref: `refs/pull/${sourceNumber}/head`,
       destination_ref: targetRef,
+      force: true,
     });
   } catch (error: unknown) {
     throw new ResumeWorkspaceError(
@@ -460,6 +486,7 @@ async function maybeEnsureOpencodeConfig(
   workspaceName: string,
   environment: ResolvedExecutionEnvironment,
   workspacePaths: ResolvedWorkspacePaths,
+  additionalPaths: string[],
   dependencies: ResumeWorkspaceDependencies,
 ): Promise<string | undefined> {
   const agentConfig = config.agents[agentName];
@@ -473,8 +500,8 @@ async function maybeEnsureOpencodeConfig(
   }
 
   try {
-    const additionalPaths = mapAdditionalPathsForEnvironment(
-      repoConfig.additional_paths,
+    const mappedAdditionalPaths = mapAdditionalPathsForEnvironment(
+      mergeAdditionalPaths(repoConfig.additional_paths, additionalPaths),
       environment,
       workspacePaths,
     );
@@ -484,13 +511,44 @@ async function maybeEnsureOpencodeConfig(
         : undefined;
     return await dependencies.ensureOpencodeConfig({
       workspace_name: workspaceName,
-      additional_paths: additionalPaths,
+      additional_paths: mappedAdditionalPaths,
       base_config_path: resolveAgentEnv(config, agentName, repoName).OPENCODE_CONFIG,
     }, rootDir);
   } catch (error: unknown) {
     throw new ResumeWorkspaceError(
       `Failed to prepare OpenCode config for ${workspaceName}: ${formatError(error)}`,
     );
+  }
+}
+
+async function maybeSyncCodexThreadTitles(
+  workspace: WorkspaceRecord,
+  activeSessionId: string | null,
+  environment: ResolvedExecutionEnvironment,
+  dependencies: ResumeWorkspaceDependencies,
+  now: Date,
+): Promise<void> {
+  if (
+    workspace.agent_type !== "codex" ||
+    environment.kind !== "host" ||
+    activeSessionId === null
+  ) {
+    return;
+  }
+
+  try {
+    const result = await dependencies.syncCodexThreadTitles({
+      workspace_name: workspace.name,
+      agent_sessions: workspace.agent_sessions,
+      agent_env: workspace.agent_env,
+      active_session_id: activeSessionId,
+      now,
+    });
+    reportWarnings(dependencies.reportWarning, result.warnings);
+  } catch (error: unknown) {
+    reportWarnings(dependencies.reportWarning, [
+      `Failed to sync Codex thread titles for ${workspace.name}: ${formatError(error)}`,
+    ]);
   }
 }
 
@@ -646,6 +704,18 @@ export async function resumeWorkspace(
     guest_worktree_path:
       workspace.guest_worktree_path ?? derivedWorkspacePaths.guest_worktree_path,
   };
+  const workspaceAdditionalPaths = mergeAdditionalPaths(
+    workspace.additional_paths,
+    input.additional_paths,
+  );
+  if (input.additional_paths !== undefined) {
+    workspace = {
+      ...workspace,
+      ...(workspaceAdditionalPaths.length === 0
+        ? {}
+        : { additional_paths: workspaceAdditionalPaths }),
+    };
+  }
 
   const agentName = resolveAgentName(workspace, input.agent);
   const isAgentContextChanged =
@@ -654,6 +724,7 @@ export async function resumeWorkspace(
     input.environment !== undefined && input.environment !== currentEnvironmentName;
   const trailingPendingSession = hasTrailingPendingSession(workspace);
   const shouldResetSession = input.reset_session === true;
+  const shouldRestartAgent = input.restart_agent === true;
 
   let latestSessionId =
     input.session_id ??
@@ -663,42 +734,63 @@ export async function resumeWorkspace(
       trailingPendingSession
       ? null
       : findLatestResumableSessionId(workspace));
+  let codexDiscoveryStartedAt: string | null = null;
+  let codexSessionDiscoveryError: unknown = null;
+
+  if (input.session_id !== undefined && trailingPendingSession) {
+    const pendingSessionIndex = findLatestPendingSessionIndex(workspace);
+    if (pendingSessionIndex !== null) {
+      workspace = backfillPendingSessionId(
+        workspace,
+        pendingSessionIndex,
+        input.session_id,
+      );
+    }
+  }
 
   if (
     input.session_id === undefined &&
     !shouldResetSession &&
     !isAgentContextChanged &&
     !isEnvironmentContextChanged &&
-    trailingPendingSession &&
-    latestSessionId === null &&
     workspace.agent_type === "codex" &&
     environment.kind === "host"
   ) {
     const pendingSessionIndex = findLatestPendingSessionIndex(workspace);
+    const discoveryStartedAt =
+      pendingSessionIndex === null
+        ? workspace.created_at
+        : workspace.agent_sessions[pendingSessionIndex].started_at;
+    codexDiscoveryStartedAt = discoveryStartedAt;
 
-    if (pendingSessionIndex !== null) {
-      const pendingSession = workspace.agent_sessions[pendingSessionIndex];
-      let discoveredSession: Awaited<
-        ReturnType<ResumeWorkspaceDependencies["findCodexSessionForWorkspace"]>
-      > = null;
-      try {
-        discoveredSession = await dependencies.findCodexSessionForWorkspace({
-          worktree_path: workspace.worktree_path,
-          started_at: pendingSession.started_at,
-          agent_env: workspace.agent_env,
-        });
-      } catch {
-        discoveredSession = null;
-      }
+    let discoveredSession: Awaited<
+      ReturnType<ResumeWorkspaceDependencies["findCodexSessionForWorkspace"]>
+    > = null;
+    try {
+      discoveredSession = await dependencies.findCodexSessionForWorkspace({
+        worktree_path: workspace.worktree_path,
+        started_at: discoveryStartedAt,
+        agent_env: workspace.agent_env,
+      });
+    } catch (error: unknown) {
+      codexSessionDiscoveryError = error;
+      discoveredSession = null;
+    }
 
-      if (discoveredSession !== null) {
+    if (discoveredSession !== null) {
+      if (
+        trailingPendingSession &&
+        latestSessionId === null &&
+        pendingSessionIndex !== null
+      ) {
         workspace = backfillPendingSessionId(
           workspace,
           pendingSessionIndex,
           discoveredSession.id,
         );
-        latestSessionId = discoveredSession.id;
       }
+
+      latestSessionId = discoveredSession.id;
     }
   }
 
@@ -745,7 +837,27 @@ export async function resumeWorkspace(
     existingPaneInfo,
   );
 
-  if (shouldResetSession && hasCompatibleRunningPane) {
+  if (
+    input.session_id === undefined &&
+    !shouldResetSession &&
+    !isAgentContextChanged &&
+    !isEnvironmentContextChanged &&
+    trailingPendingSession &&
+    latestSessionId === null &&
+    workspace.agent_type === "codex" &&
+    environment.kind === "host"
+  ) {
+    const detail =
+      codexSessionDiscoveryError === null
+        ? `no matching Codex session was found since ${codexDiscoveryStartedAt ?? "the pending start time"}`
+        : `Codex session discovery failed: ${formatError(codexSessionDiscoveryError)}`;
+    throw new ResumeWorkspaceError(
+      `Cannot resume ${workspace.name} because its latest Codex session is still pending and ${detail}. ` +
+        "Pass --session-id ID to resume a known session, or --reset-session to intentionally start a new session.",
+    );
+  }
+
+  if (shouldResetSession && hasCompatibleRunningPane && !shouldRestartAgent) {
     throw new ResumeWorkspaceError(
       `Cannot reset session for ${workspace.name} while a compatible agent pane is already running; close the running agent or tmux window first.`,
     );
@@ -765,7 +877,9 @@ export async function resumeWorkspace(
     !isEnvironmentContextChanged &&
     latestSessionId === null &&
     findLatestPendingSessionIndex(workspace) === null &&
-    hasCompatibleRunningPane
+    hasCompatibleRunningPane &&
+    !shouldRestartAgent &&
+    input.additional_paths === undefined
   ) {
     const resumedWorkspace: WorkspaceRecord = wasClosed
       ? {
@@ -775,6 +889,13 @@ export async function resumeWorkspace(
         }
       : workspace;
     await dependencies.writeWorkspaceRecord(resumedWorkspace);
+    await maybeSyncCodexThreadTitles(
+      resumedWorkspace,
+      latestSessionId,
+      environment,
+      dependencies,
+      new Date(resumedWorkspace.updated_at),
+    );
     return resumedWorkspace;
   }
 
@@ -789,6 +910,7 @@ export async function resumeWorkspace(
       workspace.name,
       environment,
       workspacePaths,
+      workspaceAdditionalPaths,
       dependencies,
     );
     const opencodeConfigPath = resolveAgentOpencodeConfigPath(
@@ -811,6 +933,9 @@ export async function resumeWorkspace(
         worktree_path: workspacePaths.agent_worktree_path,
         host_worktree_path: workspacePaths.host_worktree_path,
         initial_prompt: undefined,
+        ...(workspaceAdditionalPaths.length === 0
+          ? {}
+          : { additional_paths: workspaceAdditionalPaths }),
       });
     } else {
       command = dependencies.buildAgentResumeCommand({
@@ -824,6 +949,9 @@ export async function resumeWorkspace(
         session_id: latestSessionId,
         worktree_path: workspacePaths.agent_worktree_path,
         host_worktree_path: workspacePaths.host_worktree_path,
+        ...(workspaceAdditionalPaths.length === 0
+          ? {}
+          : { additional_paths: workspaceAdditionalPaths }),
       });
     }
   } catch (error: unknown) {
@@ -969,6 +1097,14 @@ export async function resumeWorkspace(
       }
     }
 
+    await maybeSyncCodexThreadTitles(
+      persistedWorkspace,
+      command.session_id ?? latestSessionId,
+      environment,
+      dependencies,
+      new Date(startedAt),
+    );
+
     return persistedWorkspace;
   } catch (error: unknown) {
     throw new ResumeWorkspaceError(
@@ -998,6 +1134,39 @@ export function registerResumeWorkspaceTool(
         ...dependencies,
         reportWarning: (warning) => warnings.push(warning),
       });
+      return buildWorkspaceToolResponse(workspace, warnings);
+    },
+  );
+}
+
+export function registerRestartWorkspaceTool(
+  server: McpServer,
+  config: PitchConfig,
+  dependencies: Partial<ResumeWorkspaceDependencies> = {},
+): void {
+  server.registerTool(
+    "restart_workspace",
+    {
+      description:
+        "Restart the coding agent process in an existing workspace. Reuses " +
+        "the existing tmux window and pane when present, and resumes the " +
+        "latest stored agent session unless reset_session is set.",
+      inputSchema: ResumeWorkspaceInputSchema,
+      outputSchema: WorkspaceRecordSchema,
+    },
+    async (args) => {
+      const warnings: string[] = [];
+      const workspace = await resumeWorkspace(
+        {
+          ...args,
+          restart_agent: true,
+        },
+        config,
+        {
+          ...dependencies,
+          reportWarning: (warning) => warnings.push(warning),
+        },
+      );
       return buildWorkspaceToolResponse(workspace, warnings);
     },
   );

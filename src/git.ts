@@ -50,6 +50,7 @@ export interface FetchGitRefParams {
   fallback_remote?: string;
   source_ref: string;
   destination_ref: string;
+  force?: boolean;
 }
 
 export interface FastForwardWorktreeParams {
@@ -938,7 +939,9 @@ export async function fetchGitRef(
   const mainWorktree = expandHomePath(params.repo.main_worktree);
   await ensureMainWorktree(mainWorktree);
 
-  const refSpec = `${params.source_ref}:${params.destination_ref}`;
+  const refSpecPrefix = params.force === true ? "+" : "";
+  const refSpec =
+    `${refSpecPrefix}${params.source_ref}:${params.destination_ref}`;
 
   try {
     await runGit(

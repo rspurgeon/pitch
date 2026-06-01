@@ -291,6 +291,10 @@ function makeDependencies(
     ensureOpencodeConfig: vi.fn(async () => undefined),
     ensureClaudeTrustedPaths: vi.fn(async () => undefined),
     ensureCodexTrustedPath: vi.fn(async (_input: EnsureCodexTrustedPathInput) => undefined),
+    syncCodexThreadTitles: vi.fn(async () => ({
+      updated: [],
+      warnings: [],
+    })),
     ...overrides,
   };
 }
@@ -462,6 +466,96 @@ describe("resume workspace", () => {
     });
   });
 
+  it("backfills a trailing pending session from an explicit session id", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          agent_name: "codex",
+          agent_type: "codex",
+          agent_env: {
+            CODEX_HOME: "~/.codex",
+          },
+          agent_sessions: [
+            {
+              id: "pending",
+              started_at: "2026-03-22T20:30:00.000Z",
+              status: "pending",
+            },
+          ],
+        }),
+      ),
+      buildAgentResumeCommand: vi.fn((input) => ({
+        agent_name: "codex",
+        agent_type: "codex",
+        environment_name: undefined,
+        environment_kind: "host",
+        command: ["codex", "resume", input.session_id],
+        env: {
+          CODEX_HOME: "~/.codex",
+        },
+        agent_env: {
+          CODEX_HOME: "~/.codex",
+        },
+        pane_process_name: "codex",
+        session_id: input.session_id,
+        warnings: [],
+      }) satisfies BuiltAgentCommand),
+    });
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+        session_id: "codex-session-explicit",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.findCodexSessionForWorkspace).not.toHaveBeenCalled();
+    expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
+    expect(workspace.agent_sessions).toEqual([
+      {
+        id: "codex-session-explicit",
+        started_at: "2026-03-22T20:30:00.000Z",
+        status: "active",
+      },
+      {
+        id: "codex-session-explicit",
+        started_at: "2026-03-23T04:00:00.000Z",
+        status: "active",
+      },
+    ]);
+  });
+
+  it("merges additional paths into resume commands and workspace state", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          additional_paths: ["/tmp/existing"],
+        }),
+      ),
+    });
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+        additional_paths: ["/tmp/shared", "/tmp/existing"],
+      },
+      config,
+      dependencies,
+    );
+
+    expect(workspace.additional_paths).toEqual(["/tmp/existing", "/tmp/shared"]);
+    expect(dependencies.buildAgentResumeCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        additional_paths: ["/tmp/existing", "/tmp/shared"],
+      }),
+    );
+    expect(dependencies.respawnPane).toHaveBeenCalled();
+  });
+
   it("starts a fresh session when reset_session is requested", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
@@ -616,6 +710,7 @@ describe("resume workspace", () => {
       fallback_remote: "https://github.com/kong/kongctl.git",
       source_ref: "refs/pull/42/head",
       destination_ref: "refs/pitch/pr/42/head",
+      force: true,
     });
     expect(dependencies.fastForwardWorktree).toHaveBeenCalledWith({
       worktree_path: "/tmp/worktrees/pr-42",
@@ -773,6 +868,43 @@ describe("resume workspace", () => {
     );
     expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
     expect(dependencies.buildAgentResumeCommand).not.toHaveBeenCalled();
+  });
+
+  it("restarts a compatible running agent pane", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies();
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+        restart_agent: true,
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
+    expect(dependencies.buildAgentResumeCommand).toHaveBeenCalledWith({
+      config,
+      agent: "claude-enterprise",
+      repo: "kong/kongctl",
+      environment: undefined,
+      workspace_name: "gh-42-fix-bug",
+      opencode_config_path: undefined,
+      session_id: "claude-session-1",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+    });
+    expect(dependencies.respawnPane).toHaveBeenCalledWith({
+      pane_id: "%1",
+      command: "CLAUDE_CONFIG_DIR=~/.claude command -- 'claude' '--resume' 'claude-session-1'",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
+    });
+    expect(workspace.agent_sessions.at(-1)).toEqual({
+      id: "claude-session-1",
+      started_at: "2026-03-23T04:00:00.000Z",
+      status: "active",
+    });
   });
 
   it("does not launch a second agent when the pane already has a compatible running agent", async () => {
@@ -1144,9 +1276,94 @@ describe("resume workspace", () => {
         status: "active",
       },
     ]);
+    expect(dependencies.syncCodexThreadTitles).toHaveBeenCalledWith({
+      workspace_name: "gh-42-fix-bug",
+      agent_sessions: workspace.agent_sessions,
+      agent_env: {
+        CODEX_HOME: "~/.codex",
+      },
+      active_session_id: "codex-session-new",
+      now: new Date("2026-03-23T04:00:00.000Z"),
+    });
   });
 
-  it("falls back to a fresh Codex launch when session store lookup fails", async () => {
+  it("resumes the latest same-worktree Codex session from the session store", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({
+          agent_name: "codex",
+          agent_type: "codex",
+          agent_env: {
+            CODEX_HOME: "~/.codex",
+          },
+          agent_sessions: [
+            {
+              id: "codex-session-old",
+              started_at: "2026-03-22T20:30:00.000Z",
+              status: "active",
+            },
+          ],
+        }),
+      ),
+      buildAgentResumeCommand: vi.fn(() => ({
+        agent_name: "codex",
+        agent_type: "codex",
+        environment_name: undefined,
+        environment_kind: "host",
+        command: ["codex", "resume", "codex-session-new"],
+        env: {
+          CODEX_HOME: "~/.codex",
+        },
+        agent_env: {
+          CODEX_HOME: "~/.codex",
+        },
+        pane_process_name: "codex",
+        session_id: "codex-session-new",
+        warnings: [],
+      }) satisfies BuiltAgentCommand),
+      findCodexSessionForWorkspace: vi.fn(async () => ({
+        id: "codex-session-new",
+        timestamp: "2026-03-23T03:00:00.000Z",
+        cwd: "/tmp/worktrees/gh-42-fix-bug",
+        file_path: "/tmp/.codex/sessions/2026/03/22/rollout.jsonl",
+      })),
+    });
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.findCodexSessionForWorkspace).toHaveBeenCalledWith({
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      started_at: "2026-03-22T20:30:00.000Z",
+      agent_env: {
+        CODEX_HOME: "~/.codex",
+      },
+    });
+    expect(dependencies.buildAgentResumeCommand).toHaveBeenCalledWith({
+      config,
+      agent: "codex",
+      repo: "kong/kongctl",
+      environment: undefined,
+      workspace_name: "gh-42-fix-bug",
+      opencode_config_path: undefined,
+      session_id: "codex-session-new",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+    });
+    expect(workspace.agent_sessions.at(-1)).toEqual({
+      id: "codex-session-new",
+      started_at: "2026-03-23T04:00:00.000Z",
+      status: "active",
+    });
+  });
+
+  it("fails closed when a pending Codex session cannot be resolved", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
       readWorkspaceRecord: vi.fn(async () =>
@@ -1165,63 +1382,26 @@ describe("resume workspace", () => {
           ],
         }),
       ),
-      buildAgentStartCommand: vi.fn(() => ({
-        agent_name: "codex",
-        agent_type: "codex",
-        environment_name: undefined,
-        environment_kind: "host",
-        command: ["codex", "--cd", "/tmp/worktrees/gh-42-fix-bug"],
-        env: {
-          CODEX_HOME: "~/.codex",
-        },
-        agent_env: {
-          CODEX_HOME: "~/.codex",
-        },
-        pane_process_name: "codex",
-        warnings: [],
-      }) satisfies BuiltAgentCommand),
       findCodexSessionForWorkspace: vi.fn(async () => {
         throw new Error("session store unavailable");
       }),
     });
 
-    const workspace = await resumeWorkspace(
-      {
-        name: "gh-42-fix-bug",
-      },
-      config,
-      dependencies,
+    await expect(
+      resumeWorkspace(
+        {
+          name: "gh-42-fix-bug",
+        },
+        config,
+        dependencies,
+      ),
+    ).rejects.toThrow(
+      "Cannot resume gh-42-fix-bug because its latest Codex session is still pending",
     );
 
     expect(dependencies.buildAgentResumeCommand).not.toHaveBeenCalled();
-    expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith({
-      config,
-      agent: "codex",
-      repo: "kong/kongctl",
-      environment: undefined,
-      opencode_config_path: undefined,
-      workspace_name: "gh-42-fix-bug",
-      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
-      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
-      initial_prompt: undefined,
-    });
-    expect(workspace.agent_sessions).toEqual([
-      {
-        id: "pending",
-        started_at: "2026-03-23T04:00:00.000Z",
-        status: "pending",
-      },
-      {
-        id: "pending",
-        started_at: "2026-03-23T04:00:00.000Z",
-        status: "pending",
-      },
-    ]);
-    expect(dependencies.runGitHubLifecycle).toHaveBeenCalledWith({
-      repo: "kong/kongctl",
-      source_kind: "issue",
-      source_number: 42,
-    });
+    expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
+    expect(dependencies.runGitHubLifecycle).not.toHaveBeenCalled();
   });
 
   it("uses the restored worktree path for recovery and state updates", async () => {

@@ -410,6 +410,10 @@ can both have `type: claude` with different `env` and
 | `args` | Ordered CLI arguments appended exactly as written |
 | `env` | Environment variables set when launching the agent |
 
+Pitch adds managed Codex flags for its own sessions,
+including `--enable remote_control` and disabled startup
+update checks.
+
 Example with multiple named agents:
 
 ```yaml
@@ -636,6 +640,11 @@ when possible.
   the agent resumes. True resumes also skip GitHub
   lifecycle automation; fresh relaunches may still run
   it.
+- **restart_workspace** — Restarts the agent process in
+  an existing workspace, reusing the tmux window and pane
+  when present. By default it resumes the latest agent
+  session; with `reset_session: true`, it starts a fresh
+  session in the same worktree.
 - **close_workspace** — Closes the tmux window and marks
   the workspace closed. The worktree and state file
   remain so the workspace can be resumed later.

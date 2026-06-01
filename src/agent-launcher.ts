@@ -42,6 +42,7 @@ export interface BuildStartCommandInput {
   initial_prompt?: string;
   override_args?: string[];
   session_id?: string;
+  additional_paths?: string[];
 }
 
 export interface BuildResumeCommandInput {
@@ -55,6 +56,7 @@ export interface BuildResumeCommandInput {
   session_id: string;
   worktree_path?: string;
   host_worktree_path?: string;
+  additional_paths?: string[];
 }
 
 export interface BuiltAgentCommand {
@@ -267,6 +269,24 @@ function buildAdditionalPathArgs(
   return [];
 }
 
+function mergeAdditionalPaths(...pathLists: Array<string[] | undefined>): string[] {
+  const paths: string[] = [];
+  const seen = new Set<string>();
+
+  for (const pathList of pathLists) {
+    for (const path of pathList ?? []) {
+      if (seen.has(path)) {
+        continue;
+      }
+
+      seen.add(path);
+      paths.push(path);
+    }
+  }
+
+  return paths;
+}
+
 function extractAdditionalReadWritePaths(
   agentType: SupportedAgentType,
   args: string[],
@@ -301,6 +321,32 @@ function extractAdditionalReadWritePaths(
   }
 
   return [...new Set(paths)];
+}
+
+function extractAdditionalPathArgs(args: string[]): string[] {
+  const additionalPathArgs: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === undefined) {
+      continue;
+    }
+
+    if (arg.startsWith("--add-dir=")) {
+      additionalPathArgs.push(arg);
+      continue;
+    }
+
+    if (arg === "--add-dir") {
+      const path = args[index + 1];
+      if (path !== undefined) {
+        additionalPathArgs.push(arg, path);
+        index += 1;
+      }
+    }
+  }
+
+  return additionalPathArgs;
 }
 
 function wrapBaseCommand(
@@ -539,7 +585,12 @@ function getCodexShellEnvironmentArgs(
 function getManagedCodexConfigArgs(
   sandbox: SandboxConfig | null,
 ): string[] {
-  return ["-c", "check_for_update_on_startup=false"];
+  return [
+    "-c",
+    "check_for_update_on_startup=false",
+    "--enable",
+    "remote_control",
+  ];
 }
 
 function wrapSandboxCommand(
@@ -654,13 +705,17 @@ function resolveStartEnvironment(
     guest_worktree_path: input.worktree_path,
   };
   const repoConfig = resolveRepoConfig(input.config, input.repo);
+  const additionalPaths = mergeAdditionalPaths(
+    repoConfig?.additional_paths,
+    input.additional_paths,
+  );
 
   return {
     environment,
     sandbox,
     workspace_paths: workspacePaths,
     additional_paths: mapAdditionalPathsForEnvironment(
-      repoConfig?.additional_paths ?? [],
+      additionalPaths,
       environment,
       workspacePaths,
     ),
@@ -702,13 +757,17 @@ function resolveResumeEnvironment(
     guest_worktree_path: input.worktree_path ?? input.host_worktree_path ?? "",
   };
   const repoConfig = resolveRepoConfig(input.config, input.repo);
+  const additionalPaths = mergeAdditionalPaths(
+    repoConfig?.additional_paths,
+    input.additional_paths,
+  );
 
   return {
     environment,
     sandbox,
     workspace_paths: workspacePaths,
     additional_paths: mapAdditionalPathsForEnvironment(
-      repoConfig?.additional_paths ?? [],
+      additionalPaths,
       environment,
       workspacePaths,
     ),
@@ -859,7 +918,16 @@ function buildClaudeResumeCommand(
   sandbox: SandboxConfig | null,
   workspacePaths: ResolvedWorkspacePaths | null,
 ): BuiltAgentCommand {
-  const command = [AGENT_BINARIES.claude, "--resume", input.session_id];
+  const layeredArgs = withoutReservedArgs(
+    extractAdditionalPathArgs(resolved.args),
+    ["--session-id", "--resume", "--cd", "--name", "-n"],
+  );
+  const command = [
+    AGENT_BINARIES.claude,
+    ...layeredArgs,
+    "--resume",
+    input.session_id,
+  ];
   const agentEnv =
     workspacePaths === null
       ? resolved.env
@@ -867,7 +935,7 @@ function buildClaudeResumeCommand(
   const baseCommand = wrapBaseCommand("claude", command);
   const sandboxAdditionalPaths = extractAdditionalReadWritePaths(
     "claude",
-    resolved.args,
+    layeredArgs,
   );
   const sandboxReadablePaths = resolveSandboxReadablePaths(
     "claude",
@@ -883,7 +951,7 @@ function buildClaudeResumeCommand(
   );
   const sandboxCommand = wrapSandboxCommand(
     "claude",
-    resolved.args,
+    layeredArgs,
     sandbox,
     input.worktree_path,
     sandboxReadablePaths,
@@ -1005,6 +1073,10 @@ function buildCodexResumeCommand(
   sandbox: SandboxConfig | null,
   workspacePaths: ResolvedWorkspacePaths | null,
 ): BuiltAgentCommand {
+  const layeredArgs = withoutReservedArgs(
+    extractAdditionalPathArgs(resolved.args),
+    sandbox === null ? ["--cd", "-C"] : ["--cd", "-C", "--sandbox"],
+  );
   const agentEnv = augmentCodexEnvironment(
     environment,
     sandbox,
@@ -1015,6 +1087,7 @@ function buildCodexResumeCommand(
   );
   const command = [
     AGENT_BINARIES.codex,
+    ...layeredArgs,
     ...getManagedCodexConfigArgs(sandbox),
     ...getCodexShellEnvironmentArgs(sandbox, agentEnv),
     ...getCodexShellSandboxArgs(sandbox),
@@ -1024,7 +1097,7 @@ function buildCodexResumeCommand(
   const baseCommand = wrapBaseCommand("codex", command);
   const sandboxAdditionalPaths = extractAdditionalReadWritePaths(
     "codex",
-    resolved.args,
+    layeredArgs,
   );
   const sandboxReadablePaths = resolveSandboxReadablePaths(
     "codex",
@@ -1040,7 +1113,7 @@ function buildCodexResumeCommand(
   );
   const sandboxCommand = wrapSandboxCommand(
     "codex",
-    resolved.args,
+    layeredArgs,
     sandbox,
     input.worktree_path,
     sandboxReadablePaths,

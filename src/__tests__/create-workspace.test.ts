@@ -382,6 +382,28 @@ describe("create workspace", () => {
     expect(writeCallOrder).toBeLessThan(launchCallOrder);
   });
 
+  it("passes workspace additional paths into the agent command and state record", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies();
+
+    const workspace = await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+        additional_paths: ["/tmp/shared", "/tmp/cache"],
+      },
+      config,
+      dependencies,
+    );
+
+    expect(workspace.additional_paths).toEqual(["/tmp/shared", "/tmp/cache"]);
+    expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        additional_paths: ["/tmp/shared", "/tmp/cache"],
+      }),
+    );
+  });
+
   it("can create a workspace by resuming an explicit agent session id", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
@@ -729,6 +751,7 @@ describe("create workspace", () => {
       fallback_remote: "https://github.com/kong/kongctl.git",
       source_ref: "refs/pull/123/head",
       destination_ref: "refs/pitch/pr/123/head",
+      force: true,
     });
     expect(dependencies.ensureWorkspaceWorktree).toHaveBeenCalledWith({
       repo: config.repos["kong/kongctl"],

@@ -291,6 +291,8 @@ describe("agent launcher", () => {
       "never",
       "-c",
       "check_for_update_on_startup=false",
+      "--enable",
+      "remote_control",
       "--cd",
       "/tmp/worktree",
     ]);
@@ -301,6 +303,21 @@ describe("agent launcher", () => {
       KONGCTL_CONFIG_DIR: "/home/rspurgeon/.config/kongctl",
     });
     expect(command.post_launch_prompt).toBeUndefined();
+  });
+
+  it("adds explicit additional paths to Codex start commands", () => {
+    const config = makeConfig();
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "codex",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+      additional_paths: ["/tmp/shared"],
+    });
+
+    expect(command.command).toContain("--add-dir");
+    expect(command.command).toContain("/tmp/shared");
   });
 
   it("appends an initial prompt to interactive Codex start commands", () => {
@@ -324,6 +341,8 @@ describe("agent launcher", () => {
       "on-request",
       "-c",
       "check_for_update_on_startup=false",
+      "--enable",
+      "remote_control",
       "--cd",
       "/tmp/worktree",
       "Read the issue and wait.",
@@ -344,6 +363,27 @@ describe("agent launcher", () => {
     expect(command.session_id).toBe("session-123");
   });
 
+  it("adds explicit additional paths to Claude resume commands", () => {
+    const config = makeConfig();
+
+    const command = buildAgentResumeCommand({
+      config,
+      agent: "claude-enterprise",
+      workspace_name: "gh-565-fix-validation",
+      session_id: "session-123",
+      worktree_path: "/tmp/worktree",
+      additional_paths: ["/tmp/shared"],
+    });
+
+    expect(command.command).toEqual([
+      "claude",
+      "--add-dir",
+      "/tmp/shared",
+      "--resume",
+      "session-123",
+    ]);
+  });
+
   it("builds a Codex resume command", () => {
     const config = makeConfig();
 
@@ -358,10 +398,37 @@ describe("agent launcher", () => {
       "codex",
       "-c",
       "check_for_update_on_startup=false",
+      "--enable",
+      "remote_control",
       "resume",
       "session-456",
     ]);
     expect(command.session_id).toBe("session-456");
+  });
+
+  it("adds explicit additional paths to Codex resume commands", () => {
+    const config = makeConfig();
+
+    const command = buildAgentResumeCommand({
+      config,
+      agent: "codex",
+      workspace_name: "gh-565-fix-validation",
+      session_id: "session-456",
+      worktree_path: "/tmp/worktree",
+      additional_paths: ["/tmp/shared"],
+    });
+
+    expect(command.command).toEqual([
+      "codex",
+      "--add-dir",
+      "/tmp/shared",
+      "-c",
+      "check_for_update_on_startup=false",
+      "--enable",
+      "remote_control",
+      "resume",
+      "session-456",
+    ]);
   });
 
   it("builds an OpenCode start command in the target worktree", () => {
@@ -605,6 +672,8 @@ describe("agent launcher", () => {
       "--search",
       "-c",
       "check_for_update_on_startup=false",
+      "--enable",
+      "remote_control",
       "--cd",
       "/tmp/worktree",
     ]);
@@ -745,6 +814,8 @@ describe("agent launcher", () => {
       "/home/rspurgeon/.config/kongctl",
       "-c",
       "check_for_update_on_startup=false",
+      "--enable",
+      "remote_control",
       "-c",
       "shell_environment_policy.inherit=all",
       "-c",
@@ -966,8 +1037,14 @@ describe("agent launcher", () => {
       "/home/rspurgeon/.config/kongctl",
       "--",
       "codex",
+      "--add-dir",
+      "/home/rspurgeon/go",
+      "--add-dir",
+      "/home/rspurgeon/.config/kongctl",
       "-c",
       "check_for_update_on_startup=false",
+      "--enable",
+      "remote_control",
       "-c",
       "shell_environment_policy.inherit=all",
       "-c",
@@ -1263,6 +1340,8 @@ describe("agent launcher", () => {
       "codex",
       "-c",
       "check_for_update_on_startup=false",
+      "--enable",
+      "remote_control",
       "resume",
       "codex-session",
     ]);

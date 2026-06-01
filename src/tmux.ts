@@ -632,6 +632,33 @@ export function parseTmuxPaneListingOutput(stdout: string): TmuxPaneListing[] {
     });
 }
 
+export function parseTmuxWindowPaneInfoOutput(
+  paneId: string,
+  stdout: string,
+): TmuxPaneInfo {
+  const [currentCommand, currentPath] = stdout
+    .replace(/\r?\n$/, "")
+    .split("\t", 2)
+    .map((value) => value.trim());
+
+  if (
+    currentCommand === undefined ||
+    currentCommand.length === 0 ||
+    currentPath === undefined
+  ) {
+    throw new TmuxError(
+      "COMMAND_FAILED",
+      `Failed to inspect tmux pane: ${paneId}`,
+    );
+  }
+
+  return {
+    pane_id: paneId,
+    current_command: currentCommand,
+    current_path: currentPath,
+  };
+}
+
 export async function focusTmuxPane(
   params: FocusTmuxPaneParams,
   options: TmuxClientOptions = {},
@@ -751,28 +778,7 @@ export async function getTmuxWindowPaneInfo(
     options,
   );
 
-  const [currentCommand, currentPath] = stdout
-    .trim()
-    .split("\t", 2)
-    .map((value) => value.trim());
-
-  if (
-    currentCommand === undefined ||
-    currentCommand.length === 0 ||
-    currentPath === undefined ||
-    currentPath.length === 0
-  ) {
-    throw new TmuxError(
-      "COMMAND_FAILED",
-      `Failed to inspect tmux pane: ${paneId}`,
-    );
-  }
-
-  return {
-    pane_id: paneId,
-    current_command: currentCommand,
-    current_path: currentPath,
-  };
+  return parseTmuxWindowPaneInfoOutput(paneId, stdout);
 }
 
 export async function createTmuxLayout(

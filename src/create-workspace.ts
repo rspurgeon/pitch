@@ -56,6 +56,8 @@ import { formatAgentPaneCommand } from "./agent-pane-command.js";
 import { ensureOpencodeConfig } from "./opencode-config.js";
 import { sendConfiguredPaneCommands } from "./pane-commands.js";
 
+const AdditionalPathsInputSchema = z.array(z.string().trim().min(1));
+
 export const CreateWorkspaceInputSchema = z
   .object({
     repo: z.string().trim().min(1).optional(),
@@ -86,6 +88,7 @@ export const CreateWorkspaceInputSchema = z
     session_id: z.string().trim().min(1).optional(),
     skip_prompt: z.boolean().optional(),
     model: z.string().trim().min(1).optional(),
+    additional_paths: AdditionalPathsInputSchema.optional(),
   })
   .strict()
   .superRefine((input, ctx) => {
@@ -507,6 +510,7 @@ async function resolveWorkspaceSource(
       fallback_remote: `${new URL(pullRequest.url).origin}/${repoName}.git`,
       source_ref: `refs/pull/${pullRequest.number}/head`,
       destination_ref: startPoint,
+      force: true,
     });
   } catch (error: unknown) {
     throw new CreateWorkspaceError(
@@ -532,6 +536,24 @@ function buildAgentOverrides(
   }
 
   return ["--model", input.model];
+}
+
+function mergeAdditionalPaths(...pathLists: Array<string[] | undefined>): string[] {
+  const paths: string[] = [];
+  const seen = new Set<string>();
+
+  for (const pathList of pathLists) {
+    for (const path of pathList ?? []) {
+      if (seen.has(path)) {
+        continue;
+      }
+
+      seen.add(path);
+      paths.push(path);
+    }
+  }
+
+  return paths;
 }
 
 function buildAgentSessions(
@@ -564,6 +586,7 @@ async function maybeEnsureOpencodeConfig(
   workspaceName: string,
   environment: ResolvedExecutionEnvironment,
   workspacePaths: ResolvedWorkspacePaths,
+  additionalPaths: string[],
   dependencies: CreateWorkspaceDependencies,
 ): Promise<string | undefined> {
   const agentConfig = config.agents[agentName];
@@ -577,8 +600,8 @@ async function maybeEnsureOpencodeConfig(
   }
 
   try {
-    const additionalPaths = mapAdditionalPathsForEnvironment(
-      repoConfig.additional_paths,
+    const mappedAdditionalPaths = mapAdditionalPathsForEnvironment(
+      mergeAdditionalPaths(repoConfig.additional_paths, additionalPaths),
       environment,
       workspacePaths,
     );
@@ -588,7 +611,7 @@ async function maybeEnsureOpencodeConfig(
         : undefined;
     return await dependencies.ensureOpencodeConfig({
       workspace_name: workspaceName,
-      additional_paths: additionalPaths,
+      additional_paths: mappedAdditionalPaths,
       base_config_path: resolveAgentEnv(config, agentName, repoName).OPENCODE_CONFIG,
     }, rootDir);
   } catch (error: unknown) {
@@ -785,6 +808,7 @@ export async function createWorkspace(
       worktreeTarget.worktree_name,
       worktree.worktree_path,
     );
+    const workspaceAdditionalPaths = input.additional_paths ?? [];
 
     const initialPrompt =
       input.session_id !== undefined || input.skip_prompt === true
@@ -803,6 +827,7 @@ export async function createWorkspace(
       workspaceName,
       environment,
       workspacePaths,
+      workspaceAdditionalPaths,
       dependencies,
     );
     const opencodeConfigPath = resolveAgentOpencodeConfigPath(
@@ -828,6 +853,9 @@ export async function createWorkspace(
             host_worktree_path: workspacePaths.host_worktree_path,
             initial_prompt: initialPrompt,
             override_args: buildAgentOverrides(input),
+            ...(workspaceAdditionalPaths.length === 0
+              ? {}
+              : { additional_paths: workspaceAdditionalPaths }),
           })
         : dependencies.buildAgentResumeCommand({
             config,
@@ -842,6 +870,9 @@ export async function createWorkspace(
             session_id: input.session_id,
             worktree_path: workspacePaths.agent_worktree_path,
             host_worktree_path: workspacePaths.host_worktree_path,
+            ...(workspaceAdditionalPaths.length === 0
+              ? {}
+              : { additional_paths: workspaceAdditionalPaths }),
           });
 
     if (agentCommand.agent_type === "claude") {
@@ -953,6 +984,9 @@ export async function createWorkspace(
       environment_kind: environment.kind,
       agent_pane_process: agentCommand.pane_process_name,
       agent_env: agentCommand.agent_env,
+      ...(workspaceAdditionalPaths.length === 0
+        ? {}
+        : { additional_paths: workspaceAdditionalPaths }),
       agent_sessions:
         existingPane?.kind === "agent"
           ? []

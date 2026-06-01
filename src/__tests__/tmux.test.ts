@@ -15,6 +15,7 @@ import {
   isTmuxAvailable,
   killTmuxWindow,
   parseTmuxPaneListingOutput,
+  parseTmuxWindowPaneInfoOutput,
   respawnPane,
   sendKeysToPane,
   tmuxSessionExists,
@@ -188,6 +189,16 @@ describe("tmux pane parsing", () => {
         current_path: "",
       },
     ]);
+  });
+});
+
+describe("tmux pane info parsing", () => {
+  it("allows an empty current path for agent wrapper panes", async () => {
+    expect(parseTmuxWindowPaneInfoOutput("%329", "nono\t\n")).toEqual({
+      pane_id: "%329",
+      current_command: "nono",
+      current_path: "",
+    });
   });
 });
 

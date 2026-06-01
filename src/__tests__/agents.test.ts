@@ -68,6 +68,56 @@ describe("getAgentsView", () => {
     expect(view.agents[0]?.tmux).toBeUndefined();
   });
 
+  it("drops unanchored sessions with no pane or workspace", async () => {
+    const snapshot: AgentStatusSnapshot = {
+      summary: {
+        generated_at: "2026-04-08T12:00:00.000Z",
+        active_sessions: 0,
+        counts: {
+          running: 0,
+          question: 0,
+          idle: 0,
+          error: 0,
+        },
+      },
+      sources: [
+        {
+          source: "host",
+          summary: {
+            generated_at: "2026-04-08T12:00:00.000Z",
+            active_sessions: 0,
+            counts: {
+              running: 0,
+              question: 0,
+              idle: 0,
+              error: 0,
+            },
+          },
+        },
+      ],
+      sessions: [
+        {
+          session_id: "unanchored-host-session",
+          agent_type: "codex",
+          state: "idle",
+          cwd: "/home/rspurgeon",
+          last_event: "Stop",
+          updated_at: "2026-04-08T12:00:00.000Z",
+        },
+      ],
+    };
+
+    const view = await getAgentsView({
+      getAgentStatusSnapshot: vi.fn(async () => snapshot),
+      listTmuxPanes: vi.fn(async () => []),
+      listWorkspaceRecords: vi.fn(async () => []),
+      focusTmuxPane: vi.fn(),
+    });
+
+    expect(view.summary.active_sessions).toBe(0);
+    expect(view.agents).toEqual([]);
+  });
+
   it("does not force the workspace primary pane process onto secondary agents", async () => {
     const snapshot: AgentStatusSnapshot = {
       summary: {

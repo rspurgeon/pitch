@@ -10,7 +10,10 @@ import {
 import { ConfigError, loadConfig, type PitchConfig } from "./config.js";
 import { registerCreateWorkspaceTool } from "./create-workspace.js";
 import { getRuntimeMetadata } from "./metadata.js";
-import { registerResumeWorkspaceTool } from "./resume-workspace.js";
+import {
+  registerRestartWorkspaceTool,
+  registerResumeWorkspaceTool,
+} from "./resume-workspace.js";
 import { registerWorkspaceQueryTools } from "./workspace-query.js";
 
 let config: PitchConfig;
@@ -70,6 +73,7 @@ registerWorkspaceQueryTools(server);
 registerCloseWorkspaceTool(server, config);
 registerDeleteWorkspaceTool(server, config);
 registerResumeWorkspaceTool(server, config);
+registerRestartWorkspaceTool(server, config);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

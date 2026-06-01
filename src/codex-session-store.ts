@@ -28,6 +28,7 @@ const SessionMetaLineSchema = z
       id: z.string().min(1),
       timestamp: z.string().min(1),
       cwd: z.string().min(1),
+      source: z.unknown().optional(),
     }),
   })
   .passthrough();
@@ -69,12 +70,20 @@ function parseSessionMetaLine(
     return null;
   }
 
+  if (!isInteractiveSessionSource(result.data.payload.source)) {
+    return null;
+  }
+
   return {
     id: result.data.payload.id,
     timestamp: result.data.payload.timestamp,
     cwd: result.data.payload.cwd,
     file_path: filePath,
   };
+}
+
+function isInteractiveSessionSource(source: unknown): boolean {
+  return source === undefined || source === "cli" || source === "vscode";
 }
 
 async function readFirstLine(filePath: string): Promise<string | null> {
@@ -145,6 +154,7 @@ export async function findCodexSessionForWorkspace(
 
   const now = input.now ?? new Date();
   const sessionsRoot = resolveCodexSessionsRoot(input.agent_env);
+  const matches: CodexSessionMeta[] = [];
 
   for (const relativeDatePath of enumerateSearchDates(startedAt, now)) {
     const dayDirectory = join(sessionsRoot, relativeDatePath);
@@ -163,8 +173,6 @@ export async function findCodexSessionForWorkspace(
       .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
       .map((entry) => join(dayDirectory, entry.name))
       .sort();
-    const dayMatches: CodexSessionMeta[] = [];
-
     for (const filePath of rolloutFiles) {
       let firstLine: string | null;
       try {
@@ -194,20 +202,20 @@ export async function findCodexSessionForWorkspace(
         continue;
       }
 
-      dayMatches.push(meta);
+      matches.push(meta);
     }
+  }
 
-    dayMatches.sort((left, right) => {
-      const leftTime = new Date(left.timestamp).getTime();
-      const rightTime = new Date(right.timestamp).getTime();
-      return (
-        leftTime - rightTime || left.file_path.localeCompare(right.file_path)
-      );
-    });
+  matches.sort((left, right) => {
+    const leftTime = new Date(left.timestamp).getTime();
+    const rightTime = new Date(right.timestamp).getTime();
+    return (
+      rightTime - leftTime || right.file_path.localeCompare(left.file_path)
+    );
+  });
 
-    if (dayMatches.length > 0) {
-      return dayMatches[0] ?? null;
-    }
+  if (matches.length > 0) {
+    return matches[0] ?? null;
   }
 
   return null;

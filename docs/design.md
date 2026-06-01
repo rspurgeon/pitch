@@ -338,13 +338,17 @@ working directory has already been changed to the worktree.
 
 ```
 # Start
-codex --cd {worktree_path} [user flags] [prompt]
+codex [user flags] --enable remote_control --cd {worktree_path} [prompt]
 
 # Resume
-codex resume {session_id}
+codex --enable remote_control resume {session_id}
 ```
 
-Session ID is discovered after launch from `~/.codex/sessions/` or captured from exit output (`To continue this session, run codex resume {id}`).
+Session ID is discovered after launch from `~/.codex/sessions/`
+or captured from exit output (`To continue this session, run
+codex resume {id}`).
+Pitch also disables Codex startup update checks for managed
+sessions.
 
 **OpenCode:**
 
@@ -650,8 +654,8 @@ workspaces can also be resumed.
 When `reset_session` is set, Pitch skips stored-session
 lookup and starts a new agent session in the same worktree
 and tmux pane. It is refused when a compatible agent pane
-is already running, and it cannot be combined with an
-explicit `session_id`.
+is already running unless `restart_agent` is also set, and
+it cannot be combined with an explicit `session_id`.
 
 Resume never re-sends the bootstrap prompt. On a true
 session resume, Pitch also skips GitHub lifecycle
@@ -670,8 +674,26 @@ compatible agent pane is already running.
 - `session_id` (string, optional) — resume this specific agent session
 - `reset_session` (boolean, optional) — start a new agent session instead
   of resuming a stored session
+- `restart_agent` (boolean, optional) — respawn the agent process in the
+  existing tmux pane instead of treating a compatible running pane as already
+  resumed
 - `sync` (boolean, optional) — fast-forward a PR workspace to the latest
   upstream PR head before resuming
+
+**Returns:** Updated workspace record with new agent session entry
+
+### `restart_workspace`
+
+Restarts the coding agent process for an existing workspace.
+It reuses the existing tmux session, window, and agent pane
+when present. By default it resumes the same latest session
+selection used by `resume_workspace`; when `reset_session`
+is set it starts a fresh session in the same worktree.
+
+`restart_workspace` is equivalent to `resume_workspace` with
+`restart_agent: true`.
+
+**Parameters:** Same as `resume_workspace`.
 
 **Returns:** Updated workspace record with new agent session entry
 

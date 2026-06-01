@@ -731,6 +731,42 @@ describe("git worktree management", () => {
     ).resolves.toContain("refs/pitch/test/main");
   });
 
+  it("force-updates an existing destination ref when the source moved backward", async () => {
+    await git(["checkout", "-b", "feature/ref-refresh"], repo.main_worktree);
+    await writeFile(join(repo.main_worktree, "FEATURE.md"), "feature\n", "utf-8");
+    await git(["add", "FEATURE.md"], repo.main_worktree);
+    await git(["commit", "-m", "Feature commit"], repo.main_worktree);
+    const featureCommit = await git(["rev-parse", "HEAD"], repo.main_worktree);
+
+    await git(["checkout", "main"], repo.main_worktree);
+    const mainCommit = await git(["rev-parse", "HEAD"], repo.main_worktree);
+
+    await fetchGitRef({
+      repo,
+      remote: repo.main_worktree,
+      source_ref: "refs/heads/feature/ref-refresh",
+      destination_ref: "refs/pitch/test/ref-refresh",
+      force: true,
+    });
+    await expect(
+      git(["rev-parse", "refs/pitch/test/ref-refresh"], repo.main_worktree),
+    ).resolves.toBe(featureCommit);
+
+    await git(["branch", "-f", "feature/ref-refresh", "main"], repo.main_worktree);
+
+    await fetchGitRef({
+      repo,
+      remote: repo.main_worktree,
+      source_ref: "refs/heads/feature/ref-refresh",
+      destination_ref: "refs/pitch/test/ref-refresh",
+      force: true,
+    });
+
+    await expect(
+      git(["rev-parse", "refs/pitch/test/ref-refresh"], repo.main_worktree),
+    ).resolves.toBe(mainCommit);
+  });
+
   it("fast-forwards a worktree to a newer target ref", async () => {
     await git(["branch", "feature/sync", "main"], repo.main_worktree);
 

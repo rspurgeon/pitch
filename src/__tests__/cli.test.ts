@@ -445,6 +445,34 @@ describe("runCli", () => {
     );
   });
 
+  it("passes repeatable additional dirs through create", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      [
+        "create",
+        "--pr",
+        "700",
+        "--additional-dir",
+        "/tmp/shared",
+        "--add-dir=/tmp/cache",
+      ],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.createWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pr: 700,
+        additional_paths: ["/tmp/shared", "/tmp/cache"],
+      }),
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
   it("dispatches an ad hoc create with name and branch to createWorkspace", async () => {
     const dependencies = makeDependencies({
       createWorkspace: vi.fn(async () =>
@@ -693,8 +721,36 @@ describe("runCli", () => {
         environment: undefined,
         session_id: undefined,
         reset_session: undefined,
+        restart_agent: undefined,
         sync: undefined,
       },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
+  it("passes repeatable additional dirs through resume", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      [
+        "resume",
+        "pr-700-default-aas",
+        "--additional-dir=/tmp/shared",
+        "--add-dir",
+        "/tmp/cache",
+      ],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.resumeWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "pr-700-default-aas",
+        additional_paths: ["/tmp/shared", "/tmp/cache"],
+      }),
       makeConfig(),
       {
         reportWarning: expect.any(Function),
@@ -718,7 +774,34 @@ describe("runCli", () => {
         environment: undefined,
         session_id: undefined,
         reset_session: undefined,
+        restart_agent: undefined,
         sync: true,
+      },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
+  it("passes restart mode through restart", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["restart", "pr-700-default-aas", "--agent", "codex"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.resumeWorkspace).toHaveBeenCalledWith(
+      {
+        name: "pr-700-default-aas",
+        agent: "codex",
+        environment: undefined,
+        session_id: undefined,
+        reset_session: undefined,
+        restart_agent: true,
+        sync: undefined,
       },
       makeConfig(),
       {
@@ -828,6 +911,7 @@ describe("runCli", () => {
         environment: undefined,
         session_id: "019d6505-21ab-7493-9ea5-e10084cc79f0",
         reset_session: undefined,
+        restart_agent: undefined,
         sync: undefined,
       },
       makeConfig(),
@@ -853,6 +937,7 @@ describe("runCli", () => {
         environment: undefined,
         session_id: undefined,
         reset_session: true,
+        restart_agent: undefined,
         sync: undefined,
       },
       makeConfig(),
@@ -1036,16 +1121,19 @@ describe("runCli", () => {
 
     expect(exitCode).toBe(0);
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch [create] (--issue N | --pr N) [--slug SLUG] [--session-id ID] [options]",
+      "pitch [create] (--issue N | --pr N) [--slug SLUG] [--session-id ID] [--additional-dir PATH]... [options]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch [create] --name NAME [--branch BRANCH] [--session-id ID] [options]",
+      "pitch [create] --name NAME [--branch BRANCH] [--session-id ID] [--additional-dir PATH]... [options]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "pitch delete <name> [--force]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--reset-session] [--sync]",
+      "pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--additional-dir PATH]... [--reset-session] [--sync]",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "  --additional-dir PATH",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "  --session-id ID",

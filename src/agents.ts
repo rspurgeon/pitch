@@ -186,10 +186,12 @@ function resolveWorkspace(
 function isLikelyLiveAgent(
   session: AgentSessionState,
   pane: TmuxPaneListing | undefined,
+  workspace: WorkspaceRecord | undefined,
   expectedPaneProcess?: string,
 ): boolean {
   if (pane === undefined) {
     return (
+      workspace !== undefined &&
       session.tmux_session === undefined &&
       session.tmux_window === undefined &&
       session.tmux_pane_id === undefined &&
@@ -250,7 +252,7 @@ export async function getAgentsView(
           ? workspace.agent_pane_process
           : undefined;
 
-      if (!isLikelyLiveAgent(session, pane, expectedPaneProcess)) {
+      if (!isLikelyLiveAgent(session, pane, workspace, expectedPaneProcess)) {
         return [];
       }
 
