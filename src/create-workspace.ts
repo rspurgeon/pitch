@@ -101,8 +101,9 @@ export const CreateWorkspaceInputSchema = z
     if (sourceSelectors !== 1) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["issue"],
-        message: "Provide exactly one of issue, pr, or name",
+        path: ["source"],
+        message:
+          "Provide exactly one workspace source: issue, pr, or name. Use slug to add a suffix to issue/PR workspace names.",
       });
     }
 

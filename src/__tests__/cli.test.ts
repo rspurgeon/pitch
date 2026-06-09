@@ -473,6 +473,38 @@ describe("runCli", () => {
     );
   });
 
+  it("rejects --name with --pr before createWorkspace", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["create", "--pr", "1193", "--name", "pat-ee2e"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(1);
+    expect(dependencies.loadConfig).not.toHaveBeenCalled();
+    expect(dependencies.createWorkspace).not.toHaveBeenCalled();
+    expect(dependencies.stderrBuffer.join("")).toContain(
+      "--name creates an ad hoc workspace and cannot be combined with --pr. Use --slug pat-ee2e to create pr-1193-pat-ee2e, or omit --pr to create an ad hoc workspace named pat-ee2e.",
+    );
+  });
+
+  it("rejects multiple GitHub create sources before createWorkspace", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["create", "--issue", "42", "--pr", "700"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(1);
+    expect(dependencies.loadConfig).not.toHaveBeenCalled();
+    expect(dependencies.createWorkspace).not.toHaveBeenCalled();
+    expect(dependencies.stderrBuffer.join("")).toContain(
+      "pitch: Choose either --issue N or --pr N, not both.",
+    );
+  });
+
   it("dispatches an ad hoc create with name and branch to createWorkspace", async () => {
     const dependencies = makeDependencies({
       createWorkspace: vi.fn(async () =>

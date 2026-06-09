@@ -445,11 +445,48 @@ function resolveWorkspaceName(
 
 function buildCreateInput(flags: Map<string, FlagValue>): CreateWorkspaceInput {
   const additionalPaths = readStringListFlag(flags, "additional-dir");
+  const issueValue = readStringFlag(flags, "issue");
+  const prValue = readStringFlag(flags, "pr");
+  const name = readStringFlag(flags, "name");
+  const sourceSelectorCount = [
+    issueValue !== undefined,
+    prValue !== undefined,
+    name !== undefined,
+  ].filter(Boolean).length;
+
+  if (sourceSelectorCount === 0) {
+    throw new Error(
+      "Create requires exactly one workspace source: --issue N, --pr N, or --name NAME.",
+    );
+  }
+
+  if (sourceSelectorCount > 1) {
+    if (name !== undefined && prValue !== undefined && issueValue === undefined) {
+      throw new Error(
+        `--name creates an ad hoc workspace and cannot be combined with --pr. Use --slug ${name} to create pr-${prValue}-${name}, or omit --pr to create an ad hoc workspace named ${name}.`,
+      );
+    }
+
+    if (name !== undefined && issueValue !== undefined && prValue === undefined) {
+      throw new Error(
+        `--name creates an ad hoc workspace and cannot be combined with --issue. Use --slug ${name} to create gh-${issueValue}-${name}, or omit --issue to create an ad hoc workspace named ${name}.`,
+      );
+    }
+
+    if (issueValue !== undefined && prValue !== undefined && name === undefined) {
+      throw new Error("Choose either --issue N or --pr N, not both.");
+    }
+
+    throw new Error(
+      "Create accepts exactly one workspace source: --issue N, --pr N, or --name NAME.",
+    );
+  }
+
   return {
     repo: readStringFlag(flags, "repo"),
     issue: readNumberFlag(flags, "issue"),
     pr: readNumberFlag(flags, "pr"),
-    name: readStringFlag(flags, "name"),
+    name,
     slug: readStringFlag(flags, "slug"),
     branch: readStringFlag(flags, "branch"),
     base_branch: readStringFlag(flags, "base-branch"),
@@ -1090,10 +1127,11 @@ async function executeCommand(
       return null;
     case "create": {
       ensureNoExtraPositionals(parsed.positionals, parsed.verb);
+      const input = buildCreateInput(parsed.flags);
       const config = await dependencies.loadConfig();
       const warnings: string[] = [];
       const result = await dependencies.createWorkspace(
-        buildCreateInput(parsed.flags),
+        input,
         config,
         {
           reportWarning: (warning) => warnings.push(warning),

@@ -19,10 +19,10 @@ test: ## Run unit tests
 	npx vitest run
 
 inspect: ## Open the MCP Inspector (interactive web UI for testing tools)
-	npx @modelcontextprotocol/inspector npx tsx src/index.ts
+	npx @modelcontextprotocol/inspector node --disable-warning=DEP0205 --import tsx src/index.ts
 
 ping: ## Health check — show status and runtime identity
-	@printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ping","arguments":{}}}\n' | npx tsx src/index.ts 2>/dev/null | tail -1 | jq -r '.result.content[0].text' | jq
+	@printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ping","arguments":{}}}\n' | node --disable-warning=DEP0205 --import tsx src/index.ts 2>/dev/null | tail -1 | jq -r '.result.content[0].text' | jq
 
 tools-list: ## List all registered MCP tools
-	@printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n' | npx tsx src/index.ts 2>/dev/null | tail -1 | jq -r '.result.tools'
+	@printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n' | node --disable-warning=DEP0205 --import tsx src/index.ts 2>/dev/null | tail -1 | jq -r '.result.tools'

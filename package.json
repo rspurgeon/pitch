@@ -9,8 +9,8 @@
     "pitch-mcp": "dist/index.js"
   },
   "scripts": {
-    "cli": "tsx src/bin/pitch.ts",
-    "start": "tsx src/index.ts",
+    "cli": "node --disable-warning=DEP0205 --import tsx src/bin/pitch.ts",
+    "start": "node --disable-warning=DEP0205 --import tsx src/index.ts",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run"
   },

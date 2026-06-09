@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PitchConfig } from "../config.js";
 import {
   AgentLauncherError,
@@ -7,6 +7,7 @@ import {
   claudeLauncher,
   codexLauncher,
   opencodeLauncher,
+  setCodexHookReadDirectoryResolverForTests,
   setExecutableReadDirectoryResolverForTests,
   setPathExistsResolverForTests,
 } from "../agent-launcher.js";
@@ -18,6 +19,16 @@ function buildCodexPathOverride(path: string): string {
     .replaceAll("\n", "\\n")
     .replaceAll("\r", "\\r")
     .replaceAll("\t", "\\t")}"`;
+}
+
+function pitchManagedCodexEnv(
+  workspaceName = "gh-565-fix-validation",
+): Record<string, string> {
+  return {
+    PITCH_MANAGED_AGENT: "1",
+    PITCH_AGENT_TYPE: "codex",
+    PITCH_WORKSPACE_NAME: workspaceName,
+  };
 }
 
 function makeConfig(): PitchConfig {
@@ -193,7 +204,12 @@ function makeConfig(): PitchConfig {
 }
 
 describe("agent launcher", () => {
+  beforeEach(() => {
+    setCodexHookReadDirectoryResolverForTests(() => []);
+  });
+
   afterEach(() => {
+    setCodexHookReadDirectoryResolverForTests(null);
     setExecutableReadDirectoryResolverForTests(null);
     setPathExistsResolverForTests(null);
   });
@@ -301,6 +317,7 @@ describe("agent launcher", () => {
       CODEX_HOME: "~/.codex",
       GO_SRC: "/home/rspurgeon/go",
       KONGCTL_CONFIG_DIR: "/home/rspurgeon/.config/kongctl",
+      ...pitchManagedCodexEnv(),
     });
     expect(command.post_launch_prompt).toBeUndefined();
   });
@@ -404,6 +421,10 @@ describe("agent launcher", () => {
       "session-456",
     ]);
     expect(command.session_id).toBe("session-456");
+    expect(command.env).toEqual({
+      CODEX_HOME: "~/.codex",
+      ...pitchManagedCodexEnv(),
+    });
   });
 
   it("adds explicit additional paths to Codex resume commands", () => {
@@ -682,6 +703,7 @@ describe("agent launcher", () => {
       GO_SRC: "/home/rspurgeon/go",
       OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
       OPENAI_BASE_URL: "https://api.example.invalid",
+      ...pitchManagedCodexEnv(),
     });
   });
 
@@ -718,6 +740,7 @@ describe("agent launcher", () => {
       CODEX_HOME: "~/.codex",
       GO_SRC: "/srv/shared/go",
       KONGCTL_CONFIG_DIR: "/srv/shared/kongctl",
+      ...pitchManagedCodexEnv(),
     });
     expect(command.command.slice(0, 6)).toEqual([
       "ssh",
@@ -834,6 +857,11 @@ describe("agent launcher", () => {
     expect(command.agent_env.PATH).toContain(
       "/home/rspurgeon/.local/bin",
     );
+    expect(command.agent_env.PITCH_MANAGED_AGENT).toBe("1");
+    expect(command.agent_env.PITCH_AGENT_TYPE).toBe("codex");
+    expect(command.agent_env.PITCH_WORKSPACE_NAME).toBe(
+      "gh-565-fix-validation",
+    );
     expect(command.agent_env.GOPATH).toBe(undefined);
     expect(command.agent_env.GOMODCACHE).toBe(undefined);
     expect(command.agent_env.GOCACHE).toBe(undefined);
@@ -841,6 +869,30 @@ describe("agent launcher", () => {
     expect(command.agent_env.GOTMPDIR).toBe(undefined);
     expect(command.agent_env.GOLANGCI_LINT_CACHE).toBe(undefined);
     expect(command.agent_env.GOFLAGS).toBe(undefined);
+  });
+
+  it("grants Codex hook directories to nono-wrapped Codex commands", () => {
+    const config = makeConfig();
+    setExecutableReadDirectoryResolverForTests(() => []);
+    setPathExistsResolverForTests(() => true);
+    setCodexHookReadDirectoryResolverForTests(() => [
+      "/home/rspurgeon/.config/codex/hooks",
+      "/home/rspurgeon/dev/rspurgeon/dots/.config/codex/hooks",
+    ]);
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "codex",
+      repo: "kong/kongctl",
+      sandbox: "kongctl",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.command).toContain("/home/rspurgeon/.config/codex/hooks");
+    expect(command.command).toContain(
+      "/home/rspurgeon/dev/rspurgeon/dots/.config/codex/hooks",
+    );
   });
 
   it("expands ~ in repo additional_paths for host Codex launches", () => {

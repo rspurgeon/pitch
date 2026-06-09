@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import type {
@@ -95,6 +95,7 @@ interface SandboxWrappedCommand {
 
 type ExecutableReadDirectoryResolver = (agentBinary: string) => string[];
 type PathExistsResolver = (path: string) => boolean;
+type CodexHookReadDirectoryResolver = () => string[];
 
 export function resolveAgentEnv(
   config: PitchConfig,
@@ -156,9 +157,36 @@ function defaultExecutableReadDirectoryResolver(
   return [...directories];
 }
 
+function defaultCodexHookReadDirectoryResolver(): string[] {
+  const hooksDir = join(homedir(), ".config/codex/hooks");
+  if (!existsSync(hooksDir)) {
+    return [];
+  }
+
+  const directories = [hooksDir];
+  let entries: string[];
+  try {
+    entries = readdirSync(hooksDir);
+  } catch {
+    return directories;
+  }
+
+  for (const entry of entries) {
+    try {
+      directories.push(dirname(realpathSync(join(hooksDir, entry))));
+    } catch {
+      continue;
+    }
+  }
+
+  return [...new Set(directories)];
+}
+
 let executableReadDirectoryResolver: ExecutableReadDirectoryResolver =
   defaultExecutableReadDirectoryResolver;
 let pathExistsResolver: PathExistsResolver = existsSync;
+let codexHookReadDirectoryResolver: CodexHookReadDirectoryResolver =
+  defaultCodexHookReadDirectoryResolver;
 
 export function setExecutableReadDirectoryResolverForTests(
   resolver: ExecutableReadDirectoryResolver | null,
@@ -171,6 +199,13 @@ export function setPathExistsResolverForTests(
   resolver: PathExistsResolver | null,
 ): void {
   pathExistsResolver = resolver ?? existsSync;
+}
+
+export function setCodexHookReadDirectoryResolverForTests(
+  resolver: CodexHookReadDirectoryResolver | null,
+): void {
+  codexHookReadDirectoryResolver =
+    resolver ?? defaultCodexHookReadDirectoryResolver;
 }
 
 function withoutReservedArgs(
@@ -459,6 +494,7 @@ function resolveSandboxReadablePaths(
           `${homedir()}/.local/share/mise/bin`,
           `${homedir()}/.local/share/mise/plugins`,
           `${homedir()}/.local/state/mise`,
+          ...codexHookReadDirectoryResolver(),
         ];
 
   const staticPaths = [...new Set([...executablePaths, ...codexPaths])]
@@ -540,6 +576,19 @@ function augmentCodexEnvironment(
   return {
     ...agentEnv,
     PATH: mergePathWithToolchainDefaults(agentEnv.PATH ?? process.env.PATH),
+  };
+}
+
+function markPitchManagedAgentEnvironment(
+  agentEnv: Record<string, string>,
+  agentType: SupportedAgentType,
+  workspaceName: string,
+): Record<string, string> {
+  return {
+    ...agentEnv,
+    PITCH_MANAGED_AGENT: "1",
+    PITCH_AGENT_TYPE: agentType,
+    PITCH_WORKSPACE_NAME: workspaceName,
   };
 }
 
@@ -990,15 +1039,19 @@ function buildCodexStartCommand(
   sandbox: SandboxConfig | null,
   workspacePaths: ResolvedWorkspacePaths,
 ): BuiltAgentCommand {
-  const agentEnv = augmentCodexEnvironment(
-    environment,
-    sandbox,
-    mapAgentEnvForEnvironment(
-      resolved.env,
+  const agentEnv = markPitchManagedAgentEnvironment(
+    augmentCodexEnvironment(
       environment,
-      workspacePaths,
+      sandbox,
+      mapAgentEnvForEnvironment(
+        resolved.env,
+        environment,
+        workspacePaths,
+      ),
+      input.worktree_path,
     ),
-    input.worktree_path,
+    "codex",
+    input.workspace_name,
   );
   const layeredArgs = withoutReservedArgs(
     [...resolved.args, ...(input.override_args ?? [])],
@@ -1077,13 +1130,17 @@ function buildCodexResumeCommand(
     extractAdditionalPathArgs(resolved.args),
     sandbox === null ? ["--cd", "-C"] : ["--cd", "-C", "--sandbox"],
   );
-  const agentEnv = augmentCodexEnvironment(
-    environment,
-    sandbox,
-    workspacePaths === null
-      ? resolved.env
-      : mapAgentEnvForEnvironment(resolved.env, environment, workspacePaths),
-    input.worktree_path,
+  const agentEnv = markPitchManagedAgentEnvironment(
+    augmentCodexEnvironment(
+      environment,
+      sandbox,
+      workspacePaths === null
+        ? resolved.env
+        : mapAgentEnvForEnvironment(resolved.env, environment, workspacePaths),
+      input.worktree_path,
+    ),
+    "codex",
+    input.workspace_name,
   );
   const command = [
     AGENT_BINARIES.codex,

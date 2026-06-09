@@ -124,7 +124,9 @@ export type AgentSessionState = z.infer<typeof AgentSessionStateSchema>;
 export type AgentStatusSummary = z.infer<typeof AgentStatusSummarySchema>;
 export type AgentStatusSnapshot = z.infer<typeof AgentStatusSnapshotSchema>;
 export type CodexHookPayload = z.infer<typeof CodexHookPayloadSchema>;
+export type CodexHookPayloadInput = z.input<typeof CodexHookPayloadSchema>;
 export type ClaudeHookPayload = z.infer<typeof ClaudeHookPayloadSchema>;
+export type ClaudeHookPayloadInput = z.input<typeof ClaudeHookPayloadSchema>;
 
 export interface AgentStatusSourceSummary {
   source: string;
@@ -1006,7 +1008,7 @@ async function listRemoteAgentSessionStates(
 }
 
 export async function handleCodexHookPayload(
-  payload: CodexHookPayload,
+  payload: CodexHookPayloadInput,
   cacheDir: string = DEFAULT_AGENT_STATUS_DIR,
   dependencyOverrides: Partial<AgentStatusDependencies> = {},
 ): Promise<CodexSessionState> {
@@ -1074,7 +1076,7 @@ function deriveStateFromClaudeHookEvent(
 }
 
 export async function handleClaudeHookPayload(
-  payload: ClaudeHookPayload,
+  payload: ClaudeHookPayloadInput,
   cacheDir: string = DEFAULT_AGENT_STATUS_DIR,
   dependencyOverrides: Partial<AgentStatusDependencies> = {},
 ): Promise<ClaudeSessionState> {

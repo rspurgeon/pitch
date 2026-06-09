@@ -23,6 +23,7 @@ git clone https://github.com/rspurgeon/pitch.git
 cd pitch
 mise trust && mise install
 make install
+make build
 ```
 
 ## Use with an MCP Client
@@ -38,21 +39,21 @@ want, use the direct CLI instead of routing through an
 agent prompt:
 
 ```bash
-npx tsx src/bin/pitch.ts --pr 700
-npx tsx src/bin/pitch.ts create --pr 700 --slug default-aas --skip-prompt
-npx tsx src/bin/pitch.ts list
-npx tsx src/bin/pitch.ts get pr-700-default-aas
-npx tsx src/bin/pitch.ts resume pr-700-default-aas
-npx tsx src/bin/pitch.ts resume pr-700-default-aas --sync
-npx tsx src/bin/pitch.ts close pr-700-default-aas
-npx tsx src/bin/pitch.ts delete pr-700-default-aas --force
-npx tsx src/bin/pitch.ts delete spike-auth -d
-npx tsx src/bin/pitch.ts completion zsh > ~/bin/functions/_pitch
+node dist/bin/pitch.js --pr 700
+node dist/bin/pitch.js create --pr 700 --slug default-aas --skip-prompt
+node dist/bin/pitch.js list
+node dist/bin/pitch.js get pr-700-default-aas
+node dist/bin/pitch.js resume pr-700-default-aas
+node dist/bin/pitch.js resume pr-700-default-aas --sync
+node dist/bin/pitch.js close pr-700-default-aas
+node dist/bin/pitch.js delete pr-700-default-aas --force
+node dist/bin/pitch.js delete spike-auth -d
+node dist/bin/pitch.js completion zsh > ~/bin/functions/_pitch
 ```
 
 Top-level verbs are the primary interface. `workspace` is
 accepted as a compatibility alias, for example
-`npx tsx src/bin/pitch.ts workspace create ...`.
+`node dist/bin/pitch.js workspace create ...`.
 
 `close` is non-destructive: it tears down the tmux window
 and keeps the worktree as a tracked closed record.
@@ -219,7 +220,7 @@ server that points at Pitch by absolute path:
 ```bash
 cd /home/you/dev/kong/kongctl
 claude mcp add --transport stdio --scope local pitch -- \
-  npx tsx /home/you/dev/rspurgeon/pitch/src/index.ts
+  node /home/you/dev/rspurgeon/pitch/dist/index.js
 ```
 
 This is the recommended setup for personal use. Claude Code
@@ -234,7 +235,7 @@ target project and use project scope instead:
 ```bash
 cd /home/you/dev/kong/kongctl
 claude mcp add --transport stdio --scope project pitch -- \
-  npx tsx /home/you/dev/rspurgeon/pitch/src/index.ts
+  node /home/you/dev/rspurgeon/pitch/dist/index.js
 ```
 
 That creates or updates `.mcp.json` in the target project's
@@ -246,7 +247,7 @@ scope:
 
 ```bash
 claude mcp add --transport stdio --scope user pitch -- \
-  npx tsx /absolute/path/to/pitch/src/index.ts
+  node /absolute/path/to/pitch/dist/index.js
 ```
 
 Use an absolute path here because user-scoped servers are
@@ -259,8 +260,8 @@ directories, configure Pitch with:
 {
   "mcpServers": {
     "pitch": {
-      "command": "npx",
-      "args": ["tsx", "src/index.ts"],
+      "command": "node",
+      "args": ["dist/index.js"],
       "cwd": "/path/to/pitch"
     }
   }
@@ -328,8 +329,8 @@ With that config in place, the direct CLI can create a
 workspace with:
 
 ```bash
-npx tsx src/bin/pitch.ts --issue 42
-npx tsx src/bin/pitch.ts create --issue 42 --slug fix-bug
+node dist/bin/pitch.js --issue 42
+node dist/bin/pitch.js create --issue 42 --slug fix-bug
 ```
 
 ### Configuration Reference
@@ -604,8 +605,8 @@ create_workspace \
 The direct CLI uses the same underlying implementation:
 
 ```bash
-npx tsx src/bin/pitch.ts --pr 543 --agent claude-enterprise
-npx tsx src/bin/pitch.ts create --pr 543 --slug debug-ci --agent claude-enterprise
+node dist/bin/pitch.js --pr 543 --agent claude-enterprise
+node dist/bin/pitch.js create --pr 543 --slug debug-ci --agent claude-enterprise
 ```
 
 `slug` is optional for issue and PR creation. Without it,
