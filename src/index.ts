@@ -10,6 +10,7 @@ import {
 import { ConfigError, loadConfig, type PitchConfig } from "./config.js";
 import { registerCreateWorkspaceTool } from "./create-workspace.js";
 import { getRuntimeMetadata } from "./metadata.js";
+import { registerMoveWorkspaceTool } from "./move-workspace.js";
 import {
   registerRestartWorkspaceTool,
   registerResumeWorkspaceTool,
@@ -72,6 +73,7 @@ registerCreateWorkspaceTool(server, config);
 registerWorkspaceQueryTools(server);
 registerCloseWorkspaceTool(server, config);
 registerDeleteWorkspaceTool(server, config);
+registerMoveWorkspaceTool(server, config);
 registerResumeWorkspaceTool(server, config);
 registerRestartWorkspaceTool(server, config);
 

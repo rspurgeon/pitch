@@ -86,6 +86,7 @@ export const CreateWorkspaceInputSchema = z
     agent: z.string().trim().min(1).optional(),
     environment: z.string().trim().min(1).optional(),
     session_id: z.string().trim().min(1).optional(),
+    tmux_session: z.string().trim().min(1).optional(),
     skip_prompt: z.boolean().optional(),
     model: z.string().trim().min(1).optional(),
     additional_paths: AdditionalPathsInputSchema.optional(),
@@ -197,6 +198,7 @@ interface RollbackState {
   workspace_name: string;
   worktree_name: string;
   repo_config: RepoConfig;
+  tmux_session: string;
   worktree_created: boolean;
   tmux_window_created: boolean;
   workspace_record_written: boolean;
@@ -703,12 +705,12 @@ async function rollbackCreateWorkspace(
   if (state.tmux_window_created) {
     try {
       await dependencies.killTmuxWindow({
-        session_name: state.repo_config.tmux_session,
+        session_name: state.tmux_session,
         window_name: state.workspace_name,
       });
     } catch (error: unknown) {
       cleanupErrors.push(
-        `Failed to kill tmux window ${state.repo_config.tmux_session}:${state.workspace_name}: ${formatError(error)}`,
+        `Failed to kill tmux window ${state.tmux_session}:${state.workspace_name}: ${formatError(error)}`,
       );
     }
   }
@@ -742,6 +744,7 @@ export async function createWorkspace(
 
   const repoName = resolveRepoName(config, input.repo);
   const repoConfig = resolveRepoConfig(config, repoName);
+  const tmuxSession = input.tmux_session ?? repoConfig.tmux_session;
   const agentName = resolveAgentName(config, repoConfig, input.agent);
   const workspaceName = buildRequestedWorkspaceName(input);
 
@@ -749,6 +752,7 @@ export async function createWorkspace(
     workspace_name: workspaceName,
     worktree_name: workspaceName,
     repo_config: repoConfig,
+    tmux_session: tmuxSession,
     worktree_created: false,
     tmux_window_created: false,
     workspace_record_written: false,
@@ -795,7 +799,7 @@ export async function createWorkspace(
     rollbackState.worktree_created = !worktree.adopted;
 
     await dependencies.ensureTmuxSession({
-      session_name: repoConfig.tmux_session,
+      session_name: tmuxSession,
       start_directory: worktree.worktree_path,
     });
 
@@ -911,13 +915,13 @@ export async function createWorkspace(
     let agentPaneId: string;
     let createdPanes: TmuxPaneLayout | null = null;
     const windowExists = await dependencies.tmuxWindowExists(
-      repoConfig.tmux_session,
+      tmuxSession,
       workspaceName,
     );
 
     if (windowExists) {
       const paneInfo = await dependencies.getTmuxWindowPaneInfo({
-        session_name: repoConfig.tmux_session,
+        session_name: tmuxSession,
         window_name: workspaceName,
         pane_index: 0,
       });
@@ -930,7 +934,7 @@ export async function createWorkspace(
 
       if (paneKind === "unsupported") {
         throw new CreateWorkspaceError(
-          `Existing tmux window ${repoConfig.tmux_session}:${workspaceName} has unsupported pane 0 command: ${paneInfo.current_command}`,
+          `Existing tmux window ${tmuxSession}:${workspaceName} has unsupported pane 0 command: ${paneInfo.current_command}`,
         );
       }
 
@@ -939,7 +943,7 @@ export async function createWorkspace(
         paneInfo.current_path !== worktree.worktree_path
       ) {
         throw new CreateWorkspaceError(
-          `Existing tmux window ${repoConfig.tmux_session}:${workspaceName} pane 0 is rooted at ${paneInfo.current_path}, expected ${worktree.worktree_path}`,
+          `Existing tmux window ${tmuxSession}:${workspaceName} pane 0 is rooted at ${paneInfo.current_path}, expected ${worktree.worktree_path}`,
         );
       }
 
@@ -950,14 +954,14 @@ export async function createWorkspace(
       agentPaneId = paneInfo.pane_id;
     } else {
       await dependencies.createTmuxWindow({
-        session_name: repoConfig.tmux_session,
+        session_name: tmuxSession,
         window_name: workspaceName,
         start_directory: worktree.worktree_path,
       });
       rollbackState.tmux_window_created = true;
 
       const layout = await dependencies.createTmuxLayout({
-        session_name: repoConfig.tmux_session,
+        session_name: tmuxSession,
         window_name: workspaceName,
         worktree_path: worktree.worktree_path,
       });
@@ -976,7 +980,7 @@ export async function createWorkspace(
       worktree_path: worktree.worktree_path,
       guest_worktree_path: workspacePaths.guest_worktree_path,
       base_branch: source.base_branch,
-      tmux_session: repoConfig.tmux_session,
+      tmux_session: tmuxSession,
       tmux_window: workspaceName,
       agent_name: agentCommand.agent_name,
       agent_type: agentCommand.agent_type,

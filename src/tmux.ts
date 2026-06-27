@@ -28,6 +28,17 @@ export interface KillTmuxWindowParams {
   window_name: string;
 }
 
+export interface LinkTmuxWindowParams {
+  source_session_name: string;
+  source_window_name: string;
+  target_session_name: string;
+}
+
+export interface UnlinkTmuxWindowParams {
+  session_name: string;
+  window_name: string;
+}
+
 export interface CreateTmuxLayoutParams {
   session_name: string;
   window_name: string;
@@ -363,6 +374,24 @@ export async function tmuxSessionExists(
   }
 }
 
+export async function listTmuxSessions(
+  options: TmuxClientOptions = {},
+): Promise<string[]> {
+  const { stdout } = await runTmux(
+    ["list-sessions", "-F", "#{session_name}"],
+    options,
+  );
+
+  return parseTmuxSessionListOutput(stdout);
+}
+
+export function parseTmuxSessionListOutput(stdout: string): string[] {
+  return stdout
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""))
+    .filter((line) => line.length > 0);
+}
+
 export async function ensureTmuxSession(
   params: EnsureTmuxSessionParams,
   options: TmuxClientOptions = {},
@@ -481,6 +510,31 @@ export async function killTmuxWindow(
 
     throw error;
   }
+}
+
+export async function linkTmuxWindow(
+  params: LinkTmuxWindowParams,
+  options: TmuxClientOptions = {},
+): Promise<void> {
+  const sourceTarget = windowTarget(
+    params.source_session_name,
+    params.source_window_name,
+  );
+  const targetSession = sessionWindowTarget(params.target_session_name);
+
+  await runTmux(
+    ["link-window", "-d", "-s", sourceTarget, "-t", targetSession],
+    options,
+  );
+}
+
+export async function unlinkTmuxWindow(
+  params: UnlinkTmuxWindowParams,
+  options: TmuxClientOptions = {},
+): Promise<void> {
+  const target = windowTarget(params.session_name, params.window_name);
+
+  await runTmux(["unlink-window", "-t", target], options);
 }
 
 export async function sendKeysToPane(

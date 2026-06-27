@@ -16,6 +16,12 @@ import {
   type VmSshExecutionEnvironmentConfig,
 } from "./config.js";
 import { resolveVmSharedAgentStatusPaths } from "./execution-environment.js";
+import {
+  listWorkspaceRecords,
+  readWorkspaceRecord,
+  writeWorkspaceRecord,
+  type WorkspaceRecord,
+} from "./workspace-state.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -862,6 +868,9 @@ export async function deleteClaudeSessionState(
 export interface AgentStatusDependencies {
   getCurrentTty: typeof getCurrentTty;
   getCurrentTmuxContext: typeof getCurrentTmuxContext;
+  readWorkspaceRecord: typeof readWorkspaceRecord;
+  listWorkspaceRecords: typeof listWorkspaceRecords;
+  writeWorkspaceRecord: typeof writeWorkspaceRecord;
   readCodexSessionState: typeof readCodexSessionState;
   writeCodexSessionState: typeof writeCodexSessionState;
   deleteCodexSessionState: typeof deleteCodexSessionState;
@@ -885,6 +894,9 @@ interface CollectedAgentStatusState {
 const defaultDependencies: AgentStatusDependencies = {
   getCurrentTty,
   getCurrentTmuxContext,
+  readWorkspaceRecord,
+  listWorkspaceRecords,
+  writeWorkspaceRecord,
   readCodexSessionState,
   writeCodexSessionState,
   deleteCodexSessionState,
@@ -980,6 +992,211 @@ function isFreshRemoteSummary(summary: AgentStatusSummary, now: Date): boolean {
   return now.getTime() - generatedAt <= DEFAULT_STALE_SESSION_RETENTION_MS;
 }
 
+function getManagedCodexWorkspaceName(): string | undefined {
+  if (process.env.PITCH_MANAGED_AGENT !== "1") {
+    return undefined;
+  }
+
+  if (
+    process.env.PITCH_AGENT_TYPE !== undefined &&
+    process.env.PITCH_AGENT_TYPE !== "codex"
+  ) {
+    return undefined;
+  }
+
+  const workspaceName = process.env.PITCH_WORKSPACE_NAME?.trim();
+  return workspaceName === undefined || workspaceName.length === 0
+    ? undefined
+    : workspaceName;
+}
+
+function isCodexWorkspace(workspace: WorkspaceRecord): boolean {
+  return workspace.status === "active" && workspace.agent_type === "codex";
+}
+
+function sessionMatchesWorkspaceLocation(
+  sessionState: CodexSessionState,
+  workspace: WorkspaceRecord,
+): boolean {
+  if (
+    sessionState.tmux_session !== undefined &&
+    sessionState.tmux_window !== undefined &&
+    sessionState.tmux_session === workspace.tmux_session &&
+    sessionState.tmux_window === workspace.tmux_window
+  ) {
+    return true;
+  }
+
+  if (
+    sessionState.cwd !== undefined &&
+    (
+      sessionState.cwd === workspace.worktree_path ||
+      sessionState.cwd === workspace.guest_worktree_path
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function hasSessionLocation(sessionState: CodexSessionState): boolean {
+  return (
+    sessionState.cwd !== undefined ||
+    sessionState.tmux_session !== undefined ||
+    sessionState.tmux_window !== undefined ||
+    sessionState.tmux_pane_id !== undefined
+  );
+}
+
+async function findWorkspaceForCodexSession(
+  sessionState: CodexSessionState,
+  dependencies: Pick<
+    AgentStatusDependencies,
+    "readWorkspaceRecord" | "listWorkspaceRecords"
+  >,
+): Promise<WorkspaceRecord | null> {
+  const managedWorkspaceName = getManagedCodexWorkspaceName();
+  if (managedWorkspaceName !== undefined) {
+    try {
+      const workspace = await dependencies.readWorkspaceRecord(
+        managedWorkspaceName,
+      );
+      if (
+        workspace !== null &&
+        isCodexWorkspace(workspace) &&
+        (
+          sessionMatchesWorkspaceLocation(sessionState, workspace) ||
+          !hasSessionLocation(sessionState)
+        )
+      ) {
+        return workspace;
+      }
+    } catch {
+      // Fall back to location matching below.
+    }
+  }
+
+  let activeWorkspaces: WorkspaceRecord[];
+  try {
+    activeWorkspaces = await dependencies.listWorkspaceRecords({
+      status: "active",
+    });
+  } catch {
+    return null;
+  }
+
+  const matches = activeWorkspaces.filter(
+    (workspace) =>
+      isCodexWorkspace(workspace) &&
+      sessionMatchesWorkspaceLocation(sessionState, workspace),
+  );
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function updateWorkspaceCodexSession(
+  workspace: WorkspaceRecord,
+  sessionState: CodexSessionState,
+): WorkspaceRecord | null {
+  const existingSessionIndex = workspace.agent_sessions.findIndex(
+    (session) => session.id === sessionState.session_id,
+  );
+  const latestSessionIndex = workspace.agent_sessions.length - 1;
+  const latestSession = workspace.agent_sessions[latestSessionIndex];
+
+  if (existingSessionIndex !== -1) {
+    const existingSession = workspace.agent_sessions[existingSessionIndex];
+    if (
+      existingSessionIndex === latestSessionIndex &&
+      existingSession.status === "active"
+    ) {
+      return null;
+    }
+
+    if (existingSession.status === "active") {
+      return {
+        ...workspace,
+        agent_sessions: [
+          ...workspace.agent_sessions,
+          {
+            id: sessionState.session_id,
+            started_at: sessionState.updated_at,
+            status: "active",
+          },
+        ],
+        updated_at: sessionState.updated_at,
+      };
+    }
+
+    return {
+      ...workspace,
+      agent_sessions: workspace.agent_sessions.map((session, index) =>
+        index === existingSessionIndex
+          ? { ...session, status: "active" }
+          : session,
+      ),
+      updated_at: sessionState.updated_at,
+    };
+  }
+
+  if (latestSession?.id === "pending") {
+    return {
+      ...workspace,
+      agent_sessions: workspace.agent_sessions.map((session, index) =>
+        index === latestSessionIndex
+          ? {
+              ...session,
+              id: sessionState.session_id,
+              status: "active",
+            }
+          : session,
+      ),
+      updated_at: sessionState.updated_at,
+    };
+  }
+
+  return {
+    ...workspace,
+    agent_sessions: [
+      ...workspace.agent_sessions,
+      {
+        id: sessionState.session_id,
+        started_at: sessionState.updated_at,
+        status: "active",
+      },
+    ],
+    updated_at: sessionState.updated_at,
+  };
+}
+
+async function reconcileCodexWorkspaceSessionFromHook(
+  sessionState: CodexSessionState,
+  dependencies: Pick<
+    AgentStatusDependencies,
+    "readWorkspaceRecord" | "listWorkspaceRecords" | "writeWorkspaceRecord"
+  >,
+): Promise<void> {
+  const workspace = await findWorkspaceForCodexSession(
+    sessionState,
+    dependencies,
+  );
+  if (workspace === null) {
+    return;
+  }
+
+  const updatedWorkspace = updateWorkspaceCodexSession(workspace, sessionState);
+  if (updatedWorkspace === null) {
+    return;
+  }
+
+  try {
+    await dependencies.writeWorkspaceRecord(updatedWorkspace);
+  } catch {
+    return;
+  }
+}
+
 async function listRemoteAgentSessionStates(
   now: Date,
   dependencyOverrides: Partial<AgentStatusDependencies> = {},
@@ -1051,6 +1268,7 @@ export async function handleCodexHookPayload(
   };
 
   const written = await dependencies.writeCodexSessionState(nextState, cacheDir);
+  await reconcileCodexWorkspaceSessionFromHook(written, dependencies);
   await refreshAgentStatusSummary(cacheDir, dependencyOverrides);
   return written;
 }

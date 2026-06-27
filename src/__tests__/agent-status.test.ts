@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PitchConfig } from "../config.js";
+import type { WorkspaceRecord } from "../workspace-state.js";
 import {
   getAgentStatusSnapshot,
   getAgentStatusSummaryPath,
@@ -18,6 +19,10 @@ import {
   type CodexSessionState,
 } from "../agent-status.js";
 import { resolveVmSharedAgentStatusPaths } from "../execution-environment.js";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 async function makeTempCacheDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "pitch-agent-status-"));
@@ -62,6 +67,40 @@ function makeClaudeSessionState(
     last_notification_message: undefined,
     last_stop_message: undefined,
     updated_at: "2026-04-08T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function makeWorkspace(
+  overrides: Partial<WorkspaceRecord> = {},
+): WorkspaceRecord {
+  return {
+    name: "gh-42-fix-bug",
+    worktree_name: "gh-42-fix-bug",
+    repo: "kong/kongctl",
+    source_kind: "issue",
+    source_number: 42,
+    branch: "gh-42-fix-bug",
+    worktree_path: "/tmp/worktrees/demo",
+    base_branch: "main",
+    tmux_session: "pitch",
+    tmux_window: "tmux-sidebar",
+    agent_name: "codex",
+    agent_type: "codex",
+    environment_name: "host",
+    environment_kind: "host",
+    guest_worktree_path: "/tmp/worktrees/demo",
+    agent_pane_process: "codex",
+    agent_env: {
+      CODEX_HOME: "~/.codex",
+      PITCH_MANAGED_AGENT: "1",
+      PITCH_AGENT_TYPE: "codex",
+      PITCH_WORKSPACE_NAME: "gh-42-fix-bug",
+    },
+    agent_sessions: [],
+    status: "active",
+    created_at: "2026-04-08T11:59:00.000Z",
+    updated_at: "2026-04-08T11:59:00.000Z",
     ...overrides,
   };
 }
@@ -364,6 +403,172 @@ describe("handleCodexHookPayload", () => {
         last_assistant_message: undefined,
       }),
     ]);
+  });
+
+  it("backfills a trailing pending workspace session when a Codex hook matches the workspace", async () => {
+    const cacheDir = await makeTempCacheDir();
+    const workspace = makeWorkspace({
+      agent_sessions: [
+        {
+          id: "pending",
+          started_at: "2026-04-08T11:59:30.000Z",
+          status: "pending",
+        },
+      ],
+    });
+    const writeWorkspaceRecord = vi.fn(
+      async (updatedWorkspace: WorkspaceRecord) => updatedWorkspace,
+    );
+
+    await handleCodexHookPayload(
+      {
+        hook_event_name: "SessionStart",
+        session_id: "codex-session-new",
+        cwd: workspace.worktree_path,
+        transcript_path: "/tmp/transcripts/demo.jsonl",
+      },
+      cacheDir,
+      {
+        getCurrentTty: vi.fn(async () => "pts/21"),
+        getCurrentTmuxContext: vi.fn(async () => ({
+          session_name: workspace.tmux_session,
+          window_name: workspace.tmux_window,
+          pane_id: "%12",
+          pane_index: 0,
+          pane_tty: "pts/21",
+        })),
+        listActiveCodexProcesses: vi.fn(async () => [
+          {
+            pid: 101,
+            tty: "pts/21",
+            cwd: workspace.worktree_path,
+          },
+        ]),
+        readWorkspaceRecord: vi.fn(async () => null),
+        listWorkspaceRecords: vi.fn(async () => [workspace]),
+        writeWorkspaceRecord,
+        now: () => new Date("2026-04-08T12:00:00.000Z"),
+      },
+    );
+
+    expect(writeWorkspaceRecord).toHaveBeenCalledWith({
+      ...workspace,
+      agent_sessions: [
+        {
+          id: "codex-session-new",
+          started_at: "2026-04-08T11:59:30.000Z",
+          status: "active",
+        },
+      ],
+      updated_at: "2026-04-08T12:00:00.000Z",
+    });
+  });
+
+  it("appends a new workspace session when Codex switches session ids internally", async () => {
+    const cacheDir = await makeTempCacheDir();
+    const workspace = makeWorkspace({
+      agent_sessions: [
+        {
+          id: "codex-session-old",
+          started_at: "2026-04-08T11:50:00.000Z",
+          status: "active",
+        },
+      ],
+    });
+    const writeWorkspaceRecord = vi.fn(
+      async (updatedWorkspace: WorkspaceRecord) => updatedWorkspace,
+    );
+
+    await handleCodexHookPayload(
+      {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "codex-session-new",
+        cwd: workspace.worktree_path,
+        transcript_path: "/tmp/transcripts/demo.jsonl",
+      },
+      cacheDir,
+      {
+        getCurrentTty: vi.fn(async () => "pts/21"),
+        getCurrentTmuxContext: vi.fn(async () => ({
+          session_name: workspace.tmux_session,
+          window_name: workspace.tmux_window,
+          pane_id: "%12",
+          pane_index: 0,
+          pane_tty: "pts/21",
+        })),
+        listActiveCodexProcesses: vi.fn(async () => [
+          {
+            pid: 101,
+            tty: "pts/21",
+            cwd: workspace.worktree_path,
+          },
+        ]),
+        readWorkspaceRecord: vi.fn(async () => null),
+        listWorkspaceRecords: vi.fn(async () => [workspace]),
+        writeWorkspaceRecord,
+        now: () => new Date("2026-04-08T12:00:00.000Z"),
+      },
+    );
+
+    expect(writeWorkspaceRecord).toHaveBeenCalledWith({
+      ...workspace,
+      agent_sessions: [
+        {
+          id: "codex-session-old",
+          started_at: "2026-04-08T11:50:00.000Z",
+          status: "active",
+        },
+        {
+          id: "codex-session-new",
+          started_at: "2026-04-08T12:00:00.000Z",
+          status: "active",
+        },
+      ],
+      updated_at: "2026-04-08T12:00:00.000Z",
+    });
+  });
+
+  it("does not rewrite a managed workspace when hook location points elsewhere", async () => {
+    vi.stubEnv("PITCH_MANAGED_AGENT", "1");
+    vi.stubEnv("PITCH_AGENT_TYPE", "codex");
+    vi.stubEnv("PITCH_WORKSPACE_NAME", "gh-42-fix-bug");
+    const cacheDir = await makeTempCacheDir();
+    const workspace = makeWorkspace();
+    const writeWorkspaceRecord = vi.fn(
+      async (updatedWorkspace: WorkspaceRecord) => updatedWorkspace,
+    );
+
+    await handleCodexHookPayload(
+      {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "codex-session-elsewhere",
+        cwd: "/tmp/worktrees/elsewhere",
+      },
+      cacheDir,
+      {
+        getCurrentTty: vi.fn(async () => "pts/99"),
+        getCurrentTmuxContext: vi.fn(async () => ({
+          session_name: "elsewhere",
+          window_name: "elsewhere",
+          pane_id: "%99",
+          pane_index: 0,
+          pane_tty: "pts/99",
+        })),
+        listActiveCodexProcesses: vi.fn(async () => [
+          {
+            pid: 199,
+            tty: "pts/99",
+            cwd: "/tmp/worktrees/elsewhere",
+          },
+        ]),
+        readWorkspaceRecord: vi.fn(async () => workspace),
+        listWorkspaceRecords: vi.fn(async () => []),
+        writeWorkspaceRecord,
+        now: () => new Date("2026-04-08T12:00:00.000Z"),
+      },
+    );
+
+    expect(writeWorkspaceRecord).not.toHaveBeenCalled();
   });
 });
 

@@ -14,6 +14,9 @@ import {
   getTmuxWindowPane,
   isTmuxAvailable,
   killTmuxWindow,
+  listTmuxSessions,
+  linkTmuxWindow,
+  parseTmuxSessionListOutput,
   parseTmuxPaneListingOutput,
   parseTmuxWindowPaneInfoOutput,
   respawnPane,
@@ -21,6 +24,7 @@ import {
   tmuxSessionExists,
   tmuxWindowExists,
   TmuxError,
+  unlinkTmuxWindow,
   type TmuxClientOptions,
 } from "../tmux.js";
 
@@ -192,6 +196,15 @@ describe("tmux pane parsing", () => {
   });
 });
 
+describe("tmux session parsing", () => {
+  it("parses one tmux session name per line", () => {
+    expect(parseTmuxSessionListOutput("kongctl\nkongctl-aigw\r\n")).toEqual([
+      "kongctl",
+      "kongctl-aigw",
+    ]);
+  });
+});
+
 describe("tmux pane info parsing", () => {
   it("allows an empty current path for agent wrapper panes", async () => {
     expect(parseTmuxWindowPaneInfoOutput("%329", "nono\t\n")).toEqual({
@@ -270,6 +283,12 @@ tmuxDescribe("tmux management", () => {
       session_name: sessionName,
       created: false,
     });
+  });
+
+  it("lists tmux sessions", async () => {
+    await ensureIsolatedTestSession(sessionName, worktreePath, options);
+
+    await expect(listTmuxSessions(options)).resolves.toEqual([sessionName]);
   });
 
   it("creates a named tmux window and detects duplicates", async () => {
@@ -363,6 +382,46 @@ tmuxDescribe("tmux management", () => {
         options,
       ),
     ).resolves.toBe(false);
+  });
+
+  it("links and unlinks a window between sessions", async () => {
+    const targetSessionName = `${sessionName}-target`;
+    await ensureIsolatedTestSession(sessionName, worktreePath, options);
+    await ensureIsolatedTestSession(targetSessionName, worktreePath, options);
+    await createTmuxWindow(
+      {
+        session_name: sessionName,
+        window_name: windowName,
+        start_directory: worktreePath,
+      },
+      options,
+    );
+
+    await linkTmuxWindow(
+      {
+        source_session_name: sessionName,
+        source_window_name: windowName,
+        target_session_name: targetSessionName,
+      },
+      options,
+    );
+
+    await expect(
+      tmuxWindowExists(targetSessionName, windowName, options),
+    ).resolves.toBe(true);
+    await unlinkTmuxWindow(
+      {
+        session_name: sessionName,
+        window_name: windowName,
+      },
+      options,
+    );
+    await expect(tmuxWindowExists(sessionName, windowName, options)).resolves.toBe(
+      false,
+    );
+    await expect(
+      tmuxWindowExists(targetSessionName, windowName, options),
+    ).resolves.toBe(true);
   });
 
   it("creates the three-pane layout and cds each pane to the worktree path", async () => {

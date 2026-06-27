@@ -266,6 +266,9 @@ function makeDependencies(
     ),
     isWorktreeDirty: vi.fn(async () => false),
     listWorktreesForBranch: vi.fn(async () => []),
+    moveWorkspace: vi.fn(async () =>
+      makeWorkspaceRecord({ tmux_session: "kongctl-aigw" }),
+    ),
     readPullRequest: vi.fn(async () => ({
       number: 42,
       title: "Example PR",
@@ -365,6 +368,65 @@ describe("resume workspace", () => {
         updated_at: "2026-03-23T04:00:00.000Z",
       }),
     );
+  });
+
+  it("moves a live workspace before resuming with an explicit tmux session", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies();
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+        tmux_session: "kongctl-aigw",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.moveWorkspace).toHaveBeenCalledWith(
+      {
+        name: "gh-42-fix-bug",
+        tmux_session: "kongctl-aigw",
+      },
+      config,
+      {
+        reportWarning: undefined,
+      },
+    );
+    expect(dependencies.ensureTmuxSession).toHaveBeenCalledWith({
+      session_name: "kongctl-aigw",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
+    });
+    expect(workspace.tmux_session).toBe("kongctl-aigw");
+  });
+
+  it("recreates a missing workspace window in an explicit tmux session", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      tmuxWindowExists: vi.fn(async () => false),
+    });
+
+    const workspace = await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+        tmux_session: "kongctl-aigw",
+        reset_session: true,
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.moveWorkspace).not.toHaveBeenCalled();
+    expect(dependencies.ensureTmuxSession).toHaveBeenCalledWith({
+      session_name: "kongctl-aigw",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
+    });
+    expect(dependencies.createTmuxWindow).toHaveBeenCalledWith({
+      session_name: "kongctl-aigw",
+      window_name: "gh-42-fix-bug",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
+    });
+    expect(workspace.tmux_session).toBe("kongctl-aigw");
   });
 
   it("reuses the stored workspace sandbox on resume", async () => {

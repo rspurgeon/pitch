@@ -382,6 +382,45 @@ describe("create workspace", () => {
     expect(writeCallOrder).toBeLessThan(launchCallOrder);
   });
 
+  it("creates a workspace in an explicit tmux session", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies();
+
+    const workspace = await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+        tmux_session: "kongctl-aigw",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(workspace).toEqual(
+      makeWorkspaceRecord({
+        tmux_session: "kongctl-aigw",
+      }),
+    );
+    expect(dependencies.ensureTmuxSession).toHaveBeenCalledWith({
+      session_name: "kongctl-aigw",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
+    });
+    expect(dependencies.tmuxWindowExists).toHaveBeenCalledWith(
+      "kongctl-aigw",
+      "gh-42-fix-bug",
+    );
+    expect(dependencies.createTmuxWindow).toHaveBeenCalledWith({
+      session_name: "kongctl-aigw",
+      window_name: "gh-42-fix-bug",
+      start_directory: "/tmp/worktrees/gh-42-fix-bug",
+    });
+    expect(dependencies.createTmuxLayout).toHaveBeenCalledWith({
+      session_name: "kongctl-aigw",
+      window_name: "gh-42-fix-bug",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+    });
+  });
+
   it("passes workspace additional paths into the agent command and state record", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies();

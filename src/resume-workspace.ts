@@ -26,6 +26,7 @@ import { runGitHubLifecycle } from "./github-lifecycle.js";
 import { readPullRequest } from "./github-pr.js";
 import { findOpencodeSessionForWorkspace } from "./opencode-session-store.js";
 import { sendPostLaunchPromptToPane } from "./post-launch-prompt.js";
+import { moveWorkspace } from "./move-workspace.js";
 import {
   fastForwardWorktree,
   fetchGitRef,
@@ -65,6 +66,7 @@ export const ResumeWorkspaceInputSchema = z.object({
   agent: z.string().trim().min(1).optional(),
   environment: z.string().trim().min(1).optional(),
   session_id: z.string().trim().min(1).optional(),
+  tmux_session: z.string().trim().min(1).optional(),
   reset_session: z.boolean().optional(),
   restart_agent: z.boolean().optional(),
   sync: z.boolean().optional(),
@@ -88,6 +90,7 @@ export interface ResumeWorkspaceDependencies {
   getTmuxPaneInfo: typeof getTmuxPaneInfo;
   isWorktreeDirty: typeof isWorktreeDirty;
   listWorktreesForBranch: typeof listWorktreesForBranch;
+  moveWorkspace: typeof moveWorkspace;
   readPullRequest: typeof readPullRequest;
   readWorkspaceRecord: typeof readWorkspaceRecord;
   restoreWorktree: typeof restoreWorktree;
@@ -120,6 +123,7 @@ const defaultDependencies: ResumeWorkspaceDependencies = {
   getTmuxWindowPane,
   isWorktreeDirty,
   listWorktreesForBranch,
+  moveWorkspace,
   readPullRequest,
   readWorkspaceRecord,
   restoreWorktree,
@@ -618,6 +622,48 @@ export async function resumeWorkspace(
     throw new ResumeWorkspaceError(
       `Failed to restore worktree for ${workspace.name}: ${formatError(error)}`,
     );
+  }
+
+  if (
+    input.tmux_session !== undefined &&
+    input.tmux_session !== workspace.tmux_session
+  ) {
+    let sourceWindowExists = false;
+    try {
+      sourceWindowExists = await dependencies.tmuxWindowExists(
+        workspace.tmux_session,
+        workspace.tmux_window,
+      );
+    } catch (error: unknown) {
+      throw new ResumeWorkspaceError(
+        `Failed to inspect tmux window for ${workspace.name}: ${formatError(error)}`,
+      );
+    }
+
+    if (workspace.status === "active" && sourceWindowExists) {
+      try {
+        workspace = await dependencies.moveWorkspace(
+          {
+            name: workspace.name,
+            tmux_session: input.tmux_session,
+          },
+          config,
+          {
+            reportWarning: dependencies.reportWarning,
+          },
+        );
+      } catch (error: unknown) {
+        throw new ResumeWorkspaceError(
+          `Failed to move workspace ${workspace.name} to tmux session ${input.tmux_session}: ${formatError(error)}`,
+        );
+      }
+    } else {
+      workspace = {
+        ...workspace,
+        tmux_session: input.tmux_session,
+        updated_at: dependencies.now().toISOString(),
+      };
+    }
   }
 
   try {

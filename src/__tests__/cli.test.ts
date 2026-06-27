@@ -195,6 +195,7 @@ function makeDependencies(
       },
     })),
     displayTmuxMenu: vi.fn(async () => undefined),
+    listTmuxSessions: vi.fn(async () => ["kongctl", "kongctl-aigw"]),
     getAgentStatusSnapshot: vi.fn(async (): Promise<AgentStatusSnapshot> => ({
       summary: {
         generated_at: "2026-04-08T12:00:00.000Z",
@@ -266,6 +267,9 @@ function makeDependencies(
     listWorkspaces: vi.fn(async () => [makeWorkspaceSummary()]),
     getWorkspace: vi.fn(async () => makeWorkspaceRecord()),
     resumeWorkspace: vi.fn(async () => makeWorkspaceRecord()),
+    moveWorkspace: vi.fn(async () =>
+      makeWorkspaceRecord({ tmux_session: "kongctl-aigw" }),
+    ),
     closeWorkspace: vi.fn(async () => makeWorkspaceRecord({ status: "closed" })),
     deleteWorkspace: vi.fn(async () => makeWorkspaceRecord({ status: "closed" })),
     renderStatusRight: vi.fn(async () => "R:2 I:1"),
@@ -432,6 +436,7 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         session_id: undefined,
+        tmux_session: undefined,
         skip_prompt: true,
         model: undefined,
       },
@@ -465,6 +470,27 @@ describe("runCli", () => {
       expect.objectContaining({
         pr: 700,
         additional_paths: ["/tmp/shared", "/tmp/cache"],
+      }),
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
+  it("passes an explicit tmux session through create", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["create", "--pr", "700", "--tmux-session", "kongctl-aigw"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.createWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pr: 700,
+        tmux_session: "kongctl-aigw",
       }),
       makeConfig(),
       {
@@ -538,6 +564,7 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         session_id: undefined,
+        tmux_session: undefined,
         skip_prompt: undefined,
         model: undefined,
       },
@@ -580,6 +607,7 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         session_id: undefined,
+        tmux_session: undefined,
         skip_prompt: undefined,
         model: undefined,
       },
@@ -614,6 +642,7 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         session_id: undefined,
+        tmux_session: undefined,
         skip_prompt: true,
         model: undefined,
       },
@@ -654,6 +683,7 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         session_id: undefined,
+        tmux_session: undefined,
         skip_prompt: undefined,
         model: undefined,
       },
@@ -752,6 +782,7 @@ describe("runCli", () => {
         agent: "codex",
         environment: undefined,
         session_id: undefined,
+        tmux_session: undefined,
         reset_session: undefined,
         restart_agent: undefined,
         sync: undefined,
@@ -790,6 +821,27 @@ describe("runCli", () => {
     );
   });
 
+  it("passes an explicit tmux session through resume", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["resume", "pr-700-default-aas", "--tmux-session", "kongctl-aigw"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.resumeWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "pr-700-default-aas",
+        tmux_session: "kongctl-aigw",
+      }),
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
   it("passes sync through resume", async () => {
     const dependencies = makeDependencies();
 
@@ -805,6 +857,7 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         session_id: undefined,
+        tmux_session: undefined,
         reset_session: undefined,
         restart_agent: undefined,
         sync: true,
@@ -831,6 +884,7 @@ describe("runCli", () => {
         agent: "codex",
         environment: undefined,
         session_id: undefined,
+        tmux_session: undefined,
         reset_session: undefined,
         restart_agent: true,
         sync: undefined,
@@ -839,6 +893,67 @@ describe("runCli", () => {
       {
         reportWarning: expect.any(Function),
       },
+    );
+  });
+
+  it("passes an explicit tmux session through restart", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["restart", "pr-700-default-aas", "--tmux-session", "kongctl-aigw"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.resumeWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "pr-700-default-aas",
+        tmux_session: "kongctl-aigw",
+        restart_agent: true,
+      }),
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
+  it("moves a workspace to another tmux session", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["move", "pr-700-default-aas", "--to", "kongctl-aigw"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.moveWorkspace).toHaveBeenCalledWith(
+      {
+        name: "pr-700-default-aas",
+        tmux_session: "kongctl-aigw",
+      },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "tmux: kongctl-aigw:pr-700-default-aas",
+    );
+  });
+
+  it("rejects move without a target tmux session", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["move", "pr-700-default-aas"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(1);
+    expect(dependencies.moveWorkspace).not.toHaveBeenCalled();
+    expect(dependencies.stderrBuffer.join("")).toContain(
+      "Missing required option --to.",
     );
   });
 
@@ -917,6 +1032,7 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         session_id: "019d6505-21ab-7493-9ea5-e10084cc79f0",
+        tmux_session: undefined,
         skip_prompt: undefined,
         model: undefined,
       },
@@ -942,6 +1058,7 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         session_id: "019d6505-21ab-7493-9ea5-e10084cc79f0",
+        tmux_session: undefined,
         reset_session: undefined,
         restart_agent: undefined,
         sync: undefined,
@@ -968,6 +1085,7 @@ describe("runCli", () => {
         agent: undefined,
         environment: undefined,
         session_id: undefined,
+        tmux_session: undefined,
         reset_session: true,
         restart_agent: undefined,
         sync: undefined,
@@ -1153,16 +1271,19 @@ describe("runCli", () => {
 
     expect(exitCode).toBe(0);
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch [create] (--issue N | --pr N) [--slug SLUG] [--session-id ID] [--additional-dir PATH]... [options]",
+      "pitch [create] (--issue N | --pr N) [--slug SLUG] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [options]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch [create] --name NAME [--branch BRANCH] [--session-id ID] [--additional-dir PATH]... [options]",
+      "pitch [create] --name NAME [--branch BRANCH] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [options]",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "pitch move <name> --to SESSION",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "pitch delete <name> [--force]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--additional-dir PATH]... [--reset-session] [--sync]",
+      "pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [--reset-session] [--sync]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "  --additional-dir PATH",
@@ -1187,6 +1308,9 @@ describe("runCli", () => {
     expect(dependencies.stdoutBuffer.join("")).toContain("#compdef pitch");
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "pitch __complete-workspaces",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "pitch __complete-tmux-sessions",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "'delete[Delete a workspace]'",
@@ -1225,6 +1349,12 @@ describe("runCli", () => {
       "'--session-id[Resume an existing agent session id]:session id:'",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
+      "'--to[Target tmux session]:session:_pitch_tmux_sessions'",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "'--tmux-session[Target tmux session]:session:_pitch_tmux_sessions'",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
       "'--reset-session[Start a new agent session instead of resuming]'",
     );
   });
@@ -1250,6 +1380,23 @@ describe("runCli", () => {
     expect(exitCode).toBe(0);
     expect(dependencies.stdoutBuffer.join("")).toBe(
       "pr-700-default-aas\ngh-42-fix-bug\n",
+    );
+  });
+
+  it("prints tmux session names for completion", async () => {
+    const dependencies = makeDependencies({
+      listTmuxSessions: vi.fn(async () => ["kongctl", "kongctl-aigw"]),
+    });
+
+    const exitCode = await runCli(
+      ["__complete-tmux-sessions"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.listTmuxSessions).toHaveBeenCalledTimes(1);
+    expect(dependencies.stdoutBuffer.join("")).toBe(
+      "kongctl\nkongctl-aigw\n",
     );
   });
 

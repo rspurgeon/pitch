@@ -44,6 +44,8 @@ node dist/bin/pitch.js create --pr 700 --slug default-aas --skip-prompt
 node dist/bin/pitch.js list
 node dist/bin/pitch.js get pr-700-default-aas
 node dist/bin/pitch.js resume pr-700-default-aas
+node dist/bin/pitch.js resume pr-700-default-aas --tmux-session kongctl-aigw
+node dist/bin/pitch.js move pr-700-default-aas --to kongctl-aigw
 node dist/bin/pitch.js resume pr-700-default-aas --sync
 node dist/bin/pitch.js close pr-700-default-aas
 node dist/bin/pitch.js delete pr-700-default-aas --force
@@ -65,9 +67,16 @@ safe: no other worktree is using it, it has no commits
 outside `base_branch`, and any remote-tracking refs match
 the local branch tip.
 
+Pass `--tmux-session SESSION` to `create`, `resume`, or
+`restart` to place or restore a workspace in a specific
+tmux session. Use `move <workspace> --to SESSION` to
+move an already tracked live workspace window and update
+the saved workspace state.
+
 The `completion zsh` command emits a zsh completion script
 with dynamic workspace-name completion for `get`,
-`resume`, `close`, and `delete`.
+`resume`, `restart`, `move`, `close`, and `delete`, plus
+tmux-session completion for `--to` and `--tmux-session`.
 
 If Pitch is installed as a package, it exposes two
 executables:
@@ -646,6 +655,9 @@ when possible.
   when present. By default it resumes the latest agent
   session; with `reset_session: true`, it starts a fresh
   session in the same worktree.
+- **move_workspace** — Moves a tracked workspace tmux
+  window to another tmux session and updates the saved
+  workspace state.
 - **close_workspace** — Closes the tmux window and marks
   the workspace closed. The worktree and state file
   remain so the workspace can be resumed later.
