@@ -107,4 +107,19 @@ describe("buildBootstrapPrompt", () => {
       "Inspect the current repo state on branch feature/auth in kong/kongctl and wait for the next instruction. Do not make changes yet.",
     );
   });
+
+  it("appends additional prompt text when present", () => {
+    expect(
+      buildBootstrapPrompt(makeConfig(), {
+        repo: "kong/kongctl",
+        source_kind: "pr",
+        source_number: 123,
+        workspace_name: "pr-123-sync-pr",
+        branch: "feature/example",
+        additional_prompt: "Also focus on the flaky retry path.",
+      }),
+    ).toBe(
+      "Repo pr 123 in kong/kongctl on feature/example.\n\nAlso focus on the flaky retry path.",
+    );
+  });
 });

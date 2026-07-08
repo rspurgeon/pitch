@@ -273,6 +273,16 @@ function makeDependencies(
     closeWorkspace: vi.fn(async () => makeWorkspaceRecord({ status: "closed" })),
     deleteWorkspace: vi.fn(async () => makeWorkspaceRecord({ status: "closed" })),
     renderStatusRight: vi.fn(async () => "R:2 I:1"),
+    renderWaybarStatus: vi.fn(async () =>
+      JSON.stringify({
+        text: "<span foreground=\"#7DAF7D\">R:1</span>",
+        tooltip: "Pitch Agents",
+        class: ["pitch-agents", "running"],
+      }),
+    ),
+    watchWaybarStatus: vi.fn(async (output) => {
+      output.write("{\"text\":\"watch\"}\n");
+    }),
     stdin: Readable.from([]),
     stdout: {
       write(chunk: string) {
@@ -439,6 +449,7 @@ describe("runCli", () => {
         tmux_session: undefined,
         skip_prompt: true,
         model: undefined,
+        prompt: undefined,
       },
       makeConfig(),
       {
@@ -567,6 +578,7 @@ describe("runCli", () => {
         tmux_session: undefined,
         skip_prompt: undefined,
         model: undefined,
+        prompt: undefined,
       },
       makeConfig(),
       {
@@ -610,6 +622,7 @@ describe("runCli", () => {
         tmux_session: undefined,
         skip_prompt: undefined,
         model: undefined,
+        prompt: undefined,
       },
       makeConfig(),
       {
@@ -645,6 +658,7 @@ describe("runCli", () => {
         tmux_session: undefined,
         skip_prompt: true,
         model: undefined,
+        prompt: undefined,
       },
       makeConfig(),
       {
@@ -686,7 +700,115 @@ describe("runCli", () => {
         tmux_session: undefined,
         skip_prompt: undefined,
         model: undefined,
+        prompt: undefined,
       },
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
+  it("passes trailing create text as additional prompt text", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      [
+        "create",
+        "--pr",
+        "700",
+        "--slug",
+        "default-aas",
+        "focus",
+        "on",
+        "the",
+        "retry",
+        "path",
+      ],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.createWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pr: 700,
+        slug: "default-aas",
+        prompt: "focus on the retry path",
+      }),
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
+  it("passes --prompt as additional prompt text", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      [
+        "create",
+        "--pr",
+        "700",
+        "--slug",
+        "default-aas",
+        "--prompt",
+        "focus on the retry path",
+      ],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.createWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pr: 700,
+        slug: "default-aas",
+        prompt: "focus on the retry path",
+      }),
+      makeConfig(),
+      {
+        reportWarning: expect.any(Function),
+      },
+    );
+  });
+
+  it("rejects mixed --prompt and trailing create text", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      [
+        "create",
+        "--pr",
+        "700",
+        "--prompt",
+        "focus",
+        "extra",
+      ],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(1);
+    expect(dependencies.loadConfig).not.toHaveBeenCalled();
+    expect(dependencies.createWorkspace).not.toHaveBeenCalled();
+    expect(dependencies.stderrBuffer.join("")).toContain(
+      "pitch: Use either --prompt TEXT or trailing prompt text, not both.",
+    );
+  });
+
+  it("passes implicit create trailing text as additional prompt text", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["--issue", "42", "--", "verify", "--flag-shaped", "text"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.createWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue: 42,
+        prompt: "verify --flag-shaped text",
+      }),
       makeConfig(),
       {
         reportWarning: expect.any(Function),
@@ -750,6 +872,177 @@ describe("runCli", () => {
     });
     expect(dependencies.stdoutBuffer.join("")).toContain("Name");
     expect(dependencies.stdoutBuffer.join("")).toContain("gh-42-fix-bug");
+  });
+
+  it("sorts listed workspaces by status then name by default", async () => {
+    const dependencies = makeDependencies({
+      listWorkspaces: vi.fn(async () => [
+        makeWorkspaceSummary({ name: "z-closed", status: "closed" }),
+        makeWorkspaceSummary({ name: "b-active", status: "active" }),
+        makeWorkspaceSummary({ name: "a-closed", status: "closed" }),
+        makeWorkspaceSummary({ name: "a-active", status: "active" }),
+      ]),
+    });
+
+    const exitCode = await runCli(
+      ["list", "--status", "all", "--json"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    const output = JSON.parse(dependencies.stdoutBuffer.join(""));
+    expect(
+      output.result.map((workspace: WorkspaceSummary) => workspace.name),
+    ).toEqual(["a-active", "b-active", "a-closed", "z-closed"]);
+  });
+
+  it("sorts listed workspaces by name when requested", async () => {
+    const dependencies = makeDependencies({
+      listWorkspaces: vi.fn(async () => [
+        makeWorkspaceSummary({ name: "z-active", status: "active" }),
+        makeWorkspaceSummary({ name: "b-closed", status: "closed" }),
+        makeWorkspaceSummary({ name: "a-active", status: "active" }),
+      ]),
+    });
+
+    const exitCode = await runCli(
+      ["list", "--status", "all", "--sort", "name", "--json"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    const output = JSON.parse(dependencies.stdoutBuffer.join(""));
+    expect(
+      output.result.map((workspace: WorkspaceSummary) => workspace.name),
+    ).toEqual(["a-active", "b-closed", "z-active"]);
+  });
+
+  it("sorts listed workspaces by status then source when requested", async () => {
+    const dependencies = makeDependencies({
+      listWorkspaces: vi.fn(async () => [
+        makeWorkspaceSummary({
+          name: "z-pr",
+          source_kind: "pr",
+          source_number: 7,
+          status: "active",
+        }),
+        makeWorkspaceSummary({
+          name: "b-issue",
+          source_kind: "issue",
+          source_number: 2,
+          status: "active",
+        }),
+        makeWorkspaceSummary({
+          name: "a-adhoc",
+          source_kind: "adhoc",
+          source_number: null,
+          status: "closed",
+        }),
+        makeWorkspaceSummary({
+          name: "c-pr",
+          source_kind: "pr",
+          source_number: 1,
+          status: "active",
+        }),
+      ]),
+    });
+
+    const exitCode = await runCli(
+      ["list", "--status", "all", "--sort", "status,source", "--json"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    const output = JSON.parse(dependencies.stdoutBuffer.join(""));
+    expect(
+      output.result.map((workspace: WorkspaceSummary) => workspace.name),
+    ).toEqual(["b-issue", "c-pr", "z-pr", "a-adhoc"]);
+  });
+
+  it("groups listed workspaces by status in human output", async () => {
+    const dependencies = makeDependencies({
+      listWorkspaces: vi.fn(async () => [
+        makeWorkspaceSummary({ name: "z-closed", status: "closed" }),
+        makeWorkspaceSummary({ name: "b-active", status: "active" }),
+        makeWorkspaceSummary({ name: "a-active", status: "active" }),
+      ]),
+    });
+
+    const exitCode = await runCli(
+      ["list", "--status", "all", "--group-by", "status"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    const output = dependencies.stdoutBuffer.join("");
+    expect(output.indexOf("active (2)")).toBeLessThan(
+      output.indexOf("closed (1)"),
+    );
+    expect(output.indexOf("a-active")).toBeLessThan(
+      output.indexOf("b-active"),
+    );
+  });
+
+  it("emits grouped workspace JSON when requested", async () => {
+    const dependencies = makeDependencies({
+      listWorkspaces: vi.fn(async () => [
+        makeWorkspaceSummary({ name: "z-closed", status: "closed" }),
+        makeWorkspaceSummary({ name: "a-active", status: "active" }),
+      ]),
+    });
+
+    const exitCode = await runCli(
+      ["list", "--status", "all", "--group-by", "status", "--json"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(dependencies.stdoutBuffer.join(""))).toMatchObject({
+      command: "list",
+      result: {
+        group_by: "status",
+        groups: [
+          {
+            key: "status",
+            value: "active",
+            label: "active",
+            workspaces: [{ name: "a-active" }],
+          },
+          {
+            key: "status",
+            value: "closed",
+            label: "closed",
+            workspaces: [{ name: "z-closed" }],
+          },
+        ],
+      },
+      warnings: [],
+    });
+  });
+
+  it("rejects invalid workspace list sort options", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(["list", "--sort", "unknown"], dependencies);
+
+    expect(exitCode).toBe(1);
+    expect(dependencies.stderrBuffer.join("")).toContain(
+      "Option --sort expects comma-separated fields. Valid fields:",
+    );
+  });
+
+  it("rejects invalid workspace list group fields", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["list", "--group-by", "status,repo"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(1);
+    expect(dependencies.stderrBuffer.join("")).toContain(
+      "Option --group-by expects one field. Valid fields:",
+    );
   });
 
   it("uses a positional workspace name for get", async () => {
@@ -1185,6 +1478,42 @@ describe("runCli", () => {
     expect(dependencies.loadConfig).not.toHaveBeenCalled();
   });
 
+  it("renders raw Waybar agent status JSON", async () => {
+    const payload = {
+      text: "<span foreground=\"#7DAF7D\">R:1</span>",
+      tooltip: "Pitch Agents",
+      class: ["pitch-agents", "running"],
+    };
+    const dependencies = makeDependencies({
+      renderWaybarStatus: vi.fn(async () => JSON.stringify(payload)),
+    });
+
+    const exitCode = await runCli(["waybar-status"], dependencies);
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.renderWaybarStatus).toHaveBeenCalledWith();
+    expect(JSON.parse(dependencies.stdoutBuffer.join(""))).toEqual(payload);
+    expect(dependencies.loadConfig).not.toHaveBeenCalled();
+  });
+
+  it("streams Waybar agent status JSON in watch mode", async () => {
+    const dependencies = makeDependencies({
+      watchWaybarStatus: vi.fn(async (output) => {
+        output.write("{\"text\":\"watch\"}\n");
+      }),
+    });
+
+    const exitCode = await runCli(["waybar-status", "--watch"], dependencies);
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.watchWaybarStatus).toHaveBeenCalledWith(
+      dependencies.stdout,
+    );
+    expect(dependencies.renderWaybarStatus).not.toHaveBeenCalled();
+    expect(dependencies.stdoutBuffer.join("")).toBe("{\"text\":\"watch\"}\n");
+    expect(dependencies.loadConfig).not.toHaveBeenCalled();
+  });
+
   it("passes delete-branch-if-empty to deleteWorkspace", async () => {
     const dependencies = makeDependencies();
 
@@ -1295,7 +1624,16 @@ describe("runCli", () => {
       "  --reset-session",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
+      "  --prompt TEXT",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "  --group-by FIELD",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
       "If --issue, --pr, or --name is provided without an explicit command,",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "Trailing PROMPT text on create is appended to the bootstrap prompt.",
     );
   });
 

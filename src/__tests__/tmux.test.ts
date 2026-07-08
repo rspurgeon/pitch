@@ -174,6 +174,33 @@ async function waitForPaneText(
   throw new Error(`Timed out waiting for pane ${paneId} to contain: ${text}`);
 }
 
+async function waitForPaneShell(
+  paneId: string,
+  options: TmuxClientOptions,
+): Promise<void> {
+  const shellCommands = new Set([
+    "ash",
+    "bash",
+    "dash",
+    "fish",
+    "ksh",
+    "nu",
+    "sh",
+    "zsh",
+  ]);
+
+  for (let i = 0; i < 40; i += 1) {
+    const paneInfo = await getTmuxPaneInfo({ pane_id: paneId }, options);
+    if (shellCommands.has(paneInfo.current_command)) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  throw new Error(`Timed out waiting for pane ${paneId} to return to a shell`);
+}
+
 const tmuxDescribe = tmuxIntegrationAvailable ? describe : describe.skip;
 
 describe("tmux pane parsing", () => {
@@ -603,7 +630,7 @@ tmuxDescribe("tmux management", () => {
     await waitForPaneText(window.pane_id, longValue.slice(-80), options);
   });
 
-  it("respawns a pane with a command and start directory", async () => {
+  it("respawns a pane with a command and returns to a shell", async () => {
     await ensureIsolatedTestSession(sessionName, worktreePath, options);
     const window = await createTmuxWindow(
       {
@@ -617,13 +644,14 @@ tmuxDescribe("tmux management", () => {
     await respawnPane(
       {
         pane_id: window.pane_id,
-        command: "printf 'pitch-respawn-test\\n'; sleep 5",
+        command: "printf 'pitch-respawn-test\\n'",
         start_directory: worktreePath,
       },
       options,
     );
 
     await waitForPaneText(window.pane_id, "pitch-respawn-test", options);
+    await waitForPaneShell(window.pane_id, options);
     await expect(
       getTmuxPaneInfo(
         {

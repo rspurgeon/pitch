@@ -44,7 +44,8 @@ workspace action:
 pitch --issue 565
 pitch --pr 543
 pitch create --issue 565 --slug fix-validation
-pitch create --pr 543 --slug debug-ci
+pitch create --pr 543 --slug debug-ci focus on failing checks
+pitch create --pr 543 --prompt "focus on failing checks"
 pitch list
 pitch get pr-543-debug-ci
 pitch resume pr-543-debug-ci
@@ -615,6 +616,9 @@ bootstrap prompt into that live session.
   - `issue` (number)
   - `pr` (number)
 - `slug` (string, optional) — descriptive suffix for naming
+- `prompt` (string, optional) — additional text appended to the
+  bootstrap prompt for fresh launches; CLI users can pass
+  `--prompt TEXT` or trailing create text
 - `base_branch` (string, optional) — branch to create
   from for issue workspaces, defaults to `main`
 - `agent` (string, optional) — configured agent name like `codex`,

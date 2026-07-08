@@ -41,6 +41,8 @@ agent prompt:
 ```bash
 node dist/bin/pitch.js --pr 700
 node dist/bin/pitch.js create --pr 700 --slug default-aas --skip-prompt
+node dist/bin/pitch.js create --pr 700 --slug default-aas check logs too
+node dist/bin/pitch.js create --pr 700 --prompt "check logs too"
 node dist/bin/pitch.js list
 node dist/bin/pitch.js get pr-700-default-aas
 node dist/bin/pitch.js resume pr-700-default-aas
@@ -72,6 +74,10 @@ Pass `--tmux-session SESSION` to `create`, `resume`, or
 tmux session. Use `move <workspace> --to SESSION` to
 move an already tracked live workspace window and update
 the saved workspace state.
+
+Pass `--prompt TEXT`, or place trailing text after
+`create` options, to append extra instructions to the
+fresh agent bootstrap prompt.
 
 The `completion zsh` command emits a zsh completion script
 with dynamic workspace-name completion for `get`,

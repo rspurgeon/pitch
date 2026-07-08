@@ -89,6 +89,7 @@ export const CreateWorkspaceInputSchema = z
     tmux_session: z.string().trim().min(1).optional(),
     skip_prompt: z.boolean().optional(),
     model: z.string().trim().min(1).optional(),
+    prompt: z.string().trim().min(1).optional(),
     additional_paths: AdditionalPathsInputSchema.optional(),
   })
   .strict()
@@ -824,6 +825,7 @@ export async function createWorkspace(
           source_number: source.source_number,
           workspace_name: workspaceName,
           branch: worktree.branch,
+          additional_prompt: input.prompt,
         });
     const generatedOpencodeConfigPath = await maybeEnsureOpencodeConfig(
       config,

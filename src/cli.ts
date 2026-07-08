@@ -36,6 +36,8 @@ import {
 } from "./workspace-query.js";
 import type { WorkspaceRecord } from "./workspace-state.js";
 import { renderStatusRight, type StatusRightInput } from "./status-right.js";
+import { renderWaybarStatus, watchWaybarStatus } from "./waybar-status.js";
+import { runWorkspaceView } from "./workspace-view.js";
 import { shellEscape } from "./shell.js";
 import { displayTmuxMenu, listTmuxSessions } from "./tmux.js";
 
@@ -54,6 +56,8 @@ type CliVerb =
   | "close"
   | "delete"
   | "status-right"
+  | "waybar-status"
+  | "view"
   | "completion"
   | "__complete-workspaces"
   | "__complete-tmux-sessions";
@@ -65,6 +69,18 @@ interface ParsedArgs {
   positionals: string[];
 }
 
+interface WorkspaceSummaryGroup {
+  key: WorkspaceListSortKey;
+  value: string;
+  label: string;
+  workspaces: WorkspaceSummary[];
+}
+
+interface WorkspaceSummaryGroupedList {
+  group_by: WorkspaceListSortKey;
+  groups: WorkspaceSummaryGroup[];
+}
+
 interface JsonCommandResult {
   command: Exclude<
     CliVerb,
@@ -73,6 +89,7 @@ interface JsonCommandResult {
   result:
     | WorkspaceRecord
     | WorkspaceSummary[]
+    | WorkspaceSummaryGroupedList
     | AgentStatusSnapshot
     | AgentsView
     | string;
@@ -95,6 +112,8 @@ export interface CliDependencies {
   closeWorkspace: typeof closeWorkspace;
   deleteWorkspace: typeof deleteWorkspace;
   renderStatusRight: typeof renderStatusRight;
+  renderWaybarStatus: typeof renderWaybarStatus;
+  watchWaybarStatus: typeof watchWaybarStatus;
   stdin: NodeJS.ReadableStream;
   stdout: { write(chunk: string): void };
   stderr: { write(chunk: string): void };
@@ -116,6 +135,8 @@ const defaultDependencies: CliDependencies = {
   closeWorkspace,
   deleteWorkspace,
   renderStatusRight,
+  renderWaybarStatus,
+  watchWaybarStatus,
   stdin: defaultStdin,
   stdout: defaultStdout,
   stderr: defaultStderr,
@@ -123,13 +144,16 @@ const defaultDependencies: CliDependencies = {
 
 const BOOLEAN_FLAGS = new Set([
   "delete-branch-if-empty",
+  "exit-on-jump",
   "help",
   "json",
+  "keep-open-on-jump",
   "pick",
   "skip-prompt",
   "force",
   "reset-session",
   "sync",
+  "watch",
 ]);
 
 const STRING_FLAGS = new Set([
@@ -139,16 +163,19 @@ const STRING_FLAGS = new Set([
   "base-branch",
   "branch",
   "environment",
+  "group-by",
   "cwd",
   "issue",
   "message",
   "model",
   "name",
+  "prompt",
   "pr",
   "repo",
   "separator",
   "session-id",
   "slug",
+  "sort",
   "status",
   "transcript-path",
   "tty",
@@ -204,6 +231,30 @@ function hasImplicitCreateFlags(flags: Map<string, FlagValue>): boolean {
   const hasName = typeof flags.get("name") === "string";
 
   return hasIssue || hasPr || hasName;
+}
+
+function isCliVerbToken(token: string): token is CliVerb {
+  return (
+    token === "create" ||
+    token === "agents" ||
+    token === "agents-popup" ||
+    token === "jump" ||
+    token === "agent-status" ||
+    token === "agent-error" ||
+    token === "list" ||
+    token === "get" ||
+    token === "resume" ||
+    token === "restart" ||
+    token === "move" ||
+    token === "close" ||
+    token === "delete" ||
+    token === "status-right" ||
+    token === "waybar-status" ||
+    token === "view" ||
+    token === "completion" ||
+    token === "__complete-workspaces" ||
+    token === "__complete-tmux-sessions"
+  );
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -312,6 +363,20 @@ function parseArgs(argv: string[]): ParsedArgs {
         positionals: [],
       };
     }
+
+    if (hasImplicitCreateFlags(flags) && !isCliVerbToken(remaining[0])) {
+      return {
+        verb: "create",
+        flags,
+        positionals: remaining,
+      };
+    }
+  } else if (hasImplicitCreateFlags(flags) && !isCliVerbToken(remaining[0])) {
+    return {
+      verb: "create",
+      flags,
+      positionals: remaining,
+    };
   }
 
   const verbToken = maybeAlias === "workspace" ? remaining.shift() : remaining.shift();
@@ -323,25 +388,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     };
   }
 
-  if (
-    verbToken !== "create" &&
-    verbToken !== "agents" &&
-    verbToken !== "agents-popup" &&
-    verbToken !== "jump" &&
-    verbToken !== "agent-status" &&
-    verbToken !== "agent-error" &&
-    verbToken !== "list" &&
-        verbToken !== "get" &&
-        verbToken !== "resume" &&
-        verbToken !== "restart" &&
-        verbToken !== "move" &&
-        verbToken !== "close" &&
-        verbToken !== "delete" &&
-        verbToken !== "status-right" &&
-        verbToken !== "completion" &&
-        verbToken !== "__complete-workspaces" &&
-        verbToken !== "__complete-tmux-sessions"
-  ) {
+  if (!isCliVerbToken(verbToken)) {
     throw new Error(`Unknown command: ${verbToken}`);
   }
 
@@ -456,11 +503,24 @@ function resolveWorkspaceName(
   return name;
 }
 
-function buildCreateInput(flags: Map<string, FlagValue>): CreateWorkspaceInput {
+function buildCreateInput(
+  flags: Map<string, FlagValue>,
+  positionals: string[],
+): CreateWorkspaceInput {
   const additionalPaths = readStringListFlag(flags, "additional-dir");
   const issueValue = readStringFlag(flags, "issue");
   const prValue = readStringFlag(flags, "pr");
   const name = readStringFlag(flags, "name");
+  const promptFlag = readStringFlag(flags, "prompt");
+  const positionalPrompt =
+    positionals.length === 0 ? undefined : positionals.join(" ");
+  if (promptFlag !== undefined && positionalPrompt !== undefined) {
+    throw new Error(
+      "Use either --prompt TEXT or trailing prompt text, not both.",
+    );
+  }
+
+  const prompt = promptFlag ?? positionalPrompt;
   const sourceSelectorCount = [
     issueValue !== undefined,
     prValue !== undefined,
@@ -509,6 +569,7 @@ function buildCreateInput(flags: Map<string, FlagValue>): CreateWorkspaceInput {
     tmux_session: readStringFlag(flags, "tmux-session"),
     skip_prompt: readBooleanFlag(flags, "skip-prompt"),
     model: readStringFlag(flags, "model"),
+    prompt,
     ...(additionalPaths === undefined ? {} : { additional_paths: additionalPaths }),
   };
 }
@@ -536,6 +597,279 @@ function buildListInput(flags: Map<string, FlagValue>): ListWorkspacesInput {
       readStringFlag(flags, "status") === undefined
         ? undefined
         : (readStringFlag(flags, "status") as "active" | "closed" | "all"),
+  };
+}
+
+type WorkspaceListSortKey =
+  | "agent"
+  | "agent_name"
+  | "agent_type"
+  | "name"
+  | "repo"
+  | "source"
+  | "source_kind"
+  | "source_number"
+  | "status"
+  | "tmux"
+  | "tmux_session"
+  | "tmux_window";
+
+const DEFAULT_WORKSPACE_LIST_SORT: WorkspaceListSortKey[] = ["status", "name"];
+const WORKSPACE_LIST_SORT_KEY_VALUES: WorkspaceListSortKey[] = [
+  "agent",
+  "agent_name",
+  "agent_type",
+  "name",
+  "repo",
+  "source",
+  "source_kind",
+  "source_number",
+  "status",
+  "tmux",
+  "tmux_session",
+  "tmux_window",
+];
+const WORKSPACE_LIST_SORT_ERROR =
+  `Option --sort expects comma-separated fields. Valid fields: ${WORKSPACE_LIST_SORT_KEY_VALUES.join(", ")}.`;
+
+const WORKSPACE_STATUS_SORT_ORDER = new Map<WorkspaceSummary["status"], number>([
+  ["active", 0],
+  ["closed", 1],
+]);
+
+const WORKSPACE_LIST_SORT_KEYS = new Set<WorkspaceListSortKey>(
+  WORKSPACE_LIST_SORT_KEY_VALUES,
+);
+
+function buildListSort(flags: Map<string, FlagValue>): WorkspaceListSortKey[] {
+  const sort = readStringFlag(flags, "sort");
+  if (sort === undefined) {
+    return DEFAULT_WORKSPACE_LIST_SORT;
+  }
+
+  const keys = sort.split(",").map((key) => key.trim());
+  if (
+    keys.length === 0 ||
+    keys.length > WORKSPACE_LIST_SORT_KEY_VALUES.length ||
+    keys.some((key) => key.length === 0)
+  ) {
+    throw new Error(WORKSPACE_LIST_SORT_ERROR);
+  }
+
+  const parsedKeys: WorkspaceListSortKey[] = [];
+  for (const key of keys) {
+    if (!WORKSPACE_LIST_SORT_KEYS.has(key as WorkspaceListSortKey)) {
+      throw new Error(WORKSPACE_LIST_SORT_ERROR);
+    }
+
+    parsedKeys.push(key as WorkspaceListSortKey);
+  }
+
+  if (new Set(parsedKeys).size !== parsedKeys.length) {
+    throw new Error(WORKSPACE_LIST_SORT_ERROR);
+  }
+
+  return parsedKeys;
+}
+
+function buildListGroupBy(
+  flags: Map<string, FlagValue>,
+): WorkspaceListSortKey | undefined {
+  const groupBy = readStringFlag(flags, "group-by");
+  if (groupBy === undefined) {
+    return undefined;
+  }
+
+  const key = groupBy.trim();
+  if (
+    key.length === 0 ||
+    key.includes(",") ||
+    !WORKSPACE_LIST_SORT_KEYS.has(key as WorkspaceListSortKey)
+  ) {
+    throw new Error(
+      `Option --group-by expects one field. Valid fields: ${WORKSPACE_LIST_SORT_KEY_VALUES.join(", ")}.`,
+    );
+  }
+
+  return key as WorkspaceListSortKey;
+}
+
+function compareStrings(left: string, right: string): number {
+  return left.localeCompare(right);
+}
+
+function compareNullableNumbers(
+  left: number | null,
+  right: number | null,
+): number {
+  if (left === right) {
+    return 0;
+  }
+  if (left === null) {
+    return -1;
+  }
+  if (right === null) {
+    return 1;
+  }
+
+  return left - right;
+}
+
+function compareSourceSummaries(
+  left: WorkspaceSummary,
+  right: WorkspaceSummary,
+): number {
+  return (
+    compareStrings(left.source_kind, right.source_kind) ||
+    compareNullableNumbers(left.source_number, right.source_number)
+  );
+}
+
+function compareAgentSummaries(
+  left: WorkspaceSummary,
+  right: WorkspaceSummary,
+): number {
+  return (
+    compareStrings(left.agent_name, right.agent_name) ||
+    compareStrings(left.agent_type, right.agent_type)
+  );
+}
+
+function compareTmuxSummaries(
+  left: WorkspaceSummary,
+  right: WorkspaceSummary,
+): number {
+  return (
+    compareStrings(left.tmux_session, right.tmux_session) ||
+    compareStrings(left.tmux_window, right.tmux_window)
+  );
+}
+
+function compareWorkspaceSummaries(
+  left: WorkspaceSummary,
+  right: WorkspaceSummary,
+  sortKeys: WorkspaceListSortKey[],
+): number {
+  for (const key of sortKeys) {
+    let comparison = 0;
+    switch (key) {
+      case "agent":
+        comparison = compareAgentSummaries(left, right);
+        break;
+      case "agent_name":
+      case "agent_type":
+      case "name":
+      case "repo":
+      case "source_kind":
+      case "tmux_session":
+      case "tmux_window":
+        comparison = compareStrings(left[key], right[key]);
+        break;
+      case "source":
+        comparison = compareSourceSummaries(left, right);
+        break;
+      case "source_number":
+        comparison = compareNullableNumbers(
+          left.source_number,
+          right.source_number,
+        );
+        break;
+      case "status":
+        comparison =
+          WORKSPACE_STATUS_SORT_ORDER.get(left.status)! -
+          WORKSPACE_STATUS_SORT_ORDER.get(right.status)!;
+        break;
+      case "tmux":
+        comparison = compareTmuxSummaries(left, right);
+        break;
+    }
+
+    if (comparison !== 0) {
+      return comparison;
+    }
+  }
+
+  return left.name.localeCompare(right.name);
+}
+
+function sortWorkspaceSummaries(
+  workspaces: WorkspaceSummary[],
+  sortKeys: WorkspaceListSortKey[],
+): WorkspaceSummary[] {
+  return [...workspaces].sort((left, right) =>
+    compareWorkspaceSummaries(left, right, sortKeys),
+  );
+}
+
+function getWorkspaceListFieldLabel(
+  workspace: WorkspaceSummary,
+  key: WorkspaceListSortKey,
+): string {
+  switch (key) {
+    case "agent":
+      return workspace.agent_name;
+    case "agent_name":
+    case "agent_type":
+    case "name":
+    case "repo":
+    case "source_kind":
+    case "status":
+    case "tmux_session":
+    case "tmux_window":
+      return workspace[key];
+    case "source":
+      return formatWorkspaceSourceCell(workspace);
+    case "source_number":
+      return workspace.source_number === null
+        ? "-"
+        : String(workspace.source_number);
+    case "tmux":
+      return `${workspace.tmux_session}:${workspace.tmux_window}`;
+  }
+}
+
+function groupWorkspaceSummaries(
+  workspaces: WorkspaceSummary[],
+  groupBy: WorkspaceListSortKey,
+): WorkspaceSummaryGroupedList {
+  const groupsByValue = new Map<
+    string,
+    {
+      representative: WorkspaceSummary;
+      group: WorkspaceSummaryGroup;
+    }
+  >();
+
+  for (const workspace of workspaces) {
+    const label = getWorkspaceListFieldLabel(workspace, groupBy);
+    const existing = groupsByValue.get(label);
+    if (existing !== undefined) {
+      existing.group.workspaces.push(workspace);
+      continue;
+    }
+
+    groupsByValue.set(label, {
+      representative: workspace,
+      group: {
+        key: groupBy,
+        value: label,
+        label,
+        workspaces: [workspace],
+      },
+    });
+  }
+
+  const groups = [...groupsByValue.values()]
+    .sort((left, right) =>
+      compareWorkspaceSummaries(left.representative, right.representative, [
+        groupBy,
+      ]),
+    )
+    .map((entry) => entry.group);
+
+  return {
+    group_by: groupBy,
+    groups,
   };
 }
 
@@ -628,6 +962,18 @@ function buildStatusRightInput(flags: Map<string, FlagValue>): StatusRightInput 
     separator: readStringFlag(flags, "separator"),
     tmuxSession: readStringFlag(flags, "tmux-session"),
     tmuxWindow: readStringFlag(flags, "tmux-window"),
+  };
+}
+
+function buildViewInput(flags: Map<string, FlagValue>): { exit_on_jump: boolean } {
+  const exitOnJump = readBooleanFlag(flags, "exit-on-jump");
+  const keepOpenOnJump = readBooleanFlag(flags, "keep-open-on-jump");
+  if (exitOnJump === true && keepOpenOnJump === true) {
+    throw new Error("Choose either --exit-on-jump or --keep-open-on-jump, not both.");
+  }
+
+  return {
+    exit_on_jump: keepOpenOnJump === true ? false : true,
   };
 }
 
@@ -760,6 +1106,23 @@ function formatWorkspaceList(workspaces: WorkspaceSummary[]): string {
       `${workspace.tmux_session}:${workspace.tmux_window}`,
     ]),
   );
+}
+
+function formatWorkspaceGroupedList(
+  groupedList: WorkspaceSummaryGroupedList,
+): string {
+  if (groupedList.groups.length === 0) {
+    return "No workspaces found.\n";
+  }
+
+  return groupedList.groups
+    .map((group) =>
+      [
+        `${group.label} (${group.workspaces.length})`,
+        formatWorkspaceList(group.workspaces).trimEnd(),
+      ].join("\n"),
+    )
+    .join("\n\n") + "\n";
 }
 
 function formatAgentStatusSnapshot(snapshot: AgentStatusSnapshot): string {
@@ -899,14 +1262,14 @@ function buildAgentMenuRows(
 function buildHelpText(): string {
   return [
     "Usage:",
-    "  pitch [create] (--issue N | --pr N) [--slug SLUG] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [options]",
-    "  pitch [create] --name NAME [--branch BRANCH] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [options]",
+    "  pitch [create] (--issue N | --pr N) [--slug SLUG] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [options] [PROMPT...]",
+    "  pitch [create] --name NAME [--branch BRANCH] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [options] [PROMPT...]",
     "  pitch agents [--pick]",
     "  pitch agents-popup",
     "  pitch jump <session-id-or-prefix>",
     "  pitch agent-status",
     "  pitch agent-error --agent-type TYPE --session-id ID --message TEXT",
-    "  pitch list [--repo REPO] [--status active|closed|all]",
+    "  pitch list [--repo REPO] [--status active|closed|all] [--sort FIELD[,FIELD...]] [--group-by FIELD]",
     "  pitch get <name>",
     "  pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [--reset-session] [--sync]",
     "  pitch restart <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [--reset-session] [--sync]",
@@ -914,6 +1277,8 @@ function buildHelpText(): string {
     "  pitch close <name>",
     "  pitch delete <name> [--force]",
     "  pitch status-right [--separator TEXT]",
+    "  pitch waybar-status [--watch]",
+    "  pitch view [--keep-open-on-jump]",
     "  pitch completion zsh",
     "  pitch workspace <command> ...",
     "",
@@ -940,15 +1305,21 @@ function buildHelpText(): string {
     "  --message TEXT",
     "  --sync",
     "  --model MODEL",
+    "  --prompt TEXT",
     "  --skip-prompt",
     "  --force",
     "  --pick",
     "  --status active|closed|all",
+    "  --sort FIELD[,FIELD...]",
+    "  --group-by FIELD",
+    "  --exit-on-jump",
+    "  --keep-open-on-jump",
     "  --json",
     "  --help",
     "",
     "If --issue, --pr, or --name is provided without an explicit command,",
     "create is implied.",
+    "Trailing PROMPT text on create is appended to the bootstrap prompt.",
   ].join("\n");
 }
 
@@ -1007,9 +1378,11 @@ function buildZshCompletionScript(): string {
     "        '*--additional-dir[Additional directory to grant to the agent]:path:_files -/' \\",
     "        '*--add-dir[Alias for --additional-dir]:path:_files -/' \\",
     "        '--model[Model override]:model:' \\",
+    "        '--prompt[Additional bootstrap prompt text]:prompt:' \\",
     "        '--skip-prompt[Skip bootstrap prompt]' \\",
     "        '--json[Emit JSON]' \\",
-    "        '--help[Show help]'",
+    "        '--help[Show help]' \\",
+    "        '*:additional prompt text:'",
     "      ;;",
     "    agents)",
     "      _arguments -s -S \\",
@@ -1047,6 +1420,8 @@ function buildZshCompletionScript(): string {
     "      _arguments -s -S \\",
     "        '--repo[GitHub org/repo]:repo:' \\",
     "        '--status[Workspace status]:status:(active closed all)' \\",
+    "        '--sort[Comma-separated workspace sort fields]:sort:(status name source repo agent tmux source_kind source_number agent_name agent_type tmux_session tmux_window)' \\",
+    "        '--group-by[Workspace grouping field]:field:(status name source repo agent tmux source_kind source_number agent_name agent_type tmux_session tmux_window)' \\",
     "        '--json[Emit JSON]' \\",
     "        '--help[Show help]'",
     "      ;;",
@@ -1109,6 +1484,18 @@ function buildZshCompletionScript(): string {
     "        '--json[Emit JSON]' \\",
     "        '--help[Show help]'",
     "      ;;",
+    "    waybar-status)",
+    "      _arguments -s -S \\",
+    "        '--watch[Continuously emit Waybar JSON with animated running indicator]' \\",
+    "        '--json[Emit JSON]' \\",
+    "        '--help[Show help]'",
+    "      ;;",
+    "    view)",
+    "      _arguments -s -S \\",
+    "        '--exit-on-jump[Exit pitch view after goto, the default]' \\",
+    "        '--keep-open-on-jump[Keep pitch view open after goto]' \\",
+    "        '--help[Show help]'",
+    "      ;;",
     "    completion)",
     "      _arguments '1:shell:(zsh)'",
     "      ;;",
@@ -1137,6 +1524,8 @@ function buildZshCompletionScript(): string {
     "      'close[Close a workspace]' \\",
     "      'delete[Delete a workspace]' \\",
     "      'status-right[Render an agent status-right segment]' \\",
+    "      'waybar-status[Render Waybar agent status JSON]' \\",
+    "      'view[Open the workspace TUI]' \\",
     "      'completion[Generate shell completion]' \\",
     "      'workspace[Compatibility alias for workspace lifecycle commands]'",
     "    return",
@@ -1163,6 +1552,9 @@ function buildZshCompletionScript(): string {
     "        'move[Move a workspace to another tmux session]' \\",
     "        'close[Close a workspace]' \\",
     "        'delete[Delete a workspace]' \\",
+    "        'status-right[Render an agent status-right segment]' \\",
+    "        'waybar-status[Render Waybar agent status JSON]' \\",
+    "        'view[Open the workspace TUI]' \\",
     "        'completion[Generate shell completion]'",
     "      return",
     "    fi",
@@ -1194,8 +1586,7 @@ async function executeCommand(
     case "help":
       return null;
     case "create": {
-      ensureNoExtraPositionals(parsed.positionals, parsed.verb);
-      const input = buildCreateInput(parsed.flags);
+      const input = buildCreateInput(parsed.flags, parsed.positionals);
       const config = await dependencies.loadConfig();
       const warnings: string[] = [];
       const result = await dependencies.createWorkspace(
@@ -1301,11 +1692,23 @@ async function executeCommand(
       };
     case "list":
       ensureNoExtraPositionals(parsed.positionals, parsed.verb);
-      return {
-        command: parsed.verb,
-        result: await dependencies.listWorkspaces(buildListInput(parsed.flags)),
-        warnings: [],
-      };
+      {
+        const sortKeys = buildListSort(parsed.flags);
+        const groupBy = buildListGroupBy(parsed.flags);
+        const workspaces = sortWorkspaceSummaries(
+          await dependencies.listWorkspaces(buildListInput(parsed.flags)),
+          sortKeys,
+        );
+
+        return {
+          command: parsed.verb,
+          result:
+            groupBy === undefined
+              ? workspaces
+              : groupWorkspaceSummaries(workspaces, groupBy),
+          warnings: [],
+        };
+      }
     case "get":
       return {
         command: parsed.verb,
@@ -1440,6 +1843,14 @@ async function executeCommand(
         ),
         warnings: [],
       };
+    case "waybar-status":
+      ensureNoExtraPositionals(parsed.positionals, parsed.verb);
+      return {
+        command: parsed.verb,
+        result: await dependencies.renderWaybarStatus(),
+        warnings: [],
+      };
+    case "view":
     case "completion":
     case "__complete-workspaces":
     case "__complete-tmux-sessions":
@@ -1451,6 +1862,7 @@ function isWorkspaceList(
   result:
     | WorkspaceRecord
     | WorkspaceSummary[]
+    | WorkspaceSummaryGroupedList
     | AgentStatusSnapshot
     | AgentsView
     | string,
@@ -1458,10 +1870,29 @@ function isWorkspaceList(
   return Array.isArray(result);
 }
 
+function isWorkspaceGroupedList(
+  result:
+    | WorkspaceRecord
+    | WorkspaceSummary[]
+    | WorkspaceSummaryGroupedList
+    | AgentStatusSnapshot
+    | AgentsView
+    | string,
+): result is WorkspaceSummaryGroupedList {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    "group_by" in result &&
+    "groups" in result &&
+    Array.isArray(result.groups)
+  );
+}
+
 function isAgentStatusSnapshot(
   result:
     | WorkspaceRecord
     | WorkspaceSummary[]
+    | WorkspaceSummaryGroupedList
     | AgentStatusSnapshot
     | AgentsView
     | string,
@@ -1478,6 +1909,7 @@ function isAgentsView(
   result:
     | WorkspaceRecord
     | WorkspaceSummary[]
+    | WorkspaceSummaryGroupedList
     | AgentStatusSnapshot
     | AgentsView
     | string,
@@ -1500,6 +1932,8 @@ function writeHumanResult(
     }
   } else if (isWorkspaceList(commandResult.result)) {
     dependencies.stdout.write(formatWorkspaceList(commandResult.result));
+  } else if (isWorkspaceGroupedList(commandResult.result)) {
+    dependencies.stdout.write(formatWorkspaceGroupedList(commandResult.result));
   } else if (isAgentsView(commandResult.result)) {
     dependencies.stdout.write(formatAgentsView(commandResult.result));
   } else if (isAgentStatusSnapshot(commandResult.result)) {
@@ -1557,6 +1991,21 @@ export async function runCli(
       if (sessions.length > 0) {
         dependencies.stdout.write(`${sessions.join("\n")}\n`);
       }
+      return 0;
+    }
+
+    if (
+      parsed.verb === "waybar-status" &&
+      readBooleanFlag(parsed.flags, "watch") === true
+    ) {
+      ensureNoExtraPositionals(parsed.positionals, parsed.verb);
+      await dependencies.watchWaybarStatus(dependencies.stdout);
+      return 0;
+    }
+
+    if (parsed.verb === "view") {
+      ensureNoExtraPositionals(parsed.positionals, parsed.verb);
+      await runWorkspaceView(buildViewInput(parsed.flags));
       return 0;
     }
 

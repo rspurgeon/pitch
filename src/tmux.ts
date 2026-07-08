@@ -84,6 +84,13 @@ export interface TmuxPaneListing {
   current_path: string;
 }
 
+export interface TmuxClientListing {
+  session_name: string;
+  client_name: string;
+  client_tty: string;
+  client_pid: number | null;
+}
+
 export interface TmuxSessionResult {
   session_name: string;
   created: boolean;
@@ -385,6 +392,35 @@ export async function listTmuxSessions(
   return parseTmuxSessionListOutput(stdout);
 }
 
+export async function listTmuxClients(
+  options: TmuxClientOptions = {},
+): Promise<TmuxClientListing[]> {
+  const { stdout } = await runTmux(
+    [
+      "list-clients",
+      "-F",
+      "#{client_session}\t#{client_name}\t#{client_tty}\t#{client_pid}",
+    ],
+    options,
+  );
+
+  return stdout
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""))
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const [sessionName = "", clientName = "", clientTty = "", pid = ""] =
+        line.split("\t");
+      const parsedPid = Number.parseInt(pid, 10);
+      return {
+        session_name: sessionName,
+        client_name: clientName,
+        client_tty: clientTty,
+        client_pid: Number.isSafeInteger(parsedPid) ? parsedPid : null,
+      };
+    });
+}
+
 export function parseTmuxSessionListOutput(stdout: string): string[] {
   return stdout
     .split("\n")
@@ -572,6 +608,8 @@ export async function respawnPane(
   params: RespawnPaneParams,
   options: TmuxClientOptions = {},
 ): Promise<void> {
+  const shell = process.env.SHELL ?? "/bin/sh";
+  const command = `${params.command}\nexec ${shellEscape(shell)} -l`;
   const args = [
     "respawn-pane",
     "-k",
@@ -580,7 +618,7 @@ export async function respawnPane(
       : ["-c", params.start_directory]),
     "-t",
     params.pane_id,
-    params.command,
+    command,
   ];
 
   await runTmux(args, options);
@@ -721,6 +759,18 @@ export async function focusTmuxPane(
   await runTmux(["switch-client", "-t", target], options);
   await runTmux(["select-window", "-t", target], options);
   await runTmux(["refresh-client", "-c"], options);
+}
+
+export async function focusTmuxPaneInClient(
+  params: FocusTmuxPaneParams & { client_name: string },
+  options: TmuxClientOptions = {},
+): Promise<void> {
+  const target = windowTarget(params.session_name, params.window_name);
+  await runTmux(
+    ["switch-client", "-c", params.client_name, "-t", target],
+    options,
+  );
+  await runTmux(["select-pane", "-t", params.pane_id], options);
 }
 
 export async function displayTmuxPopup(

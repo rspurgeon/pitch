@@ -7,6 +7,7 @@ export interface BootstrapPromptContext {
   source_number: number | null;
   workspace_name: string;
   branch: string;
+  additional_prompt?: string;
 }
 
 const DEFAULT_BOOTSTRAP_PROMPTS: Record<WorkspaceSourceKind, string> = {
@@ -54,7 +55,7 @@ export function buildBootstrapPrompt(
 ): string {
   const template = resolveTemplate(config, context.repo, context.source_kind);
 
-  return template
+  const basePrompt = template
     .replaceAll("{repo}", context.repo)
     .replaceAll("{workspace_name}", context.workspace_name)
     .replaceAll("{branch}", context.branch)
@@ -66,4 +67,11 @@ export function buildBootstrapPrompt(
       "{pr_number}",
       context.source_kind === "pr" ? String(context.source_number) : "",
     );
+
+  const additionalPrompt = context.additional_prompt?.trim();
+  if (additionalPrompt === undefined || additionalPrompt.length === 0) {
+    return basePrompt;
+  }
+
+  return `${basePrompt}\n\n${additionalPrompt}`;
 }

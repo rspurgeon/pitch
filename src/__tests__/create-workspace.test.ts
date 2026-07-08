@@ -731,6 +731,36 @@ describe("create workspace", () => {
     });
   });
 
+  it("adds prompt text to the bootstrap prompt", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies();
+
+    await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+        prompt: "Focus on preserving existing config files.",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith({
+      config,
+      agent: "claude-enterprise",
+      repo: "kong/kongctl",
+      environment: undefined,
+      opencode_config_path: undefined,
+      workspace_name: "gh-42-fix-bug",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      host_worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      initial_prompt:
+        "Read issue #42 in kong/kongctl on gh-42-fix-bug and wait.\n\n" +
+        "Focus on preserving existing config files.",
+      override_args: undefined,
+    });
+  });
+
   it("creates a PR-backed workspace from the PR head branch", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
