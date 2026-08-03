@@ -48,6 +48,7 @@ node dist/bin/pitch.js get pr-700-default-aas
 node dist/bin/pitch.js resume pr-700-default-aas
 node dist/bin/pitch.js resume pr-700-default-aas --tmux-session kongctl-aigw
 node dist/bin/pitch.js move pr-700-default-aas --to kongctl-aigw
+node dist/bin/pitch.js rename spike-auth spike-auth-debug
 node dist/bin/pitch.js resume pr-700-default-aas --sync
 node dist/bin/pitch.js close pr-700-default-aas
 node dist/bin/pitch.js delete pr-700-default-aas --force
@@ -75,13 +76,21 @@ tmux session. Use `move <workspace> --to SESSION` to
 move an already tracked live workspace window and update
 the saved workspace state.
 
+Use `rename <workspace> <new-name>` to change the Pitch
+workspace identity and tmux window name. Rename preserves
+the existing branch, worktree directory, and checkout
+identity. A running agent keeps its original internal
+launch name until it is restarted. Active `vm-ssh`
+workspaces must be closed before renaming.
+
 Pass `--prompt TEXT`, or place trailing text after
 `create` options, to append extra instructions to the
 fresh agent bootstrap prompt.
 
 The `completion zsh` command emits a zsh completion script
 with dynamic workspace-name completion for `get`,
-`resume`, `restart`, `move`, `close`, and `delete`, plus
+`resume`, `restart`, `move`, `rename`, `close`, and
+`delete`, plus
 tmux-session completion for `--to` and `--tmux-session`.
 
 If Pitch is installed as a package, it exposes two
@@ -387,6 +396,7 @@ Each repo requires:
 | Field | Description |
 |---|---|
 | `default_agent` | Optional repo-specific default agent name |
+| `default_context` | Optional default repository launch context |
 | `main_worktree` | Path to the repo's primary checkout |
 | `worktree_base` | Optional explicit worktree directory for this repo |
 | `tmux_session` | Optional explicit tmux session name for this repo |
@@ -396,6 +406,7 @@ Each repo requires:
 | `pane_commands` | Optional commands for the `top_right` and `bottom_right` tmux panes |
 | `agent_defaults` | Optional repo-wide agent args/env applied to every agent |
 | `agent_overrides` | Optional per-repo overrides keyed by configured agent name |
+| `contexts` | Named workspace-scoped environment selections |
 
 If `worktree_base` is omitted, Pitch derives it as
 `{defaults.worktree_root}/{owner}/{repo}`. If `tmux_session`
@@ -425,6 +436,7 @@ can both have `type: claude` with different `env` and
 | `type` | `claude`, `codex`, or `opencode` |
 | `args` | Ordered CLI arguments appended exactly as written |
 | `env` | Environment variables set when launching the agent |
+| `env_from_files` | Environment variables loaded from files at launch |
 
 Pitch adds managed Codex flags for its own sessions,
 including `--enable remote_control` and disabled startup
@@ -469,6 +481,15 @@ agents:
 Use `args` whenever you need repeatable flags such as
 `--add-dir`, bare flags such as `--search`, or precise
 argument ordering.
+
+`env_from_files` maps environment variable names to files.
+Pitch reads those files immediately before a host agent
+launch, exports their contents, and then starts the agent.
+Only the file paths are included in the tmux launch
+command; file contents are not stored in workspace state.
+The files are read again on resume so rotated credentials
+take effect without recreating the workspace. This option
+is not supported for `vm-ssh` environments.
 
 For attach-mode OpenCode setups, configure `args` with
 `attach <url> --dir` and Pitch will supply the workspace
@@ -555,6 +576,21 @@ selected for that repo.
 |---|---|
 | `args` | Additional ordered CLI args for every agent in this repo |
 | `env` | Additional env vars for every agent in this repo |
+| `env_from_files` | Additional env vars loaded from files at launch |
+
+#### `repos.<repo>.contexts`
+
+Contexts provide named environment selections that are persisted with a
+workspace. Each context supports `env` and `env_from_files`, layered after
+agent and repository settings. Select one with `--context NAME`; otherwise
+Pitch uses `default_context`. Resume and restart reuse the saved context.
+
+Values from `env` are also set on newly created user shell panes. This lets
+repo pane commands initialize shell-specific tooling from the selected
+context. Existing panes are not modified when a workspace context changes.
+
+File-backed values are reread at launch and are never stored in workspace
+state. To change an active workspace, use `pitch restart NAME --context NAME`.
 
 #### `repos.<repo>.bootstrap_prompts`
 
@@ -577,6 +613,7 @@ behavior to a repo. Override keys must match names under
 |---|---|
 | `args` | Additional ordered CLI args for this repo |
 | `env` | Additional env vars for this repo |
+| `env_from_files` | Additional env vars loaded from files at launch |
 
 Example — `kong/kongctl` needs extra writable dirs for
 Go and `kongctl` config:
@@ -664,6 +701,9 @@ when possible.
 - **move_workspace** — Moves a tracked workspace tmux
   window to another tmux session and updates the saved
   workspace state.
+- **rename_workspace** — Renames a tracked workspace and
+  its tmux window while preserving the branch, worktree
+  directory, and checkout identity.
 - **close_workspace** — Closes the tmux window and marks
   the workspace closed. The worktree and state file
   remain so the workspace can be resumed later.

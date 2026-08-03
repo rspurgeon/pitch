@@ -30,6 +30,21 @@ const AgentEnvSchema = z.preprocess(
   z.record(z.string(), z.string()).default({}),
 );
 
+const AgentEnvFromFilesSchema = z.preprocess(
+  nullToUndefined,
+  z
+    .record(
+      z
+        .string()
+        .regex(
+          /^[A-Za-z_][A-Za-z0-9_]*$/,
+          "Invalid environment variable name",
+        ),
+      NonEmptyTrimmedStringSchema,
+    )
+    .default({}),
+);
+
 const AgentTypeSchema = z.enum(["claude", "codex", "opencode"]);
 const ExecutionEnvironmentKindSchema = z.enum(["host", "vm-ssh"]);
 const SandboxProviderSchema = z.enum(["nono"]);
@@ -39,6 +54,7 @@ const AgentConfigSchema = z
     type: AgentTypeSchema,
     args: AgentArgListSchema,
     env: AgentEnvSchema,
+    env_from_files: AgentEnvFromFilesSchema,
   })
   .strict();
 
@@ -46,6 +62,14 @@ const AgentOverrideSchema = z
   .object({
     args: AgentArgListSchema,
     env: AgentEnvSchema,
+    env_from_files: AgentEnvFromFilesSchema,
+  })
+  .strict();
+
+const LaunchContextSchema = z
+  .object({
+    env: AgentEnvSchema,
+    env_from_files: AgentEnvFromFilesSchema,
   })
   .strict();
 
@@ -149,6 +173,7 @@ const RepoConfigSchema = z
   .object({
     default_agent: z.preprocess(nullToUndefined, z.string().optional()),
     default_environment: z.preprocess(nullToUndefined, z.string().optional()),
+    default_context: z.preprocess(nullToUndefined, z.string().optional()),
     sandbox: z.preprocess(nullToUndefined, z.string().optional()),
     main_worktree: z.string(),
     worktree_base: z.preprocess(nullToUndefined, z.string().optional()),
@@ -172,6 +197,10 @@ const RepoConfigSchema = z
     agent_overrides: z.preprocess(
       nullToUndefined,
       z.record(z.string(), AgentOverrideSchema).default({}),
+    ),
+    contexts: z.preprocess(
+      nullToUndefined,
+      z.record(z.string(), LaunchContextSchema).default({}),
     ),
   })
   .strict();
@@ -281,6 +310,17 @@ export const PitchConfigSchema = z.object({
       );
     }
 
+    if (
+      repoConfig.default_context !== undefined &&
+      repoConfig.contexts[repoConfig.default_context] === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["repos", repoName, "default_context"],
+        message: `Unknown context reference: ${repoConfig.default_context}`,
+      });
+    }
+
     for (const agentName of Object.keys(repoConfig.agent_overrides)) {
       if (!configuredAgents.has(agentName)) {
         addUnknownAgentIssue(
@@ -309,6 +349,7 @@ export interface Defaults {
 export interface RepoConfig {
   default_agent?: string;
   default_environment?: string;
+  default_context?: string;
   sandbox?: string;
   main_worktree: string;
   worktree_base: string;
@@ -318,6 +359,7 @@ export interface RepoConfig {
   pane_commands?: PaneCommands;
   agent_defaults: AgentOverride;
   agent_overrides: Record<string, AgentOverride>;
+  contexts?: Record<string, LaunchContext>;
 }
 
 export interface BootstrapPromptTemplates {
@@ -335,6 +377,7 @@ export interface AgentConfig {
   type: AgentType;
   args: string[];
   env: Record<string, string>;
+  env_from_files?: Record<string, string>;
 }
 
 export interface SandboxConfig {
@@ -380,6 +423,12 @@ export type ExecutionEnvironmentConfig =
 export interface AgentOverride {
   args: string[];
   env: Record<string, string>;
+  env_from_files?: Record<string, string>;
+}
+
+export interface LaunchContext {
+  env: Record<string, string>;
+  env_from_files: Record<string, string>;
 }
 
 export interface PitchConfig {
@@ -427,6 +476,7 @@ function normalizeRepoConfig(
   return {
     default_agent: repoConfig.default_agent,
     default_environment: repoConfig.default_environment,
+    default_context: repoConfig.default_context,
     sandbox: repoConfig.sandbox,
     main_worktree: repoConfig.main_worktree,
     worktree_base:
@@ -437,6 +487,7 @@ function normalizeRepoConfig(
     pane_commands: repoConfig.pane_commands,
     agent_defaults: repoConfig.agent_defaults,
     agent_overrides: repoConfig.agent_overrides,
+    contexts: repoConfig.contexts,
   };
 }
 

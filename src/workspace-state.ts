@@ -56,6 +56,7 @@ export const WorkspaceRecordSchema = z.object({
   sandbox_name: z.string().optional(),
   environment_name: z.string().nullable().optional(),
   environment_kind: ExecutionEnvironmentKindSchema.optional(),
+  context_name: z.string().trim().min(1).optional(),
   guest_worktree_path: z.string().optional(),
   agent_pane_process: z.string().optional(),
   agent_env: z.record(z.string(), z.string()).default({}),

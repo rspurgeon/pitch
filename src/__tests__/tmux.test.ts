@@ -19,6 +19,7 @@ import {
   parseTmuxSessionListOutput,
   parseTmuxPaneListingOutput,
   parseTmuxWindowPaneInfoOutput,
+  renameTmuxWindow,
   respawnPane,
   sendKeysToPane,
   tmuxSessionExists,
@@ -409,6 +410,35 @@ tmuxDescribe("tmux management", () => {
         options,
       ),
     ).resolves.toBe(false);
+  });
+
+  it("renames an existing tmux window", async () => {
+    await ensureIsolatedTestSession(sessionName, worktreePath, options);
+    await createTmuxWindow(
+      {
+        session_name: sessionName,
+        window_name: windowName,
+        start_directory: worktreePath,
+      },
+      options,
+    );
+
+    const renamedWindow = `${windowName}-renamed`;
+    await renameTmuxWindow(
+      {
+        session_name: sessionName,
+        window_name: windowName,
+        new_window_name: renamedWindow,
+      },
+      options,
+    );
+
+    await expect(
+      tmuxWindowExists(sessionName, windowName, options),
+    ).resolves.toBe(false);
+    await expect(
+      tmuxWindowExists(sessionName, renamedWindow, options),
+    ).resolves.toBe(true);
   });
 
   it("links and unlinks a window between sessions", async () => {

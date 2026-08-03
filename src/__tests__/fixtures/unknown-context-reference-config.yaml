@@ -1,0 +1,8 @@
+repos:
+  kong/kongctl:
+    main_worktree: ~/dev/kong/kongctl
+    default_context: missing
+    contexts:
+      e2e-tech:
+        env:
+          KONGCTL_E2E_KONNECT_ENV: tech

@@ -36,6 +36,7 @@ export interface BuildStartCommandInput {
   sandbox?: string;
   opencode_config_path?: string;
   environment?: string;
+  context?: string;
   workspace_name: string;
   worktree_path: string;
   host_worktree_path?: string;
@@ -52,6 +53,7 @@ export interface BuildResumeCommandInput {
   sandbox?: string;
   opencode_config_path?: string;
   environment?: string;
+  context?: string;
   workspace_name: string;
   session_id: string;
   worktree_path?: string;
@@ -80,6 +82,7 @@ interface ResolvedAgentTarget {
   agent_type: SupportedAgentType;
   args: string[];
   env: Record<string, string>;
+  env_from_files: Record<string, string>;
   warnings: string[];
 }
 
@@ -693,6 +696,7 @@ function resolveAgentTarget(
   agentName: string,
   repo: string | undefined,
   additionalPaths?: string[],
+  contextName?: string,
 ): ResolvedAgentTarget {
   const repoConfig = resolveRepoConfig(config, repo);
   const agentConfig = config.agents[agentName];
@@ -702,6 +706,16 @@ function resolveAgentTarget(
 
   const repoDefaults = repoConfig?.agent_defaults;
   const repoOverride = repoConfig?.agent_overrides[agentName];
+  const resolvedContextName = contextName ?? repoConfig?.default_context;
+  const context =
+    resolvedContextName === undefined
+      ? undefined
+      : repoConfig?.contexts?.[resolvedContextName];
+  if (resolvedContextName !== undefined && context === undefined) {
+    throw new AgentLauncherError(
+      `Context is not configured for ${repo ?? "this repository"}: ${resolvedContextName}`,
+    );
+  }
   const additionalPathArgs = buildAdditionalPathArgs(
     agentConfig.type,
     additionalPaths ?? repoConfig?.additional_paths ?? [],
@@ -724,9 +738,52 @@ function resolveAgentTarget(
       ...agentConfig.env,
       ...(repoDefaults?.env ?? {}),
       ...(repoOverride?.env ?? {}),
+      ...(context?.env ?? {}),
+    },
+    env_from_files: {
+      ...(agentConfig.env_from_files ?? {}),
+      ...(repoDefaults?.env_from_files ?? {}),
+      ...(repoOverride?.env_from_files ?? {}),
+      ...(context?.env_from_files ?? {}),
     },
     warnings,
   };
+}
+
+const ENV_FROM_FILES_SCRIPT = [
+  'while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do',
+  '  name=$1',
+  '  path=$2',
+  '  if [ ! -r "$path" ]; then',
+  '    printf "%s\\n" "pitch: cannot read env file for $name: $path" >&2',
+  '    exit 1',
+  '  fi',
+  '  value=$(cat -- "$path") || exit 1',
+  '  export "$name=$value"',
+  '  shift 2',
+  'done',
+  'shift',
+  'exec "$@"',
+].join("\n");
+
+function wrapEnvFromFilesCommand(
+  command: string[],
+  envFromFiles: Record<string, string>,
+): string[] {
+  const entries = Object.entries(envFromFiles);
+  if (entries.length === 0) {
+    return command;
+  }
+
+  return [
+    "/bin/sh",
+    "-c",
+    ENV_FROM_FILES_SCRIPT,
+    "pitch-env-from-files",
+    ...entries.flatMap(([name, path]) => [name, expandHomePath(path)]),
+    "--",
+    ...command,
+  ];
 }
 
 function resolveStartEnvironment(
@@ -830,6 +887,7 @@ function wrapExecutionEnvironmentCommand(
   workspaceName: string,
   workspacePaths: ResolvedWorkspacePaths | null,
   runBootstrap: boolean,
+  envFromFiles: Record<string, string>,
 ): {
   command: string[];
   env: Record<string, string>;
@@ -839,10 +897,16 @@ function wrapExecutionEnvironmentCommand(
 } {
   if (environment.kind !== "vm-ssh") {
     return {
-      command: baseCommand.command,
+      command: wrapEnvFromFilesCommand(baseCommand.command, envFromFiles),
       env: agentEnv,
       pane_process_name: baseCommand.pane_process_name,
     };
+  }
+
+  if (Object.keys(envFromFiles).length > 0) {
+    throw new AgentLauncherError(
+      "env_from_files is currently supported only for host execution environments",
+    );
   }
 
   if (workspacePaths === null || environment.config === undefined) {
@@ -942,6 +1006,7 @@ function buildClaudeStartCommand(
     input.workspace_name,
     workspacePaths,
     true,
+    resolved.env_from_files,
   );
 
   return {
@@ -1014,6 +1079,7 @@ function buildClaudeResumeCommand(
     input.workspace_name,
     workspacePaths,
     true,
+    resolved.env_from_files,
   );
 
   return {
@@ -1102,6 +1168,7 @@ function buildCodexStartCommand(
     input.workspace_name,
     workspacePaths,
     true,
+    resolved.env_from_files,
   );
 
   return {
@@ -1184,6 +1251,7 @@ function buildCodexResumeCommand(
     input.workspace_name,
     workspacePaths,
     false,
+    resolved.env_from_files,
   );
 
   return {
@@ -1271,6 +1339,7 @@ function buildOpencodeStartCommand(
     input.workspace_name,
     workspacePaths,
     true,
+    resolved.env_from_files,
   );
 
   return {
@@ -1366,6 +1435,7 @@ function buildOpencodeResumeCommand(
     input.workspace_name,
     workspacePaths,
     false,
+    resolved.env_from_files,
   );
 
   return {
@@ -1393,6 +1463,7 @@ class ClaudeLauncher implements AgentLauncher {
       input.agent,
       input.repo,
       additional_paths,
+      input.context,
     );
     const mappedResolved = {
       ...resolved,
@@ -1425,6 +1496,7 @@ class ClaudeLauncher implements AgentLauncher {
       input.agent,
       input.repo,
       additional_paths,
+      input.context,
     );
     const mappedResolved = {
       ...resolved,
@@ -1462,6 +1534,7 @@ class CodexLauncher implements AgentLauncher {
       input.agent,
       input.repo,
       additional_paths,
+      input.context,
     );
     const mappedResolved = {
       ...resolved,
@@ -1494,6 +1567,7 @@ class CodexLauncher implements AgentLauncher {
       input.agent,
       input.repo,
       additional_paths,
+      input.context,
     );
     const mappedResolved = {
       ...resolved,
@@ -1531,6 +1605,7 @@ class OpencodeLauncher implements AgentLauncher {
       input.agent,
       input.repo,
       additional_paths,
+      input.context,
     );
     const mappedResolved = {
       ...resolved,
@@ -1563,6 +1638,7 @@ class OpencodeLauncher implements AgentLauncher {
       input.agent,
       input.repo,
       additional_paths,
+      input.context,
     );
     const mappedResolved = {
       ...resolved,

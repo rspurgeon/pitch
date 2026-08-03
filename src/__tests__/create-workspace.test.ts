@@ -572,6 +572,38 @@ describe("create workspace", () => {
     });
   });
 
+  it("passes the selected context environment to new user panes", async () => {
+    const config = makeConfig();
+    config.repos["kong/kongctl"].contexts = {
+      "e2e-tech": {
+        env: {
+          KONGCTL_PROFILE: "rspurgeon-e2e-kongctl-testing_tech",
+        },
+        env_from_files: {},
+      },
+    };
+    const dependencies = makeDependencies();
+
+    await createWorkspace(
+      {
+        issue: 42,
+        slug: "fix-bug",
+        context: "e2e-tech",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.createTmuxLayout).toHaveBeenCalledWith({
+      session_name: "kongctl",
+      window_name: "gh-42-fix-bug",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      environment: {
+        KONGCTL_PROFILE: "rspurgeon-e2e-kongctl-testing_tech",
+      },
+    });
+  });
+
   it("creates an issue workspace without a slug", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({

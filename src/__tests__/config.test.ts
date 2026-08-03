@@ -73,6 +73,7 @@ describe("loadConfig", () => {
       expect(config.repos["kong/kongctl"]).toEqual({
         default_agent: "claude-enterprise",
         default_environment: "sandbox-vm",
+        default_context: "e2e-tech",
         sandbox: "kongctl",
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
@@ -86,16 +87,31 @@ describe("loadConfig", () => {
         agent_defaults: {
           args: [],
           env: {},
+          env_from_files: {
+            REPO_TOKEN: "~/.tokens/kongctl",
+          },
         },
         agent_overrides: {
           codex: {
             args: ["--add-dir", "/home/rspurgeon/.config/kongctl"],
             env: {},
+            env_from_files: {},
           },
           "claude-personal": {
             args: [],
             env: {
               CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1",
+            },
+            env_from_files: {},
+          },
+        },
+        contexts: {
+          "e2e-tech": {
+            env: {
+              KONGCTL_PROFILE: "testing_tech",
+            },
+            env_from_files: {
+              KONGCTL_E2E_KONNECT_PAT: "~/.tokens/testing_tech",
             },
           },
         },
@@ -151,6 +167,9 @@ describe("loadConfig", () => {
           "on-request",
         ],
         env: { CODEX_HOME: "~/.codex" },
+        env_from_files: {
+          AGENT_TOKEN: "~/.tokens/codex",
+        },
       });
 
       expect(config.agents["claude-enterprise"]).toEqual({
@@ -162,11 +181,13 @@ describe("loadConfig", () => {
           "bypassPermissions",
         ],
         env: { CLAUDE_CONFIG_DIR: "~/.claude" },
+        env_from_files: {},
       });
 
       expect(config.agents["claude-personal"]).toEqual({
         type: "claude",
         env: { CLAUDE_CONFIG_DIR: "~/.claude-personal" },
+        env_from_files: {},
         args: ["--model", "opus"],
       });
 
@@ -177,6 +198,7 @@ describe("loadConfig", () => {
           OPENAI_API_KEY: "${OPENAI_API_KEY_SECONDARY}",
         },
         args: [],
+        env_from_files: {},
       });
 
       expect(config.agents["opencode"]).toEqual({
@@ -185,6 +207,7 @@ describe("loadConfig", () => {
           OPENCODE_CONFIG_DIR: "~/.config/opencode",
         },
         args: ["--agent", "build"],
+        env_from_files: {},
       });
     });
 
@@ -194,6 +217,7 @@ describe("loadConfig", () => {
       expect(config.repos["kong/kongctl"]).toEqual({
         default_agent: "claude-enterprise",
         default_environment: undefined,
+        default_context: undefined,
         sandbox: undefined,
         main_worktree: "~/dev/kong/kongctl",
         worktree_base: "~/.local/share/worktrees/kong/kongctl",
@@ -204,8 +228,10 @@ describe("loadConfig", () => {
         agent_defaults: {
           args: [],
           env: {},
+          env_from_files: {},
         },
         agent_overrides: {},
+        contexts: {},
       });
     });
 
@@ -273,6 +299,12 @@ describe("loadConfig", () => {
       await expect(
         loadConfig(fixture("unknown-sandbox-reference-config.yaml")),
       ).rejects.toThrow(/Unknown sandbox reference: missing-sandbox/);
+    });
+
+    it("rejects unknown default context references in repos", async () => {
+      await expect(
+        loadConfig(fixture("unknown-context-reference-config.yaml")),
+      ).rejects.toThrow(/Unknown context reference: missing/);
     });
 
     it("throws ConfigError for invalid field types", async () => {

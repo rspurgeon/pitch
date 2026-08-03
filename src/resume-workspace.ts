@@ -65,6 +65,7 @@ export const ResumeWorkspaceInputSchema = z.object({
   name: z.string().trim().min(1),
   agent: z.string().trim().min(1).optional(),
   environment: z.string().trim().min(1).optional(),
+  context: z.string().trim().min(1).optional(),
   session_id: z.string().trim().min(1).optional(),
   tmux_session: z.string().trim().min(1).optional(),
   reset_session: z.boolean().optional(),
@@ -607,6 +608,9 @@ export async function resumeWorkspace(
   if (repoConfig === undefined) {
     throw new ResumeWorkspaceError(`Repo is not configured: ${workspace.repo}`);
   }
+  const currentContextName = workspace.context_name;
+  const contextName =
+    input.context ?? currentContextName ?? repoConfig.default_context;
 
   try {
     const restoredWorktree = await dependencies.restoreWorktree({
@@ -697,6 +701,9 @@ export async function resumeWorkspace(
           session_name: workspace.tmux_session,
           window_name: workspace.tmux_window,
           worktree_path: workspace.worktree_path,
+          ...(contextName === undefined
+            ? {}
+            : { environment: repoConfig.contexts?.[contextName]?.env ?? {} }),
         });
         createdPanes = layout.panes;
         agentPaneId = layout.panes.agent_pane_id;
@@ -768,6 +775,8 @@ export async function resumeWorkspace(
     input.agent !== undefined && input.agent !== currentWorkspaceAgentName(workspace);
   const isEnvironmentContextChanged =
     input.environment !== undefined && input.environment !== currentEnvironmentName;
+  const isLaunchContextChanged =
+    input.context !== undefined && input.context !== currentContextName;
   const trailingPendingSession = hasTrailingPendingSession(workspace);
   const shouldResetSession = input.reset_session === true;
   const shouldRestartAgent = input.restart_agent === true;
@@ -799,6 +808,7 @@ export async function resumeWorkspace(
     !shouldResetSession &&
     !isAgentContextChanged &&
     !isEnvironmentContextChanged &&
+    !isLaunchContextChanged &&
     workspace.agent_type === "codex" &&
     environment.kind === "host"
   ) {
@@ -921,6 +931,7 @@ export async function resumeWorkspace(
     !shouldResetSession &&
     !isAgentContextChanged &&
     !isEnvironmentContextChanged &&
+    !isLaunchContextChanged &&
     latestSessionId === null &&
     findLatestPendingSessionIndex(workspace) === null &&
     hasCompatibleRunningPane &&
@@ -974,6 +985,7 @@ export async function resumeWorkspace(
         repo: workspace.repo,
         ...(sandboxName === undefined ? {} : { sandbox: sandboxName }),
         environment: environment.name,
+        ...(contextName === undefined ? {} : { context: contextName }),
         opencode_config_path: opencodeConfigPath,
         workspace_name: workspace.name,
         worktree_path: workspacePaths.agent_worktree_path,
@@ -990,6 +1002,7 @@ export async function resumeWorkspace(
         repo: workspace.repo,
         ...(sandboxName === undefined ? {} : { sandbox: sandboxName }),
         environment: environment.name,
+        ...(contextName === undefined ? {} : { context: contextName }),
         workspace_name: workspace.name,
         opencode_config_path: opencodeConfigPath,
         session_id: latestSessionId,
@@ -1108,6 +1121,7 @@ export async function resumeWorkspace(
     ...(sandboxName === undefined ? {} : { sandbox_name: sandboxName }),
     environment_name: environment.name ?? null,
     environment_kind: environment.kind,
+    ...(contextName === undefined ? {} : { context_name: contextName }),
     guest_worktree_path: workspacePaths.guest_worktree_path,
     agent_pane_process: command.pane_process_name,
     agent_env: command.agent_env,

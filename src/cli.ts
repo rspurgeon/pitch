@@ -26,6 +26,10 @@ import {
 import { loadConfig } from "./config.js";
 import { createWorkspace, type CreateWorkspaceInput } from "./create-workspace.js";
 import { moveWorkspace, type MoveWorkspaceInput } from "./move-workspace.js";
+import {
+  renameWorkspace,
+  type RenameWorkspaceInput,
+} from "./rename-workspace.js";
 import { resumeWorkspace, type ResumeWorkspaceInput } from "./resume-workspace.js";
 import {
   getWorkspace,
@@ -53,6 +57,7 @@ type CliVerb =
   | "resume"
   | "restart"
   | "move"
+  | "rename"
   | "close"
   | "delete"
   | "status-right"
@@ -60,6 +65,7 @@ type CliVerb =
   | "view"
   | "completion"
   | "__complete-workspaces"
+  | "__complete-contexts"
   | "__complete-tmux-sessions";
 type FlagValue = boolean | string | string[];
 
@@ -84,7 +90,10 @@ interface WorkspaceSummaryGroupedList {
 interface JsonCommandResult {
   command: Exclude<
     CliVerb,
-    "completion" | "__complete-workspaces" | "__complete-tmux-sessions"
+    | "completion"
+    | "__complete-workspaces"
+    | "__complete-contexts"
+    | "__complete-tmux-sessions"
   >;
   result:
     | WorkspaceRecord
@@ -109,6 +118,7 @@ export interface CliDependencies {
   getWorkspace: typeof getWorkspace;
   resumeWorkspace: typeof resumeWorkspace;
   moveWorkspace: typeof moveWorkspace;
+  renameWorkspace: typeof renameWorkspace;
   closeWorkspace: typeof closeWorkspace;
   deleteWorkspace: typeof deleteWorkspace;
   renderStatusRight: typeof renderStatusRight;
@@ -132,6 +142,7 @@ const defaultDependencies: CliDependencies = {
   getWorkspace,
   resumeWorkspace,
   moveWorkspace,
+  renameWorkspace,
   closeWorkspace,
   deleteWorkspace,
   renderStatusRight,
@@ -162,6 +173,7 @@ const STRING_FLAGS = new Set([
   "agent-type",
   "base-branch",
   "branch",
+  "context",
   "environment",
   "group-by",
   "cwd",
@@ -246,6 +258,7 @@ function isCliVerbToken(token: string): token is CliVerb {
     token === "resume" ||
     token === "restart" ||
     token === "move" ||
+    token === "rename" ||
     token === "close" ||
     token === "delete" ||
     token === "status-right" ||
@@ -253,6 +266,7 @@ function isCliVerbToken(token: string): token is CliVerb {
     token === "view" ||
     token === "completion" ||
     token === "__complete-workspaces" ||
+    token === "__complete-contexts" ||
     token === "__complete-tmux-sessions"
   );
 }
@@ -565,6 +579,7 @@ function buildCreateInput(
     base_branch: readStringFlag(flags, "base-branch"),
     agent: readStringFlag(flags, "agent"),
     environment: readStringFlag(flags, "environment"),
+    context: readStringFlag(flags, "context"),
     session_id: readStringFlag(flags, "session-id"),
     tmux_session: readStringFlag(flags, "tmux-session"),
     skip_prompt: readBooleanFlag(flags, "skip-prompt"),
@@ -891,6 +906,7 @@ function buildResumeInput(
     name: resolveWorkspaceName(flags, positionals),
     agent: readStringFlag(flags, "agent"),
     environment: readStringFlag(flags, "environment"),
+    context: readStringFlag(flags, "context"),
     session_id: readStringFlag(flags, "session-id"),
     tmux_session: readStringFlag(flags, "tmux-session"),
     reset_session: readBooleanFlag(flags, "reset-session"),
@@ -934,6 +950,35 @@ function buildMoveInput(
   return {
     name: resolveWorkspaceName(flags, positionals),
     tmux_session: tmuxSession,
+  };
+}
+
+function buildRenameInput(
+  flags: Map<string, FlagValue>,
+  positionals: string[],
+): RenameWorkspaceInput {
+  const flaggedName = readStringFlag(flags, "name");
+  const name = flaggedName ?? positionals.at(0);
+  const newName =
+    flaggedName === undefined ? positionals.at(1) : positionals.at(0);
+  const extraPositionals =
+    flaggedName === undefined ? positionals.slice(2) : positionals.slice(1);
+
+  if (extraPositionals.length > 0) {
+    throw new Error(
+      `Unexpected positional arguments for rename: ${extraPositionals.join(" ")}`,
+    );
+  }
+  if (name === undefined) {
+    throw new Error("Missing workspace name.");
+  }
+  if (newName === undefined) {
+    throw new Error("Missing new workspace name.");
+  }
+
+  return {
+    name,
+    new_name: newName,
   };
 }
 
@@ -1066,6 +1111,7 @@ function formatWorkspaceSummary(workspace: WorkspaceRecord): string {
     `branch: ${workspace.branch}`,
     `agent: ${workspace.agent_name} (${workspace.agent_type})`,
     `environment: ${workspace.environment_name ?? workspace.environment_kind ?? "host"}`,
+    `context: ${workspace.context_name ?? "none"}`,
     `worktree: ${workspace.worktree_path}`,
     `tmux: ${workspace.tmux_session}:${workspace.tmux_window}`,
   ];
@@ -1271,9 +1317,10 @@ function buildHelpText(): string {
     "  pitch agent-error --agent-type TYPE --session-id ID --message TEXT",
     "  pitch list [--repo REPO] [--status active|closed|all] [--sort FIELD[,FIELD...]] [--group-by FIELD]",
     "  pitch get <name>",
-    "  pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [--reset-session] [--sync]",
-    "  pitch restart <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [--reset-session] [--sync]",
+    "  pitch resume <name> [--agent AGENT] [--environment ENV] [--context CONTEXT] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [--reset-session] [--sync]",
+    "  pitch restart <name> [--agent AGENT] [--environment ENV] [--context CONTEXT] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [--reset-session] [--sync]",
     "  pitch move <name> --to SESSION",
+    "  pitch rename <name> <new-name>",
     "  pitch close <name>",
     "  pitch delete <name> [--force]",
     "  pitch status-right [--separator TEXT]",
@@ -1295,6 +1342,7 @@ function buildHelpText(): string {
     "  --agent-type codex|claude",
     "  --additional-dir PATH",
     "  --environment ENV",
+    "  --context CONTEXT",
     "  --cwd PATH",
     "  --transcript-path PATH",
     "  --tty TTY",
@@ -1341,6 +1389,13 @@ function buildZshCompletionScript(): string {
     "  _describe -t tmux-sessions 'tmux session' sessions",
     "}",
     "",
+    "_pitch_contexts() {",
+    "  local -a pitch_contexts",
+    "  pitch_contexts=(\"${(@f)$(pitch __complete-contexts 2>/dev/null)}\")",
+    "  (( ${#pitch_contexts[@]} )) || return 1",
+    "  _values 'repository context' $pitch_contexts",
+    "}",
+    "",
     "_pitch_complete_workspace_target() {",
     "  local command_index=\"$1\"",
     "  local workspace_index=$(( command_index + 1 ))",
@@ -1361,6 +1416,9 @@ function buildZshCompletionScript(): string {
     "_pitch_dispatch() {",
     "  local cmd=\"$1\"",
     "  local command_index=\"$2\"",
+    "  words=(\"${words[@]:$(( command_index - 1 ))}\")",
+    "  CURRENT=$(( CURRENT - command_index + 1 ))",
+    "  command_index=1",
     "  case \"$cmd\" in",
     "    create)",
     "      _arguments -s -S \\",
@@ -1372,7 +1430,8 @@ function buildZshCompletionScript(): string {
     "        '--branch[Ad hoc git branch name]:branch:' \\",
     "        '--base-branch[Base branch]:branch:' \\",
     "        '--agent[Configured agent]:agent:' \\",
-    "        '--environment[Execution environment]:environment:' \\",
+        "        '--environment[Execution environment]:environment:' \\",
+        "        '--context[Repository launch context]:context:_pitch_contexts' \\",
     "        '--session-id[Resume an existing agent session id]:session id:' \\",
     "        '--tmux-session[Target tmux session]:session:_pitch_tmux_sessions' \\",
     "        '*--additional-dir[Additional directory to grant to the agent]:path:_files -/' \\",
@@ -1438,7 +1497,8 @@ function buildZshCompletionScript(): string {
     "      _arguments -s -S \\",
     "        '--name[Workspace name]:workspace:_pitch_workspaces' \\",
     "        '--agent[Configured agent]:agent:' \\",
-    "        '--environment[Execution environment]:environment:' \\",
+        "        '--environment[Execution environment]:environment:' \\",
+        "        '--context[Repository launch context]:context:_pitch_contexts' \\",
     "        '--session-id[Resume an existing agent session id]:session id:' \\",
     "        '--tmux-session[Target tmux session]:session:_pitch_tmux_sessions' \\",
     "        '*--additional-dir[Additional directory to grant to the agent]:path:_files -/' \\",
@@ -1458,6 +1518,15 @@ function buildZshCompletionScript(): string {
     "        '--json[Emit JSON]' \\",
     "        '--help[Show help]' \\",
     "        '1:workspace:_pitch_workspaces'",
+    "      ;;",
+    "    rename)",
+    "      _pitch_complete_workspace_target \"$command_index\" && return",
+    "      _arguments -s -S \\",
+    "        '--name[Workspace name]:workspace:_pitch_workspaces' \\",
+    "        '--json[Emit JSON]' \\",
+    "        '--help[Show help]' \\",
+    "        '1:workspace:_pitch_workspaces' \\",
+    "        '2:new workspace name:'",
     "      ;;",
     "    close)",
       "      _pitch_complete_workspace_target \"$command_index\" && return",
@@ -1521,6 +1590,7 @@ function buildZshCompletionScript(): string {
     "      'resume[Resume a workspace]' \\",
     "      'restart[Restart the agent process in a workspace]' \\",
     "      'move[Move a workspace to another tmux session]' \\",
+    "      'rename[Rename a workspace and its tmux window]' \\",
     "      'close[Close a workspace]' \\",
     "      'delete[Delete a workspace]' \\",
     "      'status-right[Render an agent status-right segment]' \\",
@@ -1550,6 +1620,7 @@ function buildZshCompletionScript(): string {
     "        'resume[Resume a workspace]' \\",
     "        'restart[Restart the agent process in a workspace]' \\",
     "        'move[Move a workspace to another tmux session]' \\",
+    "        'rename[Rename a workspace and its tmux window]' \\",
     "        'close[Close a workspace]' \\",
     "        'delete[Delete a workspace]' \\",
     "        'status-right[Render an agent status-right segment]' \\",
@@ -1764,6 +1835,17 @@ async function executeCommand(
         warnings,
       };
     }
+    case "rename": {
+      const config = await dependencies.loadConfig();
+      return {
+        command: parsed.verb,
+        result: await dependencies.renameWorkspace(
+          buildRenameInput(parsed.flags, parsed.positionals),
+          config,
+        ),
+        warnings: [],
+      };
+    }
     case "close": {
       const config = await dependencies.loadConfig();
       const warnings: string[] = [];
@@ -1853,6 +1935,7 @@ async function executeCommand(
     case "view":
     case "completion":
     case "__complete-workspaces":
+    case "__complete-contexts":
     case "__complete-tmux-sessions":
       return null;
   }
@@ -1982,6 +2065,21 @@ export async function runCli(
         dependencies.stdout.write(
           `${workspaces.map((workspace) => workspace.name).join("\n")}\n`,
         );
+      }
+      return 0;
+    }
+
+    if (parsed.verb === "__complete-contexts") {
+      const config = await dependencies.loadConfig();
+      const contexts = [
+        ...new Set(
+          Object.values(config.repos).flatMap((repo) =>
+            Object.keys(repo.contexts ?? {}),
+          ),
+        ),
+      ].sort();
+      if (contexts.length > 0) {
+        dependencies.stdout.write(`${contexts.join("\n")}\n`);
       }
       return 0;
     }

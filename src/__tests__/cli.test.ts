@@ -270,6 +270,12 @@ function makeDependencies(
     moveWorkspace: vi.fn(async () =>
       makeWorkspaceRecord({ tmux_session: "kongctl-aigw" }),
     ),
+    renameWorkspace: vi.fn(async () =>
+      makeWorkspaceRecord({
+        name: "renamed-workspace",
+        tmux_window: "renamed-workspace",
+      }),
+    ),
     closeWorkspace: vi.fn(async () => makeWorkspaceRecord({ status: "closed" })),
     deleteWorkspace: vi.fn(async () => makeWorkspaceRecord({ status: "closed" })),
     renderStatusRight: vi.fn(async () => "R:2 I:1"),
@@ -486,6 +492,22 @@ describe("runCli", () => {
       {
         reportWarning: expect.any(Function),
       },
+    );
+  });
+
+  it("passes a repository context through create", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["create", "--pr", "700", "--context", "e2e-com"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.createWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ context: "e2e-com" }),
+      makeConfig(),
+      { reportWarning: expect.any(Function) },
     );
   });
 
@@ -1114,6 +1136,26 @@ describe("runCli", () => {
     );
   });
 
+  it("passes a repository context through restart", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["restart", "pr-700-default-aas", "--context", "e2e-tech"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.resumeWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "pr-700-default-aas",
+        context: "e2e-tech",
+        restart_agent: true,
+      }),
+      makeConfig(),
+      { reportWarning: expect.any(Function) },
+    );
+  });
+
   it("passes an explicit tmux session through resume", async () => {
     const dependencies = makeDependencies();
 
@@ -1247,6 +1289,42 @@ describe("runCli", () => {
     expect(dependencies.moveWorkspace).not.toHaveBeenCalled();
     expect(dependencies.stderrBuffer.join("")).toContain(
       "Missing required option --to.",
+    );
+  });
+
+  it("renames a workspace", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["rename", "pr-700-default-aas", "renamed-workspace"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.renameWorkspace).toHaveBeenCalledWith(
+      {
+        name: "pr-700-default-aas",
+        new_name: "renamed-workspace",
+      },
+      makeConfig(),
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "name: renamed-workspace",
+    );
+  });
+
+  it("rejects rename without a new workspace name", async () => {
+    const dependencies = makeDependencies();
+
+    const exitCode = await runCli(
+      ["rename", "pr-700-default-aas"],
+      dependencies,
+    );
+
+    expect(exitCode).toBe(1);
+    expect(dependencies.renameWorkspace).not.toHaveBeenCalled();
+    expect(dependencies.stderrBuffer.join("")).toContain(
+      "Missing new workspace name.",
     );
   });
 
@@ -1609,10 +1687,13 @@ describe("runCli", () => {
       "pitch move <name> --to SESSION",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
+      "pitch rename <name> <new-name>",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
       "pitch delete <name> [--force]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch resume <name> [--agent AGENT] [--environment ENV] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [--reset-session] [--sync]",
+      "pitch resume <name> [--agent AGENT] [--environment ENV] [--context CONTEXT] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [--reset-session] [--sync]",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "  --additional-dir PATH",
@@ -1651,7 +1732,13 @@ describe("runCli", () => {
       "pitch __complete-tmux-sessions",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
+      "pitch __complete-contexts",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
       "'delete[Delete a workspace]'",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "'rename[Rename a workspace and its tmux window]'",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "    close)",
@@ -1660,10 +1747,16 @@ describe("runCli", () => {
       "    delete)",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
+      "    rename)",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
       "_pitch_complete_workspace_target",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "_pitch_dispatch \"${words[2]}\" 2",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      'words=("${words[@]:$(( command_index - 1 ))}")',
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "if [[ \"${words[2]}\" == --* ]]; then",
@@ -1694,6 +1787,9 @@ describe("runCli", () => {
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "'--reset-session[Start a new agent session instead of resuming]'",
+    );
+    expect(dependencies.stdoutBuffer.join("")).toContain(
+      "'--context[Repository launch context]:context:_pitch_contexts'",
     );
   });
 
@@ -1736,6 +1832,22 @@ describe("runCli", () => {
     expect(dependencies.stdoutBuffer.join("")).toBe(
       "kongctl\nkongctl-aigw\n",
     );
+  });
+
+  it("prints configured repository contexts for completion", async () => {
+    const config = makeConfig();
+    config.repos["kong/kongctl"].contexts = {
+      "e2e-tech": { env: {}, env_from_files: {} },
+      "e2e-com": { env: {}, env_from_files: {} },
+    };
+    const dependencies = makeDependencies({
+      loadConfig: vi.fn(async () => config),
+    });
+
+    const exitCode = await runCli(["__complete-contexts"], dependencies);
+
+    expect(exitCode).toBe(0);
+    expect(dependencies.stdoutBuffer.join("")).toBe("e2e-com\ne2e-tech\n");
   });
 
   it("fails on unknown commands", async () => {

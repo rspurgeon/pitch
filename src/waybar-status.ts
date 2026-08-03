@@ -102,7 +102,16 @@ function compareAgents(left: DisplayAgent, right: DisplayAgent): number {
     return priorityDifference;
   }
 
+  const homeSessionDifference = Number(isHomeSession(left)) - Number(isHomeSession(right));
+  if (homeSessionDifference !== 0) {
+    return homeSessionDifference;
+  }
+
   return left.label.localeCompare(right.label);
+}
+
+function isHomeSession(agent: DisplayAgent): boolean {
+  return process.env.HOME !== undefined && agent.cwd === process.env.HOME;
 }
 
 function getAgentViewLabel(agent: AgentViewEntry): string {
@@ -172,11 +181,32 @@ async function getDisplayAgents(
 ): Promise<DisplayAgent[]> {
   try {
     const view: AgentsView = await dependencies.getAgentsView();
-    return view.agents.map(fromAgentView);
+    const viewAgents = view.agents.map(fromAgentView);
+    try {
+      const snapshot: AgentStatusSnapshot = await dependencies.getAgentStatusSnapshot();
+      return mergeDisplayAgents(viewAgents, snapshot.sessions.map(fromSnapshotSession));
+    } catch {
+      return viewAgents;
+    }
   } catch {
     const snapshot: AgentStatusSnapshot = await dependencies.getAgentStatusSnapshot();
     return snapshot.sessions.map(fromSnapshotSession);
   }
+}
+
+function mergeDisplayAgents(
+  preferredAgents: DisplayAgent[],
+  fallbackAgents: DisplayAgent[],
+): DisplayAgent[] {
+  const agentsBySessionId = new Map<string, DisplayAgent>();
+  for (const agent of fallbackAgents) {
+    agentsBySessionId.set(agent.session_id, agent);
+  }
+  for (const agent of preferredAgents) {
+    agentsBySessionId.set(agent.session_id, agent);
+  }
+
+  return [...agentsBySessionId.values()];
 }
 
 function getModuleClasses(counts: Record<AgentRuntimeState, number>): string[] {

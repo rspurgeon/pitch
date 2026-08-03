@@ -72,19 +72,36 @@ function isTerminalClient(client: HyprlandClient): boolean {
   return client.class === "Alacritty" || client.class.toLowerCase().includes("terminal");
 }
 
-function titleMentionsTmuxSession(title: string, sessionName: string): boolean {
-  const titleParts = title.split("•").map((part) => part.trim());
-  return titleParts.includes(sessionName) || title.includes(sessionName);
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function selectTerminalForSession(
+function titleMentionsToken(title: string, token: string): boolean {
+  const titleParts = title.split("•").map((part) => part.trim());
+  if (titleParts.includes(token)) {
+    return true;
+  }
+
+  const pattern = new RegExp(
+    `(^|[^A-Za-z0-9_-])${escapeRegExp(token)}($|[^A-Za-z0-9_-])`,
+  );
+  return pattern.test(title);
+}
+
+function selectTerminalForWorkspace(
   clients: HyprlandClient[],
-  sessionName: string,
+  workspace: WorkspaceSummary,
 ): HyprlandClient | undefined {
-  return clients.find(
+  const matchingSessionClients = clients.filter(
     (client) =>
       isTerminalClient(client) &&
-      titleMentionsTmuxSession(client.title, sessionName),
+      titleMentionsToken(client.title, workspace.tmux_session),
+  );
+
+  return (
+    matchingSessionClients.find((client) =>
+      titleMentionsToken(client.title, workspace.tmux_window),
+    ) ?? matchingSessionClients[0]
   );
 }
 
@@ -112,9 +129,9 @@ export async function gotoWorkspace(
 
   let terminal: HyprlandClient | undefined;
   try {
-    terminal = selectTerminalForSession(
+    terminal = selectTerminalForWorkspace(
       await listHyprlandClients(),
-      workspace.tmux_session,
+      workspace,
     );
   } catch (error: unknown) {
     throw new Error(`Hyprland lookup failed: ${formatError(error)}`);

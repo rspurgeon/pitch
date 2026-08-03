@@ -9,6 +9,7 @@ repos:
   kong/kongctl:
     default_agent: claude-enterprise
     default_environment: sandbox-vm
+    default_context: e2e-tech
     sandbox: kongctl
     main_worktree: ~/dev/kong/kongctl
     pane_commands:
@@ -16,6 +17,9 @@ repos:
       bottom_right: make build
     additional_paths:
       - /home/rspurgeon/go
+    agent_defaults:
+      env_from_files:
+        REPO_TOKEN: ~/.tokens/kongctl
     agent_overrides:
       codex:
         args:
@@ -24,6 +28,12 @@ repos:
       claude-personal:
         env:
           CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1"
+    contexts:
+      e2e-tech:
+        env:
+          KONGCTL_PROFILE: testing_tech
+        env_from_files:
+          KONGCTL_E2E_KONNECT_PAT: ~/.tokens/testing_tech
 
 environments:
   laptop:
@@ -66,6 +76,8 @@ agents:
       - on-request
     env:
       CODEX_HOME: ~/.codex
+    env_from_files:
+      AGENT_TOKEN: ~/.tokens/codex
 
   claude-enterprise:
     type: claude

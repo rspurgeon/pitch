@@ -1537,6 +1537,41 @@ describe("resume workspace", () => {
     expect(dependencies.getTmuxWindowPane).not.toHaveBeenCalled();
   });
 
+  it("passes the saved context environment to recreated user panes", async () => {
+    const config = makeConfig();
+    config.repos["kong/kongctl"].contexts = {
+      "e2e-com": {
+        env: {
+          KONGCTL_PROFILE: "rspurgeon-e2e-kongctl-testing_com",
+        },
+        env_from_files: {},
+      },
+    };
+    const dependencies = makeDependencies({
+      readWorkspaceRecord: vi.fn(async () =>
+        makeWorkspaceRecord({ context_name: "e2e-com" }),
+      ),
+      tmuxWindowExists: vi.fn(async () => false),
+    });
+
+    await resumeWorkspace(
+      {
+        name: "gh-42-fix-bug",
+      },
+      config,
+      dependencies,
+    );
+
+    expect(dependencies.createTmuxLayout).toHaveBeenCalledWith({
+      session_name: "kongctl",
+      window_name: "gh-42-fix-bug",
+      worktree_path: "/tmp/worktrees/gh-42-fix-bug",
+      environment: {
+        KONGCTL_PROFILE: "rspurgeon-e2e-kongctl-testing_com",
+      },
+    });
+  });
+
   it("runs configured pane commands when resume recreates the tmux layout", async () => {
     const config = makeConfig();
     config.repos["kong/kongctl"].pane_commands = {

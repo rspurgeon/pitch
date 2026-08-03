@@ -62,13 +62,14 @@ describe("workspace state", () => {
   });
 
   it("writes and reads a workspace record", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeWorkspace({ context_name: "e2e-tech" });
 
     await writeWorkspaceRecord(workspace, workspacesDir);
 
     const filePath = join(workspacesDir, `${workspace.name}.yaml`);
     const rawContent = await readFile(filePath, "utf-8");
     expect(rawContent).toContain(`name: ${workspace.name}`);
+    expect(rawContent).toContain("context_name: e2e-tech");
 
     await expect(readWorkspaceRecord(workspace.name, workspacesDir)).resolves.toEqual(
       workspace,

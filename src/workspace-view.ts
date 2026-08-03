@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Box, Text, render, useApp, useInput, useWindowSize } from "ink";
 import { loadConfig } from "./config.js";
 import { deleteWorkspace } from "./close-workspace.js";
+import { captureTmuxPane } from "./tmux.js";
 import { gotoWorkspace } from "./workspace-navigation.js";
 import {
   listWorkspaces,
@@ -15,6 +16,7 @@ type ViewMode =
   | "create"
   | "resume"
   | "restart"
+  | "details"
   | "confirm-delete";
 type StatusTone = "info" | "success" | "error";
 
@@ -26,6 +28,11 @@ interface StatusMessage {
 interface WorkspaceGroup {
   status: WorkspaceSummary["status"];
   workspaces: WorkspaceSummary[];
+}
+
+interface PanePreview {
+  workspaceName: string | null;
+  lines: string[];
 }
 
 export interface WorkspaceViewOptions {
@@ -162,6 +169,14 @@ function trimLine(value: string, maxLength: number): string {
   }
 
   return `${value.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function sanitizePreviewLine(line: string): string {
+  return line
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\t/g, "  ")
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, "")
+    .trimEnd();
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -311,10 +326,7 @@ function WorkspaceRow({
       color: selected ? undefined : color,
       wrap: "truncate-end",
     },
-    `${marker} ${trimLine(workspace.name, 34).padEnd(34)} ` +
-      `${sourceLabel(workspace).padEnd(10)} ` +
-      `${workspace.agent_name.padEnd(10)} ` +
-      trimLine(tmuxLabel(workspace), 28),
+    `${marker} ${workspace.name}`,
   );
 }
 
@@ -322,14 +334,7 @@ function WorkspaceHeader(): React.ReactElement {
   return e(
     Text,
     { dimColor: true, wrap: "truncate-end" },
-    "  " +
-      "Name".padEnd(34) +
-      " " +
-      "Source".padEnd(10) +
-      " " +
-      "Agent".padEnd(10) +
-      " " +
-      "Tmux",
+    "  Name",
   );
 }
 
@@ -394,6 +399,80 @@ function WorkspaceDetail({
   );
 }
 
+async function loadPanePreview(
+  workspace: WorkspaceSummary | undefined,
+  lineCount: number,
+): Promise<PanePreview> {
+  if (workspace === undefined) {
+    return {
+      workspaceName: null,
+      lines: ["No workspace selected."],
+    };
+  }
+
+  if (workspace.status === "closed") {
+    return {
+      workspaceName: workspace.name,
+      lines: ["Workspace is closed."],
+    };
+  }
+
+  try {
+    const lines = await captureTmuxPane({
+      session_name: workspace.tmux_session,
+      window_name: workspace.tmux_window,
+      pane_index: 0,
+      line_count: lineCount,
+    });
+    return {
+      workspaceName: workspace.name,
+      lines: lines.length === 0
+        ? ["Pane is empty."]
+        : lines.map(sanitizePreviewLine),
+    };
+  } catch (error: unknown) {
+    return {
+      workspaceName: workspace.name,
+      lines: [
+        error instanceof Error ? error.message : String(error),
+      ],
+    };
+  }
+}
+
+function PanePreviewView({
+  preview,
+  maxRows,
+  maxColumns,
+}: {
+  preview: PanePreview;
+  maxRows: number;
+  maxColumns: number;
+}): React.ReactElement {
+  const lines = preview.lines.slice(-maxRows);
+  const stableLines = [
+    ...Array.from({ length: Math.max(0, maxRows - lines.length) }, () => ""),
+    ...lines,
+  ];
+  const textWidth = Math.max(1, maxColumns);
+
+  return e(
+    Box,
+    { flexDirection: "column", height: maxRows, overflow: "hidden" },
+    ...stableLines.map((line, index) =>
+      e(
+        Text,
+        {
+          key: index,
+          wrap: "truncate-end",
+          color: preview.workspaceName === null ? "gray" : undefined,
+        },
+        trimLine(sanitizePreviewLine(line), textWidth) || " ",
+      ),
+    ),
+  );
+}
+
 function Prompt({
   mode,
   value,
@@ -416,6 +495,52 @@ function Prompt({
   }
 
   return null;
+}
+
+function DetailsDialog({
+  selected,
+  terminalColumns,
+  terminalRows,
+}: {
+  selected: WorkspaceSummary | undefined;
+  terminalColumns: number;
+  terminalRows: number;
+}): React.ReactElement {
+  const dialogWidth = Math.max(1, Math.min(72, terminalColumns - 4));
+  const dialogHeight = Math.min(11, Math.max(6, terminalRows - 2));
+
+  return e(
+    Box,
+    {
+      position: "absolute",
+      left: 0,
+      top: 0,
+      width: terminalColumns,
+      height: terminalRows,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    e(
+      Box,
+      {
+        width: dialogWidth,
+        height: dialogHeight,
+        flexDirection: "column",
+        borderStyle: "single",
+        borderColor: "gray",
+        paddingX: 1,
+        paddingY: 1,
+        backgroundColor: "black",
+      },
+      e(Text, { bold: true }, "Details"),
+      e(WorkspaceDetail, { workspace: selected }),
+      e(
+        Box,
+        { marginTop: 1 },
+        e(HelpItem, { keys: "esc/i", label: "close" }),
+      ),
+    ),
+  );
 }
 
 function HelpItem({
@@ -448,6 +573,7 @@ function HelpBar({
     ["X", "restart"],
     ["c", "create"],
     ["d", "delete"],
+    ["i", "details"],
     ["/", "filter"],
     ["u", "clear filter"],
     ["a", showActive ? "hide active" : "show active"],
@@ -565,6 +691,10 @@ function WorkspaceView({
   const [loading, setLoading] = useState(false);
   const [showActive, setShowActive] = useState(true);
   const [showClosed, setShowClosed] = useState(false);
+  const [preview, setPreview] = useState<PanePreview>({
+    workspaceName: null,
+    lines: ["Loading preview..."],
+  });
   const [status, setStatus] = useState<StatusMessage>({
     text: "Loading workspaces...",
     tone: "info",
@@ -606,7 +736,7 @@ function WorkspaceView({
   const terminalRows = Math.max(1, rows);
   const terminalColumns = Math.max(1, columns);
   const rootPaddingX = terminalColumns >= 40 ? 1 : 0;
-  const showDetails = terminalColumns >= 96;
+  const showPreview = terminalColumns >= 72;
   const footerMarginTop = terminalRows >= 10 ? 1 : 0;
   const preferredFooterHeight =
     mode === "filter" || mode === "confirm-delete" ? 5 : 4;
@@ -616,15 +746,57 @@ function WorkspaceView({
   );
   const mainHeight = Math.max(1, terminalRows - footerHeight - footerMarginTop);
   const listBodyHeight = Math.max(1, mainHeight - 3);
-  const detailWidth = showDetails
-    ? clamp(Math.floor(terminalColumns * 0.32), 34, 52)
-    : 0;
+  const listWidth = showPreview
+    ? clamp(Math.floor(terminalColumns * 0.28), 24, 38)
+    : undefined;
+  const previewBodyHeight = Math.max(1, mainHeight - 3);
+  const previewTextWidth = Math.max(
+    1,
+    terminalColumns - (listWidth ?? 0) - 8 - (rootPaddingX * 2),
+  );
 
   useEffect(() => {
     setSelectedIndex((current) =>
       Math.min(current, Math.max(visibleWorkspaces.length - 1, 0)),
     );
   }, [visibleWorkspaces.length]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function updatePreview(): Promise<void> {
+      const nextPreview = await loadPanePreview(
+        selectedWorkspace,
+        previewBodyHeight,
+      );
+      if (!cancelled) {
+        setPreview(nextPreview);
+      }
+    }
+
+    void updatePreview();
+
+    if (selectedWorkspace?.status !== "active") {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const interval = setInterval(() => {
+      void updatePreview();
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [
+    previewBodyHeight,
+    selectedWorkspace?.name,
+    selectedWorkspace?.status,
+    selectedWorkspace?.tmux_session,
+    selectedWorkspace?.tmux_window,
+  ]);
 
   const runAction = useCallback(
     async (label: string, action: () => Promise<string>) => {
@@ -646,6 +818,13 @@ function WorkspaceView({
   );
 
   useInput((input, key) => {
+    if (mode === "details") {
+      if (key.escape || input === "i" || key.return) {
+        setMode("normal");
+      }
+      return;
+    }
+
     if (
       mode === "filter" ||
       mode === "create" ||
@@ -732,7 +911,7 @@ function WorkspaceView({
       return;
     }
 
-    if (input === "q" || (input === "c" && key.ctrl)) {
+    if (input === "q" || key.escape || (input === "c" && key.ctrl)) {
       exit();
       return;
     }
@@ -795,6 +974,10 @@ function WorkspaceView({
       setMode("confirm-delete");
       return;
     }
+    if (input === "i") {
+      setMode("details");
+      return;
+    }
     if ((input === "g" || key.return) && selectedWorkspace !== undefined) {
       const workspace = selectedWorkspace;
       setLoading(true);
@@ -839,12 +1022,13 @@ function WorkspaceView({
     },
     e(
       Box,
-      { height: mainHeight, gap: showDetails ? 1 : 0 },
+      { height: mainHeight, gap: showPreview ? 1 : 0 },
       e(
         Box,
         {
           flexDirection: "column",
-          flexGrow: 1,
+          flexGrow: showPreview ? 0 : 1,
+          width: listWidth,
           borderStyle: "single",
           borderColor: "gray",
           paddingX: 1,
@@ -857,19 +1041,23 @@ function WorkspaceView({
           maxRows: listBodyHeight,
         }),
       ),
-      showDetails
+      showPreview
         ? e(
             Box,
             {
               flexDirection: "column",
-              width: detailWidth,
+              flexGrow: 1,
               borderStyle: "single",
               borderColor: "gray",
               paddingX: 1,
               height: mainHeight,
             },
-            e(Text, { bold: true }, "Details"),
-            e(WorkspaceDetail, { workspace: selectedWorkspace }),
+            e(Text, { bold: true, wrap: "truncate-end" }, "Agent Pane"),
+            e(PanePreviewView, {
+              preview,
+              maxRows: previewBodyHeight,
+              maxColumns: previewTextWidth,
+            }),
           )
         : null,
     ),
@@ -899,6 +1087,12 @@ function WorkspaceView({
           terminalColumns,
           terminalRows,
         })
+      : mode === "details"
+        ? e(DetailsDialog, {
+            selected: selectedWorkspace,
+            terminalColumns,
+            terminalRows,
+          })
       : null,
   );
 }

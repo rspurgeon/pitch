@@ -322,6 +322,118 @@ describe("agent launcher", () => {
     expect(command.post_launch_prompt).toBeUndefined();
   });
 
+  it("loads layered env_from_files outside the agent command", () => {
+    const config = makeConfig();
+    config.agents.codex.env_from_files = {
+      AGENT_TOKEN: "~/.tokens/agent",
+      SHARED_TOKEN: "~/.tokens/agent-shared",
+    };
+    config.repos["kong/kongctl"].agent_defaults.env_from_files = {
+      REPO_TOKEN: "~/.tokens/repo",
+      SHARED_TOKEN: "~/.tokens/repo-shared",
+    };
+    config.repos["kong/kongctl"].agent_overrides.codex.env_from_files = {
+      SHARED_TOKEN: "~/.tokens/codex-shared",
+    };
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "codex",
+      repo: "kong/kongctl",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.command.slice(0, 4)).toEqual([
+      "/bin/sh",
+      "-c",
+      expect.stringContaining('export "$name=$value"'),
+      "pitch-env-from-files",
+    ]);
+    expect(command.command).toContain("AGENT_TOKEN");
+    expect(command.command).toContain("/home/rspurgeon/.tokens/agent");
+    expect(command.command).toContain("REPO_TOKEN");
+    expect(command.command).toContain("/home/rspurgeon/.tokens/repo");
+    expect(command.command).toContain("SHARED_TOKEN");
+    expect(command.command).toContain(
+      "/home/rspurgeon/.tokens/codex-shared",
+    );
+    expect(command.command).not.toContain(
+      "/home/rspurgeon/.tokens/repo-shared",
+    );
+    expect(command.command).toContain("codex");
+    expect(command.agent_env).not.toHaveProperty("AGENT_TOKEN");
+    expect(command.agent_env).not.toHaveProperty("REPO_TOKEN");
+    expect(command.agent_env).not.toHaveProperty("SHARED_TOKEN");
+  });
+
+  it("applies an explicit repository context after agent overrides", () => {
+    const config = makeConfig();
+    config.repos["kong/kongctl"].agent_defaults.env = {
+      KONGCTL_PROFILE: "repo-default",
+    };
+    config.repos["kong/kongctl"].contexts = {
+      "e2e-tech": {
+        env: {
+          KONGCTL_PROFILE: "testing_tech",
+          KONGCTL_E2E_KONNECT_ENV: "tech",
+        },
+        env_from_files: {
+          KONGCTL_E2E_KONNECT_PAT: "~/.tokens/testing_tech",
+        },
+      },
+    };
+
+    const command = buildAgentStartCommand({
+      config,
+      agent: "codex",
+      repo: "kong/kongctl",
+      context: "e2e-tech",
+      workspace_name: "gh-565-fix-validation",
+      worktree_path: "/tmp/worktree",
+    });
+
+    expect(command.agent_env).toMatchObject({
+      KONGCTL_PROFILE: "testing_tech",
+      KONGCTL_E2E_KONNECT_ENV: "tech",
+    });
+    expect(command.command).toContain("KONGCTL_E2E_KONNECT_PAT");
+    expect(command.command).toContain("/home/rspurgeon/.tokens/testing_tech");
+  });
+
+  it("rejects an unknown repository context", () => {
+    const config = makeConfig();
+
+    expect(() =>
+      buildAgentStartCommand({
+        config,
+        agent: "codex",
+        repo: "kong/kongctl",
+        context: "missing",
+        workspace_name: "gh-565-fix-validation",
+        worktree_path: "/tmp/worktree",
+      }),
+    ).toThrow(/Context is not configured.*missing/);
+  });
+
+  it("rejects env_from_files for vm-ssh environments", () => {
+    const config = makeConfig();
+    config.agents.codex.env_from_files = {
+      AGENT_TOKEN: "~/.tokens/agent",
+    };
+
+    expect(() =>
+      buildAgentStartCommand({
+        config,
+        agent: "codex",
+        environment: "sandbox-vm",
+        workspace_name: "gh-565-fix-validation",
+        worktree_path: "/srv/pitch/workspaces/gh-565-fix-validation",
+        host_worktree_path: "/tmp/worktree",
+      }),
+    ).toThrow(/env_from_files.*host execution environments/);
+  });
+
   it("adds explicit additional paths to Codex start commands", () => {
     const config = makeConfig();
 

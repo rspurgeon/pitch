@@ -85,6 +85,7 @@ export const CreateWorkspaceInputSchema = z
     base_branch: z.string().trim().min(1).optional(),
     agent: z.string().trim().min(1).optional(),
     environment: z.string().trim().min(1).optional(),
+    context: z.string().trim().min(1).optional(),
     session_id: z.string().trim().min(1).optional(),
     tmux_session: z.string().trim().min(1).optional(),
     skip_prompt: z.boolean().optional(),
@@ -809,6 +810,7 @@ export async function createWorkspace(
       repoName,
       input.environment,
     );
+    const contextName = input.context ?? repoConfig.default_context;
     const workspacePaths = resolveWorkspacePaths(
       environment,
       worktreeTarget.worktree_name,
@@ -854,6 +856,7 @@ export async function createWorkspace(
               ? {}
               : { sandbox: repoConfig.sandbox }),
             environment: environment.name,
+            ...(contextName === undefined ? {} : { context: contextName }),
             opencode_config_path: opencodeConfigPath,
             workspace_name: workspaceName,
             worktree_path: workspacePaths.agent_worktree_path,
@@ -872,6 +875,7 @@ export async function createWorkspace(
               ? {}
               : { sandbox: repoConfig.sandbox }),
             environment: environment.name,
+            ...(contextName === undefined ? {} : { context: contextName }),
             opencode_config_path: opencodeConfigPath,
             workspace_name: workspaceName,
             session_id: input.session_id,
@@ -966,6 +970,9 @@ export async function createWorkspace(
         session_name: tmuxSession,
         window_name: workspaceName,
         worktree_path: worktree.worktree_path,
+        ...(contextName === undefined
+          ? {}
+          : { environment: repoConfig.contexts?.[contextName]?.env ?? {} }),
       });
       createdPanes = layout.panes;
       agentPaneId = layout.panes.agent_pane_id;
@@ -989,6 +996,7 @@ export async function createWorkspace(
       ...(repoConfig.sandbox === undefined ? {} : { sandbox_name: repoConfig.sandbox }),
       environment_name: environment.name ?? null,
       environment_kind: environment.kind,
+      ...(contextName === undefined ? {} : { context_name: contextName }),
       agent_pane_process: agentCommand.pane_process_name,
       agent_env: agentCommand.agent_env,
       ...(workspaceAdditionalPaths.length === 0

@@ -145,6 +145,171 @@ describe("renderWaybarStatus", () => {
     expect(payload.text).toContain("fallback");
   });
 
+  it("merges raw snapshot agents when the tmux view is partial", async () => {
+    const rendered = await renderWaybarStatus({
+      getAgentsView: vi.fn(async (): Promise<AgentsView> => ({
+        summary: {
+          generated_at: "2026-04-08T12:00:00.000Z",
+          active_sessions: 1,
+          counts: {
+            running: 1,
+            question: 0,
+            idle: 0,
+            error: 0,
+          },
+        },
+        agents: [
+          {
+            agent_type: "codex",
+            state: "running",
+            session_id: "home-session",
+            session_key: "home-sessio",
+            last_event: "UserPromptSubmit",
+            updated_at: "2026-04-08T12:00:00.000Z",
+            cwd: "/home/rspurgeon",
+            tmux: {
+              session_name: "avery",
+              window_name: "avery",
+              pane_index: 0,
+              pane_id: "%1",
+              pane_tty: "pts/21",
+              current_command: "codex",
+              current_path: "/home/rspurgeon",
+            },
+          },
+        ],
+      })),
+      getAgentStatusSnapshot: vi.fn(async (): Promise<AgentStatusSnapshot> => ({
+        summary: {
+          generated_at: "2026-04-08T12:00:00.000Z",
+          active_sessions: 2,
+          counts: {
+            running: 2,
+            question: 0,
+            idle: 0,
+            error: 0,
+          },
+        },
+        sources: [],
+        sessions: [
+          {
+            session_id: "home-session",
+            agent_type: "codex",
+            state: "running",
+            cwd: "/home/rspurgeon",
+            transcript_path: "/tmp/home.jsonl",
+            tty: "pts/21",
+            last_event: "UserPromptSubmit",
+            last_assistant_message: undefined,
+            error_message: undefined,
+            updated_at: "2026-04-08T12:00:00.000Z",
+          },
+          {
+            session_id: "worktree-session",
+            agent_type: "codex",
+            state: "running",
+            cwd: "/home/rspurgeon/.local/share/worktrees/kong/kongctl/pr-1561",
+            transcript_path: "/tmp/worktree.jsonl",
+            tty: "pts/22",
+            last_event: "UserPromptSubmit",
+            last_assistant_message: undefined,
+            error_message: undefined,
+            updated_at: "2026-04-08T12:01:00.000Z",
+          },
+        ],
+      })),
+    });
+
+    const payload = JSON.parse(rendered);
+    expect(payload.text).toContain("pr-1561");
+    expect(payload.tooltip).toContain("running  pr-1561");
+  });
+
+  it("shows home sessions after worktree agents within the same state", async () => {
+    const originalHome = process.env.HOME;
+    process.env.HOME = "/home/rspurgeon";
+
+    try {
+      const rendered = await renderWaybarStatus({
+        getAgentStatusSnapshot: vi.fn(async (): Promise<AgentStatusSnapshot> => ({
+          summary: {
+            generated_at: "2026-04-08T12:00:00.000Z",
+            active_sessions: 0,
+            counts: {
+              running: 0,
+              question: 0,
+              idle: 0,
+              error: 0,
+            },
+          },
+          sources: [],
+          sessions: [],
+        })),
+        getAgentsView: vi.fn(async (): Promise<AgentsView> => ({
+          summary: {
+            generated_at: "2026-04-08T12:00:00.000Z",
+            active_sessions: 2,
+            counts: {
+              running: 2,
+              question: 0,
+              idle: 0,
+              error: 0,
+            },
+          },
+          agents: [
+            {
+              agent_type: "codex",
+              state: "running",
+              session_id: "home-session",
+              session_key: "home-sessio",
+              last_event: "UserPromptSubmit",
+              updated_at: "2026-04-08T12:00:00.000Z",
+              cwd: "/home/rspurgeon",
+              tmux: {
+                session_name: "avery",
+                window_name: "avery",
+                pane_index: 0,
+                pane_id: "%1",
+                pane_tty: "pts/21",
+                current_command: "codex",
+                current_path: "/home/rspurgeon",
+              },
+            },
+            {
+              agent_type: "codex",
+              state: "running",
+              session_id: "worktree-session",
+              session_key: "worktree-s",
+              last_event: "UserPromptSubmit",
+              updated_at: "2026-04-08T12:00:00.000Z",
+              cwd: "/home/rspurgeon/.local/share/worktrees/kong/kongctl/pr-1561",
+              tmux: {
+                session_name: "kongctl",
+                window_name: "pr-1561-child-flags",
+                pane_index: 1,
+                pane_id: "%2",
+                pane_tty: "pts/22",
+                current_command: "codex",
+                current_path: "/home/rspurgeon/.local/share/worktrees/kong/kongctl/pr-1561",
+              },
+            },
+          ],
+        })),
+      });
+
+      const text = JSON.parse(rendered).text as string;
+      expect(text).toContain("pr-1561-child-flags");
+      expect(text).toContain("avery");
+      expect(text.indexOf("pr-1561-child-flags")).toBeLessThan(text.indexOf("avery"));
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+    }
+  });
+
   it("streams pulse frames without refreshing agent state every frame", async () => {
     const abortController = new AbortController();
     const writes: string[] = [];

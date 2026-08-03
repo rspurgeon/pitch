@@ -50,6 +50,7 @@ pitch list
 pitch get pr-543-debug-ci
 pitch resume pr-543-debug-ci
 pitch resume pr-543-debug-ci --sync
+pitch rename pr-543-debug-ci debug-ci-followup
 pitch close pr-543-debug-ci
 pitch delete pr-543-debug-ci
 pitch completion zsh > ~/bin/functions/_pitch
@@ -248,6 +249,9 @@ Fixed three-pane layout per workspace:
   `repos.<repo>.pane_commands.bottom_right`
 
 All three panes `cd` to the worktree path on creation.
+New user shell panes receive the selected repository
+context's `env` values. File-backed context values remain
+limited to the agent launch path.
 
 ---
 
@@ -315,7 +319,9 @@ priority order:
    that same named agent
 3. **Workspace overrides** — per-workspace settings from
    `create_workspace` params
-4. **Hardcoded requirements** — args Pitch always sets
+4. **Repository launch context** — named env and file-backed env selected for
+   and persisted with the workspace
+5. **Hardcoded requirements** — args Pitch always sets
    (for example Claude `--session-id` and `--name`, or
    Codex `--cd`)
 
@@ -420,7 +426,7 @@ Coding agents don't natively support multiple accounts, but their behavior can b
 
 Pitch supports this through named entries under `agents`.
 Multiple entries can share the same underlying `type`
-while using different `env` and `args`
+while using different `env`, `env_from_files`, and `args`
 settings. When creating a workspace, you select one of
 those named entries directly:
 
@@ -436,6 +442,15 @@ completely separate set of credentials, settings, and
 session history.
 
 The user sets up each config directory independently (e.g. `CLAUDE_CONFIG_DIR=~/.claude-personal claude auth login`). Pitch doesn't manage authentication — it just points the agent at the right config directory.
+
+File-backed environment variables are configured with an
+`env_from_files` map on an agent, repo agent defaults, or a
+repo agent override. For host environments, Pitch reads
+each file immediately before launching the agent and does
+not persist the resolved value in workspace state. File
+references use the same override precedence as `env`.
+`env_from_files` is not supported for `vm-ssh`
+environments.
 
 ---
 
@@ -700,6 +715,25 @@ is set it starts a fresh session in the same worktree.
 **Parameters:** Same as `resume_workspace`.
 
 **Returns:** Updated workspace record with new agent session entry
+
+### `rename_workspace`
+
+Renames the Pitch workspace identity, state file, and tmux
+window. The git branch, worktree path, and checkout
+identity remain unchanged. This allows ad hoc workspaces
+created with `--name` to be relabeled without moving an
+active checkout.
+
+Active `vm-ssh` workspaces must be closed before renaming
+because their live marker paths include the workspace
+name. Running host agents keep their original internal
+launch name until restarted.
+
+**Parameters:**
+- `name` (string, required) — current workspace name
+- `new_name` (string, required) — replacement workspace name
+
+**Returns:** Renamed workspace record
 
 ### `close_workspace`
 

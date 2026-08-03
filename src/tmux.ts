@@ -28,6 +28,12 @@ export interface KillTmuxWindowParams {
   window_name: string;
 }
 
+export interface RenameTmuxWindowParams {
+  session_name: string;
+  window_name: string;
+  new_window_name: string;
+}
+
 export interface LinkTmuxWindowParams {
   source_session_name: string;
   source_window_name: string;
@@ -43,6 +49,7 @@ export interface CreateTmuxLayoutParams {
   session_name: string;
   window_name: string;
   worktree_path: string;
+  environment?: Record<string, string>;
 }
 
 export interface SendKeysToPaneParams {
@@ -66,6 +73,13 @@ export interface GetTmuxWindowPaneParams {
 
 export interface GetTmuxPaneInfoParams {
   pane_id: string;
+}
+
+export interface CaptureTmuxPaneParams {
+  session_name: string;
+  window_name: string;
+  pane_index?: number;
+  line_count?: number;
 }
 
 export interface TmuxPaneInfo {
@@ -330,6 +344,21 @@ function sessionWindowTarget(sessionName: string): string {
   return `${validateSessionName(sessionName)}:`;
 }
 
+function tmuxEnvironmentArgs(
+  environment: Record<string, string> | undefined,
+): string[] {
+  return Object.entries(environment ?? {}).flatMap(([name, value]) => {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new TmuxError(
+        "COMMAND_FAILED",
+        `Invalid environment variable name: ${name}`,
+      );
+    }
+
+    return ["-e", `${name}=${value}`];
+  });
+}
+
 async function getPaneIds(
   target: string,
   options: TmuxClientOptions = {},
@@ -546,6 +575,16 @@ export async function killTmuxWindow(
 
     throw error;
   }
+}
+
+export async function renameTmuxWindow(
+  params: RenameTmuxWindowParams,
+  options: TmuxClientOptions = {},
+): Promise<void> {
+  const target = windowTarget(params.session_name, params.window_name);
+  const newWindowName = validateWindowName(params.new_window_name);
+
+  await runTmux(["rename-window", "-t", target, newWindowName], options);
 }
 
 export async function linkTmuxWindow(
@@ -885,6 +924,28 @@ export async function getTmuxWindowPaneInfo(
   return parseTmuxWindowPaneInfoOutput(paneId, stdout);
 }
 
+export async function captureTmuxPane(
+  params: CaptureTmuxPaneParams,
+  options: TmuxClientOptions = {},
+): Promise<string[]> {
+  const paneId = await getTmuxWindowPane(
+    {
+      session_name: params.session_name,
+      window_name: params.window_name,
+      pane_index: params.pane_index ?? 0,
+    },
+    options,
+  );
+  const args = ["capture-pane", "-p"];
+  if (params.line_count !== undefined && params.line_count > 0) {
+    args.push("-S", `-${Math.max(0, params.line_count - 1)}`);
+  }
+  args.push("-t", paneId);
+
+  const { stdout } = await runTmux(args, options);
+  return stdout.replace(/\s+$/u, "").split("\n");
+}
+
 export async function createTmuxLayout(
   params: CreateTmuxLayoutParams,
   options: TmuxClientOptions = {},
@@ -911,6 +972,7 @@ export async function createTmuxLayout(
       agentPaneId,
       "-c",
       worktreePath,
+      ...tmuxEnvironmentArgs(params.environment),
       "-P",
       "-F",
       "#{pane_id}",
@@ -927,6 +989,7 @@ export async function createTmuxLayout(
       topRightPaneId,
       "-c",
       worktreePath,
+      ...tmuxEnvironmentArgs(params.environment),
       "-P",
       "-F",
       "#{pane_id}",
