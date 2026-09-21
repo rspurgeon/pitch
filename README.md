@@ -10,6 +10,12 @@ server.
 See [docs/design.md](docs/design.md) for the full design
 document.
 
+See [workspace environments and provisioners](docs/workspace-environments.md)
+for shared terminal/agent configuration and managed external resources.
+Use `pitch list <provisioner>` to inventory tracked resources; `--orphaned`
+finds receipts without a workspace, `--all` includes cleaned-up records, and
+`--verify` checks remote state without changing resources.
+
 ## Prerequisites
 
 - [mise](https://mise.jdx.dev/) — manages required tool
@@ -86,6 +92,11 @@ workspaces must be closed before renaming.
 Pass `--prompt TEXT`, or place trailing text after
 `create` options, to append extra instructions to the
 fresh agent bootstrap prompt.
+
+Bare `pitch` shows the command overview. Use `pitch <command> --help` or
+`pitch help <command>` for its purpose, usage, and relevant options. For example,
+`pitch list konnect_org --help` focuses on provisioner inventory. Bare
+`pitch workspace` explains the optional command prefix.
 
 The `completion zsh` command emits a zsh completion script
 with dynamic workspace-name completion for `get`,
@@ -405,6 +416,8 @@ Each repo requires:
 | `bootstrap_prompts` | Optional repo-specific prompt template overrides for `issue` and `pr` |
 | `pane_commands` | Optional commands for the `top_right` and `bottom_right` tmux panes |
 | `agent_defaults` | Optional repo-wide agent args/env applied to every agent |
+| `env` | Shared environment values for terminal panes and agents |
+| `env_from_files` | Shared file-backed environment values for panes and agents |
 | `agent_overrides` | Optional per-repo overrides keyed by configured agent name |
 | `contexts` | Named workspace-scoped environment selections |
 
@@ -585,12 +598,17 @@ workspace. Each context supports `env` and `env_from_files`, layered after
 agent and repository settings. Select one with `--context NAME`; otherwise
 Pitch uses `default_context`. Resume and restart reuse the saved context.
 
-Values from `env` are also set on newly created user shell panes. This lets
-repo pane commands initialize shell-specific tooling from the selected
-context. Existing panes are not modified when a workspace context changes.
+Repository and context `env` and `env_from_files` apply to both agents and
+new terminal panes. Later bindings override earlier bindings by variable
+name, regardless of whether they use a literal or a file. File-backed values
+are reread when the environment is sourced; the environment file stores paths,
+not copies of those credentials.
 
-File-backed values are reread at launch and are never stored in workspace
-state. To change an active workspace, use `pitch restart NAME --context NAME`.
+Contexts may also select `provisioners` and define templated `generated_files`.
+See [workspace environments](docs/workspace-environments.md) for the protocol,
+examples, cleanup, and recovery commands. Use `pitch refresh NAME` followed
+by sourcing the reported file to update an existing shell without restarting
+it. Use `pitch restart NAME --context NAME` to update the agent environment.
 
 #### `repos.<repo>.bootstrap_prompts`
 

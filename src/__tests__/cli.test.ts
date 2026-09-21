@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { Readable } from "node:stream";
+import { execFileSync } from "node:child_process";
 import type { AgentsView } from "../agents.js";
 import { runCli, type CliDependencies } from "../cli.js";
 import type { AgentStatusSnapshot } from "../agent-status.js";
@@ -128,6 +129,11 @@ function makeDependencies(
   const stderrBuffer: string[] = [];
 
   return {
+    listProvisionerInventory: vi.fn<CliDependencies["listProvisionerInventory"]>(async (input) => ({ kind: "provisioner_inventory", provisioner: input.provisioner, verify: input.verify === true, items: [], warnings: [] })),
+    provisionerCompletionNames: vi.fn(async () => ({ provisioners: [], workspaces: [] })),
+    refreshWorkspaceEnvironment: vi.fn(async () => "/example/environment.sh"),
+    cleanupWorkspaceProvisioner: vi.fn(async () => "example deactivated"),
+    pruneProvisionerHistory: vi.fn(async (input) => ({ dry_run: input.dry_run === true, items: [], warnings: [] })),
     getAgentsView: vi.fn(async (): Promise<AgentsView> => ({
       summary: {
         generated_at: "2026-04-08T12:00:00.000Z",
@@ -307,6 +313,139 @@ function makeDependencies(
 }
 
 describe("runCli", () => {
+  it("previews local pruning and keeps the command read-only when --dry-run is passed", async () => {
+    const dependencies = makeDependencies();
+    expect(await runCli(["prune", "konnect_org", "--dry-run", "--repo", "kong/kongctl", "--json"], dependencies)).toBe(0);
+    expect(dependencies.pruneProvisionerHistory).toHaveBeenCalledWith({ provisioner: "konnect_org", repo: "kong/kongctl", dry_run: true }, expect.any(Object));
+    expect(JSON.parse(dependencies.stdoutBuffer.join(""))).toMatchObject({ command: "prune", result: { dry_run: true } });
+    expect(dependencies.cleanupWorkspaceProvisioner).not.toHaveBeenCalled();
+  });
+
+  it.each([["prune"], ["prune", "example", "--verify"], ["prune", "example", "extra"]])("rejects invalid pruning syntax %j", async (...args) => {
+    const dependencies = makeDependencies();
+    expect(await runCli(args, dependencies)).toBe(1);
+    expect(dependencies.pruneProvisionerHistory).not.toHaveBeenCalled();
+  });
+
+  it("completes retained provisioners and abandoned workspace names", async () => {
+    const dependencies = makeDependencies({ provisionerCompletionNames: vi.fn(async () => ({ provisioners: ["retired_provider"], workspaces: ["abandoned"] })) });
+    expect(await runCli(["__complete-provisioners"], dependencies)).toBe(0);
+    expect(dependencies.stdoutBuffer.join("")).toContain("retired_provider");
+    dependencies.stdoutBuffer.length = 0;
+    expect(await runCli(["__complete-config", "cleanup-workspaces"], dependencies)).toBe(0);
+    expect(dependencies.stdoutBuffer.join("")).toContain("abandoned");
+  });
+
+  it.each(["repos", "agents", "environments"])("completes configured %s", async (kind) => {
+    const dependencies = makeDependencies();
+    expect(await runCli(["__complete-config", kind], dependencies)).toBe(0);
+    const config = await dependencies.loadConfig();
+    expect(dependencies.stdoutBuffer.join("").trim().split("\n")).toEqual(Object.keys(config[kind as "repos" | "agents" | "environments"]).sort());
+  });
+
+  it("loads completion directly and dispatches every public command in zsh", async () => {
+    const dependencies = makeDependencies();
+    await runCli(["completion", "zsh"], dependencies);
+    const completion = dependencies.stdoutBuffer.join("");
+    // Source at top level, as with `source <(pitch completion zsh)`, then
+    // exercise dispatch with zsh's own array/index semantics.
+    const prelude = 'compdef() { print -r -- "registered:$*"; }\n';
+    const commands = ["create", "agents", "agents-popup", "jump", "agent-status", "agent-error", "list", "get", "show",
+      "refresh", "cleanup", "prune", "resume", "restart", "move", "rename", "close", "delete", "status-right", "waybar-status", "view", "completion", "help"];
+    const script = prelude + completion + '\n_arguments() { print -r -- "arguments:$*"; }\n' +
+      '_pitch_complete_workspace_target() { return 1; }\n' +
+      commands.map((command) => `words=(pitch ${command} ''); CURRENT=3; print -r -- 'command:${command}'; _pitch`).join("\n");
+    const output = execFileSync("zsh", ["-f", "-c", script], { encoding: "utf8" });
+    expect(output).toContain("registered:_pitch pitch");
+    for (const command of commands) expect(output).toContain(`command:${command}\narguments:`);
+    expect(output).toContain("1:workspace:_pitch_workspaces");
+    expect(output).toContain("1:provisioner:_pitch_provisioners");
+    expect(output).toContain("--workspace[Workspace name]:workspace:_pitch_cleanup_workspaces");
+    expect(output).toContain("--dry-run[Preview local history removal]");
+    expect(output).toContain("--repo[Repository]:repo:_pitch_repos");
+  });
+
+  it("prints retained inventory rows and exits unsuccessfully when verification fails", async () => {
+    const dependencies = makeDependencies({
+      listProvisionerInventory: vi.fn<CliDependencies["listProvisionerInventory"]>(async () => ({
+        kind: "provisioner_inventory", provisioner: "konnect_org", verify: true,
+        warnings: ["example_com: verification failed.\n  Record: /record.json", "other_com: verification failed."],
+        items: [{ resource_id: "a".repeat(32), record: "/record.json", archived: false,
+          provisioner: "konnect_org", repo: "kong/kongctl", workspace: "example", workspace_status: "missing",
+          status: "orphaned", orphaned: true, lifecycle: "ready", name: "example_com", id: "org-id",
+          environment: "prod", created_at: null, deactivated_at: null, remote_state: null, verification: "failed" }],
+      })),
+    });
+    expect(await runCli(["list", "konnect_org", "--verify"], dependencies)).toBe(1);
+    expect(dependencies.stdoutBuffer.join("")).toContain("example_com");
+    expect(dependencies.stdoutBuffer.join("")).toContain("unverified");
+    expect(dependencies.stderrBuffer.join("")).toBe(
+      "- Warning: example_com: verification failed.\n  Record: /record.json\n- Warning: other_com: verification failed.\n",
+    );
+  });
+
+  it("completes configured provisioner names", async () => {
+    const config = makeConfig();
+    config.provisioners = { konnect_org: { create: ["create"], delete: ["delete"] } };
+    const dependencies = makeDependencies({ loadConfig: vi.fn(async () => config) });
+    expect(await runCli(["__complete-provisioners"], dependencies)).toBe(0);
+    expect(dependencies.stdoutBuffer.join("")).toBe("konnect_org\n");
+  });
+  it("routes provisioner inventory flags without invoking workspace listing", async () => {
+    const dependencies = makeDependencies();
+    const code = await runCli(["list", "konnect_org", "--orphaned", "--all", "--verify", "--repo", "kong/kongctl", "--json"], dependencies);
+    expect(code).toBe(0);
+    expect(dependencies.listProvisionerInventory).toHaveBeenCalledWith({ provisioner: "konnect_org", orphaned: true, all: true, verify: true, repo: "kong/kongctl" }, expect.any(Object));
+    expect(dependencies.listWorkspaces).not.toHaveBeenCalled();
+    expect(JSON.parse(dependencies.stdoutBuffer.join(""))).toMatchObject({ command: "list", result: { kind: "provisioner_inventory", items: [] } });
+  });
+
+  it.each([["list", "--orphaned"], ["list", "konnect_org", "--status", "closed"], ["list", "konnect_org", "extra"]])("rejects ambiguous inventory arguments %j", async (...args) => {
+    const dependencies = makeDependencies();
+    expect(await runCli(args, dependencies)).toBe(1);
+    expect(dependencies.listProvisionerInventory).not.toHaveBeenCalled();
+  });
+  it("refreshes a workspace environment and prints only its file path", async () => {
+    const dependencies = makeDependencies();
+    expect(await runCli(["refresh", "example"], dependencies)).toBe(0);
+    expect(dependencies.refreshWorkspaceEnvironment).toHaveBeenCalledWith("example", expect.any(Object));
+    expect(dependencies.stdoutBuffer.join("")).toBe("/example/environment.sh\n");
+  });
+
+  it.each([
+    ["env", "refresh", "example"], ["refresh"], ["refresh", "one", "two"],
+    ["refresh", "example", "--force"], ["cleanup", "example"],
+    ["cleanup", "--workspace", "example"], ["cleanup", "example", "--workspace", "test", "--force"],
+    ["show"], ["show", "example", "--verify"],
+  ])("rejects invalid maintenance arguments %j", async (...args) => {
+    const dependencies = makeDependencies();
+    expect(await runCli(args, dependencies)).toBe(1);
+    expect(dependencies.refreshWorkspaceEnvironment).not.toHaveBeenCalled();
+    expect(dependencies.cleanupWorkspaceProvisioner).not.toHaveBeenCalled();
+    expect(dependencies.getWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("cleans up only the selected provisioner and supports JSON", async () => {
+    const dependencies = makeDependencies();
+    expect(await runCli(["cleanup", "example", "--workspace", "test", "--repo", "owner/repo", "--json"], dependencies)).toBe(0);
+    expect(dependencies.cleanupWorkspaceProvisioner).toHaveBeenCalledWith("example", "test", expect.any(Object), "owner/repo");
+    expect(JSON.parse(dependencies.stdoutBuffer.join(""))).toMatchObject({ command: "cleanup", result: "example deactivated" });
+  });
+
+  it("shows workspace details including its environment file without refreshing", async () => {
+    const dependencies = makeDependencies();
+    const workspace = await dependencies.getWorkspace({ name: "example" });
+    vi.mocked(dependencies.getWorkspace).mockResolvedValue({ ...workspace, environment_file: "/example/environment.sh" });
+    expect(await runCli(["show", "example"], dependencies)).toBe(0);
+    expect(dependencies.stdoutBuffer.join("")).toContain("environment file: /example/environment.sh");
+    expect(dependencies.refreshWorkspaceEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("returns the refresh path as a JSON result when requested", async () => {
+    const dependencies = makeDependencies();
+    expect(await runCli(["refresh", "example", "--json"], dependencies)).toBe(0);
+    expect(JSON.parse(dependencies.stdoutBuffer.join(""))).toMatchObject({ command: "refresh", result: "/example/environment.sh" });
+  });
   it("renders agents with tmux targets", async () => {
     const dependencies = makeDependencies();
 
@@ -1671,51 +1810,71 @@ describe("runCli", () => {
     );
   });
 
-  it("prints help for an empty invocation", async () => {
+  it.each([[], ["--help"], ["help"]])("prints the overview only for root help %j", async (...args) => {
     const dependencies = makeDependencies();
+    expect(await runCli(args, dependencies)).toBe(0);
+    const output = dependencies.stdoutBuffer.join("");
+    expect(output).toContain("Commands:");
+    expect(output).toContain("Run pitch <command> --help");
+    expect(output).not.toContain("--additional-dir PATH");
+  });
 
-    const exitCode = await runCli([], dependencies);
+  it.each([["workspace"], ["workspace", "--help"], ["help", "workspace"]])("explains the workspace prefix for %j", async (...args) => {
+    const dependencies = makeDependencies();
+    expect(await runCli(args, dependencies)).toBe(0);
+    const output = dependencies.stdoutBuffer.join("");
+    expect(output).toContain("Optional prefix for Pitch commands");
+    expect(output).toContain("pitch workspace show NAME    = pitch show NAME");
+    expect(output).not.toContain("Commands:");
+    expect(output).not.toContain("--issue");
+  });
 
-    expect(exitCode).toBe(0);
-    expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch [create] (--issue N | --pr N) [--slug SLUG] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [options]",
-    );
-    expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch [create] --name NAME [--branch BRANCH] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [options]",
-    );
-    expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch move <name> --to SESSION",
-    );
-    expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch rename <name> <new-name>",
-    );
-    expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch delete <name> [--force]",
-    );
-    expect(dependencies.stdoutBuffer.join("")).toContain(
-      "pitch resume <name> [--agent AGENT] [--environment ENV] [--context CONTEXT] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [--reset-session] [--sync]",
-    );
-    expect(dependencies.stdoutBuffer.join("")).toContain(
-      "  --additional-dir PATH",
-    );
-    expect(dependencies.stdoutBuffer.join("")).toContain(
-      "  --session-id ID",
-    );
-    expect(dependencies.stdoutBuffer.join("")).toContain(
-      "  --reset-session",
-    );
-    expect(dependencies.stdoutBuffer.join("")).toContain(
-      "  --prompt TEXT",
-    );
-    expect(dependencies.stdoutBuffer.join("")).toContain(
-      "  --group-by FIELD",
-    );
-    expect(dependencies.stdoutBuffer.join("")).toContain(
-      "If --issue, --pr, or --name is provided without an explicit command,",
-    );
-    expect(dependencies.stdoutBuffer.join("")).toContain(
-      "Trailing PROMPT text on create is appended to the bootstrap prompt.",
-    );
+  it.each([["show", "--help"], ["help", "show"], ["workspace", "show", "--help"]])("prints focused command help for %j", async (...args) => {
+    const dependencies = makeDependencies();
+    expect(await runCli(args, dependencies)).toBe(0);
+    const output = dependencies.stdoutBuffer.join("");
+    expect(output).toContain("Show saved workspace details");
+    expect(output).toContain("show <name>");
+    expect(output).toContain("--json");
+    expect(output).not.toContain("Commands:");
+    expect(output).not.toContain("--repo");
+    expect(dependencies.getWorkspace).not.toHaveBeenCalled();
+    expect(dependencies.loadConfig).not.toHaveBeenCalled();
+  });
+
+  it("focuses provider list help on inventory flags", async () => {
+    const dependencies = makeDependencies();
+    expect(await runCli(["list", "konnect_org", "--help"], dependencies)).toBe(0);
+    const output = dependencies.stdoutBuffer.join("");
+    expect(output).toContain("--orphaned");
+    expect(output).toContain("--verify");
+    expect(output).not.toContain("--sort");
+    expect(output).not.toContain("--status");
+    expect(dependencies.listProvisionerInventory).not.toHaveBeenCalled();
+  });
+
+  it.each(["create", "agents", "agents-popup", "jump", "agent-status", "agent-error", "list",
+    "get", "resume", "restart", "move", "rename", "close", "delete", "refresh", "cleanup",
+    "prune", "status-right", "waybar-status", "view", "completion"])("provides focused help for %s", async (command) => {
+    const dependencies = makeDependencies();
+    expect(await runCli([command, "--help"], dependencies)).toBe(0);
+    const output = dependencies.stdoutBuffer.join("");
+    expect(output).toContain("Usage:");
+    expect(output).toContain(`pitch ${command}`);
+    expect(output).toContain("--help");
+    expect(output).not.toContain("Commands:");
+    expect(dependencies.loadConfig).not.toHaveBeenCalled();
+  });
+
+  it("shows create help for implicit creation and rejects unknown help topics", async () => {
+    const dependencies = makeDependencies();
+    expect(await runCli(["--issue", "42", "--help"], dependencies)).toBe(0);
+    expect(dependencies.stdoutBuffer.join("")).toContain("Create a workspace");
+    expect(dependencies.createWorkspace).not.toHaveBeenCalled();
+    expect(await runCli(["help", "--name", "example"], dependencies)).toBe(0);
+    expect(dependencies.createWorkspace).not.toHaveBeenCalled();
+    expect(await runCli(["unknown", "--help"], dependencies)).toBe(1);
+    expect(dependencies.stderrBuffer.join("")).toContain("Unknown command: unknown");
   });
 
   it("prints zsh completion script", async () => {
@@ -1777,7 +1936,7 @@ describe("runCli", () => {
       "'--branch[Ad hoc git branch name]:branch:'",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
-      "'--session-id[Resume an existing agent session id]:session id:'",
+      "'--session-id[Resume an existing agent session id]:session id:_pitch_sessions'",
     );
     expect(dependencies.stdoutBuffer.join("")).toContain(
       "'--to[Target tmux session]:session:_pitch_tmux_sessions'",

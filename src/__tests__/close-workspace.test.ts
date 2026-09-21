@@ -92,6 +92,8 @@ function makeDependencies(
   overrides: Partial<WorkspaceLifecycleDependencies> = {},
 ): WorkspaceLifecycleDependencies {
   return {
+    cleanupWorkspaceResources: vi.fn(async () => {}),
+    automaticallyPruneHistory: vi.fn(async () => {}),
     deleteBranchIfEmpty: vi.fn(async () => ({
       deleted: false,
     })),
@@ -335,6 +337,16 @@ describe("close workspace", () => {
 });
 
 describe("delete workspace", () => {
+  it("retains the workspace and worktree when managed resource cleanup fails", async () => {
+    const config = makeConfig();
+    const dependencies = makeDependencies({
+      cleanupWorkspaceResources: vi.fn(async () => { throw new Error("deactivation failed"); }),
+    });
+    await expect(deleteWorkspace({ name: "gh-42-fix-bug" }, config, dependencies)).rejects.toThrow("deactivation failed");
+    expect(dependencies.automaticallyPruneHistory).not.toHaveBeenCalled();
+    expect(dependencies.removeWorktree).not.toHaveBeenCalled();
+    expect(dependencies.deleteWorkspaceRecord).not.toHaveBeenCalled();
+  });
   it("deletes a closed workspace and its worktree by default", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies({
@@ -374,6 +386,7 @@ describe("delete workspace", () => {
       base_branch: "main",
     });
     expect(dependencies.removeCodexTrustedPath).toHaveBeenCalled();
+    expect(dependencies.automaticallyPruneHistory).toHaveBeenCalledWith(config, dependencies.reportWarning);
     expect(dependencies.deleteOpencodeConfig).toHaveBeenCalledWith(
       "gh-42-fix-bug",
     );

@@ -1,3 +1,5 @@
+import { automaticallyPruneHistory } from "./provisioner-pruning.js";
+import { cleanupWorkspaceResources } from "./workspace-resources.js";
 import { rm } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -48,6 +50,8 @@ export type CloseWorkspaceInput = z.infer<typeof CloseWorkspaceInputSchema>;
 export type DeleteWorkspaceInput = z.infer<typeof DeleteWorkspaceInputSchema>;
 
 export interface WorkspaceLifecycleDependencies {
+  cleanupWorkspaceResources: typeof cleanupWorkspaceResources;
+  automaticallyPruneHistory: typeof automaticallyPruneHistory;
   deleteBranchIfEmpty: typeof deleteBranchIfEmpty;
   deleteOpencodeConfig: typeof deleteOpencodeConfig;
   deleteWorkspaceRecord: typeof deleteWorkspaceRecord;
@@ -70,6 +74,8 @@ export type CloseWorkspaceDependencies = WorkspaceLifecycleDependencies;
 export type DeleteWorkspaceDependencies = WorkspaceLifecycleDependencies;
 
 const defaultDependencies: WorkspaceLifecycleDependencies = {
+  cleanupWorkspaceResources,
+  automaticallyPruneHistory,
   deleteBranchIfEmpty,
   deleteOpencodeConfig,
   deleteWorkspaceRecord,
@@ -577,6 +583,8 @@ export async function deleteWorkspace(
     }
   }
 
+  await dependencies.cleanupWorkspaceResources(existingWorkspace.resource_id);
+
   try {
     await dependencies.deleteOpencodeConfig(existingWorkspace.name);
   } catch {
@@ -592,6 +600,7 @@ export async function deleteWorkspace(
       dependencies,
     );
     await deleteWorkspaceState(existingWorkspace.name, dependencies);
+    await dependencies.automaticallyPruneHistory(config, dependencies.reportWarning);
     return closedWorkspace;
   }
 
@@ -630,6 +639,7 @@ export async function deleteWorkspace(
   );
 
   await deleteWorkspaceState(existingWorkspace.name, dependencies);
+  await dependencies.automaticallyPruneHistory(config, dependencies.reportWarning);
   return closedWorkspace;
 }
 

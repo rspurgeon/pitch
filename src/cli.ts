@@ -1,4 +1,8 @@
+import { buildHelpText, helpCommandNames } from "./cli-help.js";
+import { formatPruneResult, pruneProvisionerHistory } from "./provisioner-pruning.js";
 import { createInterface } from "node:readline/promises";
+import { cleanupWorkspaceProvisioner, refreshWorkspaceEnvironment } from "./workspace-maintenance.js";
+import { formatProvisionerInventory, listProvisionerInventory, provisionerCompletionNames } from "./provisioner-inventory.js";
 import { basename } from "node:path";
 import {
   stdin as defaultStdin,
@@ -46,6 +50,10 @@ import { shellEscape } from "./shell.js";
 import { displayTmuxMenu, listTmuxSessions } from "./tmux.js";
 
 type CliVerb =
+  | "refresh"
+  | "show"
+  | "cleanup"
+  | "prune"
   | "create"
   | "agents"
   | "agents-popup"
@@ -65,7 +73,9 @@ type CliVerb =
   | "view"
   | "completion"
   | "__complete-workspaces"
+  | "__complete-config"
   | "__complete-contexts"
+  | "__complete-provisioners"
   | "__complete-tmux-sessions";
 type FlagValue = boolean | string | string[];
 
@@ -92,7 +102,9 @@ interface JsonCommandResult {
     CliVerb,
     | "completion"
     | "__complete-workspaces"
+    | "__complete-config"
     | "__complete-contexts"
+    | "__complete-provisioners"
     | "__complete-tmux-sessions"
   >;
   result:
@@ -106,6 +118,11 @@ interface JsonCommandResult {
 }
 
 export interface CliDependencies {
+  listProvisionerInventory: typeof listProvisionerInventory;
+  provisionerCompletionNames: typeof provisionerCompletionNames;
+  refreshWorkspaceEnvironment: typeof refreshWorkspaceEnvironment;
+  cleanupWorkspaceProvisioner: typeof cleanupWorkspaceProvisioner;
+  pruneProvisionerHistory: typeof pruneProvisionerHistory;
   getAgentsView: typeof getAgentsView;
   jumpToAgentSession: typeof jumpToAgentSession;
   displayTmuxMenu: typeof displayTmuxMenu;
@@ -130,6 +147,11 @@ export interface CliDependencies {
 }
 
 const defaultDependencies: CliDependencies = {
+  listProvisionerInventory,
+  provisionerCompletionNames,
+  refreshWorkspaceEnvironment,
+  cleanupWorkspaceProvisioner,
+  pruneProvisionerHistory,
   getAgentsView,
   jumpToAgentSession,
   displayTmuxMenu,
@@ -154,6 +176,10 @@ const defaultDependencies: CliDependencies = {
 };
 
 const BOOLEAN_FLAGS = new Set([
+  "dry-run",
+  "all",
+  "orphaned",
+  "verify",
   "delete-branch-if-empty",
   "exit-on-jump",
   "help",
@@ -168,6 +194,7 @@ const BOOLEAN_FLAGS = new Set([
 ]);
 
 const STRING_FLAGS = new Set([
+  "workspace",
   "additional-dir",
   "agent",
   "agent-type",
@@ -248,6 +275,10 @@ function hasImplicitCreateFlags(flags: Map<string, FlagValue>): boolean {
 function isCliVerbToken(token: string): token is CliVerb {
   return (
     token === "create" ||
+    token === "refresh" ||
+    token === "show" ||
+    token === "cleanup" ||
+    token === "prune" ||
     token === "agents" ||
     token === "agents-popup" ||
     token === "jump" ||
@@ -266,7 +297,9 @@ function isCliVerbToken(token: string): token is CliVerb {
     token === "view" ||
     token === "completion" ||
     token === "__complete-workspaces" ||
+    token === "__complete-config" ||
     token === "__complete-contexts" ||
+    token === "__complete-provisioners" ||
     token === "__complete-tmux-sessions"
   );
 }
@@ -374,18 +407,18 @@ function parseArgs(argv: string[]): ParsedArgs {
       return {
         verb: "help",
         flags,
-        positionals: [],
+        positionals: ["workspace"],
       };
     }
 
-    if (hasImplicitCreateFlags(flags) && !isCliVerbToken(remaining[0])) {
+    if (hasImplicitCreateFlags(flags) && remaining[0] !== "help" && !isCliVerbToken(remaining[0])) {
       return {
         verb: "create",
         flags,
         positionals: remaining,
       };
     }
-  } else if (hasImplicitCreateFlags(flags) && !isCliVerbToken(remaining[0])) {
+  } else if (hasImplicitCreateFlags(flags) && remaining[0] !== "help" && !isCliVerbToken(remaining[0])) {
     return {
       verb: "create",
       flags,
@@ -394,11 +427,11 @@ function parseArgs(argv: string[]): ParsedArgs {
   }
 
   const verbToken = maybeAlias === "workspace" ? remaining.shift() : remaining.shift();
-  if (verbToken === undefined) {
+  if (verbToken === undefined || verbToken === "help") {
     return {
       verb: "help",
       flags,
-      positionals: remaining,
+      positionals: maybeAlias === "workspace" ? ["workspace", ...remaining] : remaining,
     };
   }
 
@@ -1112,6 +1145,7 @@ function formatWorkspaceSummary(workspace: WorkspaceRecord): string {
     `agent: ${workspace.agent_name} (${workspace.agent_type})`,
     `environment: ${workspace.environment_name ?? workspace.environment_kind ?? "host"}`,
     `context: ${workspace.context_name ?? "none"}`,
+    ...(workspace.environment_file ? [`environment file: ${workspace.environment_file}`] : []),
     `worktree: ${workspace.worktree_path}`,
     `tmux: ${workspace.tmux_session}:${workspace.tmux_window}`,
   ];
@@ -1305,72 +1339,6 @@ function buildAgentMenuRows(
   );
 }
 
-function buildHelpText(): string {
-  return [
-    "Usage:",
-    "  pitch [create] (--issue N | --pr N) [--slug SLUG] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [options] [PROMPT...]",
-    "  pitch [create] --name NAME [--branch BRANCH] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [options] [PROMPT...]",
-    "  pitch agents [--pick]",
-    "  pitch agents-popup",
-    "  pitch jump <session-id-or-prefix>",
-    "  pitch agent-status",
-    "  pitch agent-error --agent-type TYPE --session-id ID --message TEXT",
-    "  pitch list [--repo REPO] [--status active|closed|all] [--sort FIELD[,FIELD...]] [--group-by FIELD]",
-    "  pitch get <name>",
-    "  pitch resume <name> [--agent AGENT] [--environment ENV] [--context CONTEXT] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [--reset-session] [--sync]",
-    "  pitch restart <name> [--agent AGENT] [--environment ENV] [--context CONTEXT] [--session-id ID] [--tmux-session SESSION] [--additional-dir PATH]... [--reset-session] [--sync]",
-    "  pitch move <name> --to SESSION",
-    "  pitch rename <name> <new-name>",
-    "  pitch close <name>",
-    "  pitch delete <name> [--force]",
-    "  pitch status-right [--separator TEXT]",
-    "  pitch waybar-status [--watch]",
-    "  pitch view [--keep-open-on-jump]",
-    "  pitch completion zsh",
-    "  pitch workspace <command> ...",
-    "",
-    "Options:",
-    "  --repo REPO",
-    "  --separator TEXT",
-    "  --issue N",
-    "  --pr N",
-    "  --name NAME",
-    "  --slug SLUG",
-    "  --branch BRANCH",
-    "  --base-branch BRANCH",
-    "  --agent AGENT",
-    "  --agent-type codex|claude",
-    "  --additional-dir PATH",
-    "  --environment ENV",
-    "  --context CONTEXT",
-    "  --cwd PATH",
-    "  --transcript-path PATH",
-    "  --tty TTY",
-    "  --session-id ID",
-    "  --tmux-session SESSION",
-    "  --to SESSION",
-    "  --reset-session",
-    "  --message TEXT",
-    "  --sync",
-    "  --model MODEL",
-    "  --prompt TEXT",
-    "  --skip-prompt",
-    "  --force",
-    "  --pick",
-    "  --status active|closed|all",
-    "  --sort FIELD[,FIELD...]",
-    "  --group-by FIELD",
-    "  --exit-on-jump",
-    "  --keep-open-on-jump",
-    "  --json",
-    "  --help",
-    "",
-    "If --issue, --pr, or --name is provided without an explicit command,",
-    "create is implied.",
-    "Trailing PROMPT text on create is appended to the bootstrap prompt.",
-  ].join("\n");
-}
-
 function buildZshCompletionScript(): string {
   return [
     "#compdef pitch",
@@ -1388,6 +1356,25 @@ function buildZshCompletionScript(): string {
     "  (( ${#sessions[@]} )) || return 1",
     "  _describe -t tmux-sessions 'tmux session' sessions",
     "}",
+    "",
+    "_pitch_provisioners() {",
+    "  local -a providers",
+    "  providers=(\"${(@f)$(pitch __complete-provisioners 2>/dev/null)}\")",
+    "  (( ${#providers} )) || return 1",
+    "  _values 'provisioner' $providers",
+    "}",
+    "",
+    "_pitch_config_values() {",
+    "  local -a candidates",
+    "  candidates=(\"${(@f)$(pitch __complete-config \"$1\" 2>/dev/null)}\")",
+    "  (( ${#candidates[@]} )) || return 1",
+    "  compadd -- \"${candidates[@]}\"",
+    "}",
+    "_pitch_repos() { _pitch_config_values repos }",
+    "_pitch_agents() { _pitch_config_values agents }",
+    "_pitch_environments() { _pitch_config_values environments }",
+    "_pitch_sessions() { _pitch_config_values sessions }",
+    "_pitch_cleanup_workspaces() { _pitch_config_values cleanup-workspaces }",
     "",
     "_pitch_contexts() {",
     "  local -a pitch_contexts",
@@ -1420,19 +1407,28 @@ function buildZshCompletionScript(): string {
     "  CURRENT=$(( CURRENT - command_index + 1 ))",
     "  command_index=1",
     "  case \"$cmd\" in",
+    "    refresh|show)",
+    "      _arguments -s -S '1:workspace:_pitch_workspaces' '--json[Emit JSON]' '--help[Show help]'",
+    "      ;;",
+    "    prune)",
+    "      _arguments -s -S '1:provisioner:_pitch_provisioners' '--repo[Repository]:repo:_pitch_repos' '--dry-run[Preview local history removal]' '--json[Emit JSON]' '--help[Show help]'",
+    "      ;;",
+    "    cleanup)",
+    "      _arguments -s -S '1:provisioner:_pitch_provisioners' '--workspace[Workspace name]:workspace:_pitch_cleanup_workspaces' '--repo[Repository]:repo:_pitch_repos' '--json[Emit JSON]' '--help[Show help]'",
+    "      ;;",
     "    create)",
     "      _arguments -s -S \\",
-    "        '--repo[GitHub org/repo]:repo:' \\",
+    "        '--repo[GitHub org/repo]:repo:_pitch_repos' \\",
     "        '--issue[Issue number]:issue:' \\",
     "        '--pr[Pull request number]:pr:' \\",
     "        '--name[Ad hoc workspace name]:name:' \\",
     "        '--slug[Optional workspace slug suffix]:slug:' \\",
     "        '--branch[Ad hoc git branch name]:branch:' \\",
     "        '--base-branch[Base branch]:branch:' \\",
-    "        '--agent[Configured agent]:agent:' \\",
-        "        '--environment[Execution environment]:environment:' \\",
+    "        '--agent[Configured agent]:agent:_pitch_agents' \\",
+        "        '--environment[Execution environment]:environment:_pitch_environments' \\",
         "        '--context[Repository launch context]:context:_pitch_contexts' \\",
-    "        '--session-id[Resume an existing agent session id]:session id:' \\",
+    "        '--session-id[Resume an existing agent session id]:session id:_pitch_sessions' \\",
     "        '--tmux-session[Target tmux session]:session:_pitch_tmux_sessions' \\",
     "        '*--additional-dir[Additional directory to grant to the agent]:path:_files -/' \\",
     "        '*--add-dir[Alias for --additional-dir]:path:_files -/' \\",
@@ -1457,7 +1453,7 @@ function buildZshCompletionScript(): string {
     "      _arguments -s -S \\",
     "        '--json[Emit JSON]' \\",
     "        '--help[Show help]' \\",
-    "        '1:session-id-or-prefix:'",
+    "        '1:session-id-or-prefix:_pitch_sessions'",
     "      ;;",
     "    agent-status)",
     "      _arguments -s -S \\",
@@ -1477,12 +1473,16 @@ function buildZshCompletionScript(): string {
     "      ;;",
     "    list)",
     "      _arguments -s -S \\",
-    "        '--repo[GitHub org/repo]:repo:' \\",
+    "        '--repo[GitHub org/repo]:repo:_pitch_repos' \\",
     "        '--status[Workspace status]:status:(active closed all)' \\",
     "        '--sort[Comma-separated workspace sort fields]:sort:(status name source repo agent tmux source_kind source_number agent_name agent_type tmux_session tmux_window)' \\",
     "        '--group-by[Workspace grouping field]:field:(status name source repo agent tmux source_kind source_number agent_name agent_type tmux_session tmux_window)' \\",
     "        '--json[Emit JSON]' \\",
-    "        '--help[Show help]'",
+    "        '--all[Include deactivated records]' \\",
+    "        '--orphaned[Records without workspace ownership]' \\",
+    "        '--verify[Check remote state]' \\",
+    "        '--help[Show help]' \\",
+    "        '1:provisioner:_pitch_provisioners'",
     "      ;;",
     "    get)",
     "      _pitch_complete_workspace_target \"$command_index\" && return",
@@ -1496,10 +1496,10 @@ function buildZshCompletionScript(): string {
     "      _pitch_complete_workspace_target \"$command_index\" && return",
     "      _arguments -s -S \\",
     "        '--name[Workspace name]:workspace:_pitch_workspaces' \\",
-    "        '--agent[Configured agent]:agent:' \\",
-        "        '--environment[Execution environment]:environment:' \\",
+    "        '--agent[Configured agent]:agent:_pitch_agents' \\",
+        "        '--environment[Execution environment]:environment:_pitch_environments' \\",
         "        '--context[Repository launch context]:context:_pitch_contexts' \\",
-    "        '--session-id[Resume an existing agent session id]:session id:' \\",
+    "        '--session-id[Resume an existing agent session id]:session id:_pitch_sessions' \\",
     "        '--tmux-session[Target tmux session]:session:_pitch_tmux_sessions' \\",
     "        '*--additional-dir[Additional directory to grant to the agent]:path:_files -/' \\",
     "        '*--add-dir[Alias for --additional-dir]:path:_files -/' \\",
@@ -1565,6 +1565,9 @@ function buildZshCompletionScript(): string {
     "        '--keep-open-on-jump[Keep pitch view open after goto]' \\",
     "        '--help[Show help]'",
     "      ;;",
+    "    help)",
+    `      _arguments '1:command:(${helpCommandNames.join(" ")})' '--help[Show help]'`,
+    "      ;;",
     "    completion)",
     "      _arguments '1:shell:(zsh)'",
     "      ;;",
@@ -1586,6 +1589,10 @@ function buildZshCompletionScript(): string {
     "      'agent-status[Inspect live agent hook state]' \\",
     "      'agent-error[Record an explicit agent error state]' \\",
     "      'list[List workspaces]' \\",
+    "      'show[Show workspace details]' \\",
+    "      'refresh[Refresh workspace environment]' \\",
+    "      'cleanup[Clean up a workspace provisioner]' \\",
+    "      'prune[Remove expired local provisioner history]' \\",
     "      'get[Show a workspace]' \\",
     "      'resume[Resume a workspace]' \\",
     "      'restart[Restart the agent process in a workspace]' \\",
@@ -1596,6 +1603,7 @@ function buildZshCompletionScript(): string {
     "      'status-right[Render an agent status-right segment]' \\",
     "      'waybar-status[Render Waybar agent status JSON]' \\",
     "      'view[Open the workspace TUI]' \\",
+    "      'help[Show help]' \\",
     "      'completion[Generate shell completion]' \\",
     "      'workspace[Compatibility alias for workspace lifecycle commands]'",
     "    return",
@@ -1616,6 +1624,10 @@ function buildZshCompletionScript(): string {
     "        'agent-status[Inspect live agent hook state]' \\",
     "        'agent-error[Record an explicit agent error state]' \\",
     "        'list[List workspaces]' \\",
+    "        'show[Show workspace details]' \\",
+    "        'refresh[Refresh workspace environment]' \\",
+    "        'cleanup[Clean up a workspace provisioner]' \\",
+    "        'prune[Remove expired local provisioner history]' \\",
     "        'get[Show a workspace]' \\",
     "        'resume[Resume a workspace]' \\",
     "        'restart[Restart the agent process in a workspace]' \\",
@@ -1626,6 +1638,7 @@ function buildZshCompletionScript(): string {
     "        'status-right[Render an agent status-right segment]' \\",
     "        'waybar-status[Render Waybar agent status JSON]' \\",
     "        'view[Open the workspace TUI]' \\",
+    "        'help[Show help]'",
     "        'completion[Generate shell completion]'",
     "      return",
     "    fi",
@@ -1636,7 +1649,11 @@ function buildZshCompletionScript(): string {
     "  _pitch_dispatch \"${words[2]}\" 2",
     "}",
     "",
-    "_pitch \"$@\"",
+    "if [[ $ZSH_EVAL_CONTEXT == *shfunc* ]]; then",
+    "  _pitch \"$@\"",
+    "else",
+    "  compdef _pitch pitch",
+    "fi",
   ].join("\n");
 }
 
@@ -1645,7 +1662,7 @@ function writeWarnings(
   dependencies: CliDependencies,
 ): void {
   for (const warning of warnings) {
-    dependencies.stderr.write(`Warning: ${warning}\n`);
+    dependencies.stderr.write(`- Warning: ${warning}\n`);
   }
 }
 
@@ -1764,6 +1781,9 @@ async function executeCommand(
     case "list":
       ensureNoExtraPositionals(parsed.positionals, parsed.verb);
       {
+        if (["all", "orphaned", "verify"].some((flag) => parsed.flags.has(flag))) {
+          throw new Error("--all, --orphaned and --verify require a provisioner name: pitch list <provisioner>");
+        }
         const sortKeys = buildListSort(parsed.flags);
         const groupBy = buildListGroupBy(parsed.flags);
         const workspaces = sortWorkspaceSummaries(
@@ -1779,6 +1799,37 @@ async function executeCommand(
               : groupWorkspaceSummaries(workspaces, groupBy),
           warnings: [],
         };
+      }
+    case "refresh": {
+      if (parsed.positionals.length !== 1) throw new Error("Usage: pitch refresh <workspace>");
+      for (const flag of parsed.flags.keys()) {
+        if (flag !== "json") throw new Error(`Option --${flag} is not supported for refresh`);
+      }
+      return {
+        command: parsed.verb,
+        result: await dependencies.refreshWorkspaceEnvironment(parsed.positionals[0], await dependencies.loadConfig()),
+        warnings: [],
+      };
+    }
+    case "cleanup": {
+      const workspace = readStringFlag(parsed.flags, "workspace");
+      if (parsed.positionals.length !== 1 || !workspace) {
+        throw new Error("Usage: pitch cleanup <provisioner> --workspace NAME [--repo owner/repo]");
+      }
+      for (const flag of parsed.flags.keys()) {
+        if (!["workspace", "repo", "json"].includes(flag)) throw new Error(`Option --${flag} is not supported for cleanup`);
+      }
+      return {
+        command: parsed.verb,
+        result: await dependencies.cleanupWorkspaceProvisioner(parsed.positionals[0], workspace,
+          await dependencies.loadConfig(), readStringFlag(parsed.flags, "repo")),
+        warnings: [],
+      };
+    }
+    case "show":
+      if (parsed.positionals.length !== 1) throw new Error("Usage: pitch show <workspace>");
+      for (const flag of parsed.flags.keys()) {
+        if (flag !== "json") throw new Error(`Option --${flag} is not supported for show`);
       }
     case "get":
       return {
@@ -1932,10 +1983,13 @@ async function executeCommand(
         result: await dependencies.renderWaybarStatus(),
         warnings: [],
       };
+    case "prune":
     case "view":
     case "completion":
     case "__complete-workspaces":
+    case "__complete-config":
     case "__complete-contexts":
+    case "__complete-provisioners":
     case "__complete-tmux-sessions":
       return null;
   }
@@ -2047,8 +2101,50 @@ export async function runCli(
   try {
     const parsed = parseArgs(argv);
     if (parsed.verb === "help") {
-      dependencies.stdout.write(`${buildHelpText()}\n`);
+      dependencies.stdout.write(`${buildHelpText(parsed.positionals, hasImplicitCreateFlags(parsed.flags))}\n`);
       return 0;
+    }
+
+    if (parsed.verb === "list" && parsed.positionals.length > 0) {
+      if (parsed.positionals.length !== 1) throw new Error("Usage: pitch list <provisioner> [--orphaned] [--all] [--verify]");
+      for (const flag of parsed.flags.keys()) {
+        if (!["repo", "orphaned", "all", "verify", "json"].includes(flag)) {
+          throw new Error(`Option --${flag} is not supported for provisioner inventory`);
+        }
+      }
+      const config = await dependencies.loadConfig();
+      const inventory = await dependencies.listProvisionerInventory({
+        provisioner: parsed.positionals[0], repo: readStringFlag(parsed.flags, "repo"),
+        orphaned: readBooleanFlag(parsed.flags, "orphaned"), all: readBooleanFlag(parsed.flags, "all"),
+        verify: readBooleanFlag(parsed.flags, "verify"),
+      }, config);
+      if (readBooleanFlag(parsed.flags, "json")) {
+        const { warnings, ...result } = inventory;
+        dependencies.stdout.write(`${JSON.stringify({ command: "list", result, warnings }, null, 2)}\n`);
+      } else {
+        dependencies.stdout.write(formatProvisionerInventory(inventory));
+        writeWarnings(inventory.warnings, dependencies);
+      }
+      return inventory.verify && inventory.items.some((item) => item.verification !== "verified") ? 1 : 0;
+    }
+
+    if (parsed.verb === "prune") {
+      if (parsed.positionals.length !== 1) throw new Error("Usage: pitch prune <provisioner> [--repo REPO] [--dry-run]");
+      for (const flag of parsed.flags.keys()) {
+        if (!["repo", "dry-run", "json"].includes(flag)) throw new Error(`Option --${flag} is not supported for prune`);
+      }
+      const result = await dependencies.pruneProvisionerHistory({
+        provisioner: parsed.positionals[0], repo: readStringFlag(parsed.flags, "repo"),
+        dry_run: readBooleanFlag(parsed.flags, "dry-run"),
+      }, await dependencies.loadConfig());
+      if (readBooleanFlag(parsed.flags, "json")) {
+        const { warnings, ...data } = result;
+        dependencies.stdout.write(`${JSON.stringify({ command: "prune", result: data, warnings }, null, 2)}\n`);
+      } else {
+        dependencies.stdout.write(formatPruneResult(result));
+        writeWarnings(result.warnings, dependencies);
+      }
+      return result.warnings.length ? 1 : 0;
     }
 
     if (parsed.verb === "completion") {
@@ -2069,6 +2165,25 @@ export async function runCli(
       return 0;
     }
 
+    if (parsed.verb === "__complete-config") {
+      const kind = parsed.positionals[0];
+      let names: string[];
+      if (kind === "sessions") {
+        names = (await dependencies.getAgentsView()).agents.map((agent) => agent.session_id);
+      } else if (kind === "cleanup-workspaces") {
+        names = [...(await dependencies.listWorkspaces({ status: "all" })).map((workspace) => workspace.name),
+          ...(await dependencies.provisionerCompletionNames()).workspaces];
+      } else {
+        const config = await dependencies.loadConfig();
+        if (kind === "repos") names = Object.keys(config.repos);
+        else if (kind === "agents") names = Object.keys(config.agents);
+        else if (kind === "environments") names = Object.keys(config.environments);
+        else throw new Error("Unknown completion category");
+      }
+      if (names.length) dependencies.stdout.write(`${[...new Set(names)].sort().join("\n")}\n`);
+      return 0;
+    }
+
     if (parsed.verb === "__complete-contexts") {
       const config = await dependencies.loadConfig();
       const contexts = [
@@ -2081,6 +2196,14 @@ export async function runCli(
       if (contexts.length > 0) {
         dependencies.stdout.write(`${contexts.join("\n")}\n`);
       }
+      return 0;
+    }
+
+    if (parsed.verb === "__complete-provisioners") {
+      const config = await dependencies.loadConfig();
+      const names = [...new Set([...Object.keys(config.provisioners ?? {}),
+        ...(await dependencies.provisionerCompletionNames()).provisioners])].sort();
+      if (names.length) dependencies.stdout.write(`${names.join("\n")}\n`);
       return 0;
     }
 
@@ -2109,7 +2232,7 @@ export async function runCli(
 
     const commandResult = await executeCommand(parsed, dependencies);
     if (commandResult === null) {
-      dependencies.stdout.write(`${buildHelpText()}\n`);
+      dependencies.stdout.write(`${buildHelpText(parsed.positionals, hasImplicitCreateFlags(parsed.flags))}\n`);
       return 0;
     }
 

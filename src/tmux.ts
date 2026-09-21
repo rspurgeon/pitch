@@ -50,6 +50,7 @@ export interface CreateTmuxLayoutParams {
   window_name: string;
   worktree_path: string;
   environment?: Record<string, string>;
+  environment_file?: string;
 }
 
 export interface SendKeysToPaneParams {
@@ -964,6 +965,9 @@ export async function createTmuxLayout(
   }
 
   const agentPaneId = initialPanes[0];
+  const shellCommand = params.environment_file
+    ? [`/bin/sh -c ${shellEscape(`. ${shellEscape(params.environment_file)} && exec ${shellEscape(process.env.SHELL ?? "/bin/sh")} -l`)}`]
+    : [];
   const { stdout: topRightPaneStdout } = await runTmux(
     [
       "split-window",
@@ -976,6 +980,7 @@ export async function createTmuxLayout(
       "-P",
       "-F",
       "#{pane_id}",
+      ...shellCommand,
     ],
     options,
   );
@@ -993,12 +998,15 @@ export async function createTmuxLayout(
       "-P",
       "-F",
       "#{pane_id}",
+      ...shellCommand,
     ],
     options,
   );
   const bottomRightPaneId = bottomRightPaneStdout.trim();
 
-  const cdCommand = `cd -- ${shellEscape(worktreePath)} && clear`;
+  // Login shell startup files may override inherited values. Apply the shared
+  // environment again in the running shell before repository pane commands.
+  const cdCommand = `cd -- ${shellEscape(worktreePath)}${params.environment_file ? ` && . ${shellEscape(params.environment_file)}` : ""} && clear`;
   for (const paneId of [agentPaneId, topRightPaneId, bottomRightPaneId]) {
     await sendKeysToPane(
       {

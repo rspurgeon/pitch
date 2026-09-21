@@ -4,6 +4,7 @@ import { formatEnvAssignment, shellEscape } from "./shell.js";
 export function formatAgentPaneCommand(
   command: BuiltAgentCommand,
   reuseExistingConnection = false,
+  environmentFile?: string,
 ): string {
   if (reuseExistingConnection) {
     if (command.pane_reuse_command === undefined) {
@@ -18,5 +19,6 @@ export function formatAgentPaneCommand(
   );
   const argv = command.command.map((part) => shellEscape(part));
 
-  return [...envAssignments, "command", "--", ...argv].join(" ");
+  const launch = [...envAssignments, "command", "--", ...argv].join(" ");
+  return environmentFile ? `. ${shellEscape(environmentFile)} && ${launch}` : launch;
 }

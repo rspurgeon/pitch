@@ -69,7 +69,16 @@ const AgentOverrideSchema = z
 const LaunchContextSchema = z
   .object({
     env: AgentEnvSchema,
-    env_from_files: AgentEnvFromFilesSchema,
+    env_from_files: z.record(z.string(), z.string()).default({}),
+    provisioners: z.record(z.string(), z.object({
+      inputs: z.record(z.string(), z.unknown()).default({}),
+      env: AgentEnvSchema,
+      env_from_files: AgentEnvFromFilesSchema,
+    }).strict()).optional(),
+    generated_files: z.record(z.string(), z.object({
+      path: z.string(),
+      contents: z.unknown(),
+    }).strict()).optional(),
   })
   .strict();
 
@@ -171,6 +180,8 @@ const SandboxConfigSchema = z.object({
 
 const RepoConfigSchema = z
   .object({
+    env: AgentEnvSchema,
+    env_from_files: AgentEnvFromFilesSchema,
     default_agent: z.preprocess(nullToUndefined, z.string().optional()),
     default_environment: z.preprocess(nullToUndefined, z.string().optional()),
     default_context: z.preprocess(nullToUndefined, z.string().optional()),
@@ -206,6 +217,15 @@ const RepoConfigSchema = z
   .strict();
 
 export const PitchConfigSchema = z.object({
+  provisioners: z.record(z.string(), z.object({
+    create: z.array(z.string()).min(1),
+    delete: z.array(z.string()).min(1),
+    inspect: z.array(z.string()).min(1).optional(),
+    history_buffer_days: z.number().int().nonnegative().default(7),
+    env: AgentEnvSchema,
+    env_from_files: AgentEnvFromFilesSchema,
+    timeout_ms: z.number().int().positive().default(120000),
+  }).strict()).optional(),
   defaults: z.preprocess(nullToUndefined, DefaultsSchema.default({})),
   bootstrap_prompts: z.preprocess(
     nullToUndefined,
@@ -347,6 +367,8 @@ export interface Defaults {
 }
 
 export interface RepoConfig {
+  env?: Record<string, string>;
+  env_from_files?: Record<string, string>;
   default_agent?: string;
   default_environment?: string;
   default_context?: string;
@@ -429,9 +451,28 @@ export interface AgentOverride {
 export interface LaunchContext {
   env: Record<string, string>;
   env_from_files: Record<string, string>;
+  provisioners?: Record<string, ProvisionerSelection>;
+  generated_files?: Record<string, { path: string; contents?: unknown }>;
+}
+
+export interface ProvisionerSelection {
+  inputs: Record<string, unknown>;
+  env?: Record<string, string>;
+  env_from_files?: Record<string, string>;
+}
+
+export interface ProvisionerDefinition {
+  create: string[];
+  delete: string[];
+  inspect?: string[];
+  history_buffer_days?: number;
+  env?: Record<string, string>;
+  env_from_files?: Record<string, string>;
+  timeout_ms?: number;
 }
 
 export interface PitchConfig {
+  provisioners?: Record<string, ProvisionerDefinition>;
   defaults: Defaults;
   bootstrap_prompts: BootstrapPromptTemplates;
   repos: Record<string, RepoConfig>;
@@ -474,6 +515,8 @@ function normalizeRepoConfig(
   defaults: RawDefaults,
 ): RepoConfig {
   return {
+    env: repoConfig.env,
+    env_from_files: repoConfig.env_from_files,
     default_agent: repoConfig.default_agent,
     default_environment: repoConfig.default_environment,
     default_context: repoConfig.default_context,
@@ -493,6 +536,7 @@ function normalizeRepoConfig(
 
 function normalizeConfig(raw: RawPitchConfig): PitchConfig {
   return {
+    provisioners: raw.provisioners,
     defaults: {
       repo: raw.defaults.repo,
       agent: raw.defaults.agent,

@@ -221,6 +221,8 @@ function makeDependencies(
   overrides: Partial<ResumeWorkspaceDependencies> = {},
 ): ResumeWorkspaceDependencies {
   return {
+    cleanupWorkspaceResources: vi.fn(async () => {}),
+    prepareWorkspaceEnvironment: vi.fn(async ({ config }) => ({ config, resource_id: undefined as unknown as string, directory: "", environment_file: undefined as unknown as string, environment: {} })),
     buildAgentResumeCommand: vi.fn(() => makeClaudeResumeCommand()),
     buildAgentStartCommand: vi.fn(() => makeClaudeStartCommand()),
     createTmuxLayout: vi.fn(async () => ({

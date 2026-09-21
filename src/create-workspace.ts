@@ -1,3 +1,5 @@
+import { automaticallyPruneHistory } from "./provisioner-pruning.js";
+import { prepareWorkspaceEnvironment, cleanupWorkspaceResources } from "./workspace-resources.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { join, posix } from "node:path";
 import { z } from "zod";
@@ -160,6 +162,9 @@ export const CreateWorkspaceInputSchema = z
 export type CreateWorkspaceInput = z.infer<typeof CreateWorkspaceInputSchema>;
 
 export interface CreateWorkspaceDependencies {
+  prepareWorkspaceEnvironment: typeof prepareWorkspaceEnvironment;
+  cleanupWorkspaceResources: typeof cleanupWorkspaceResources;
+  automaticallyPruneHistory: typeof automaticallyPruneHistory;
   buildAgentResumeCommand: typeof buildAgentResumeCommand;
   readWorkspaceRecord: typeof readWorkspaceRecord;
   listWorkspaceRecords: typeof listWorkspaceRecords;
@@ -197,6 +202,7 @@ export class CreateWorkspaceError extends Error {
 }
 
 interface RollbackState {
+  resource_id?: string;
   workspace_name: string;
   worktree_name: string;
   repo_config: RepoConfig;
@@ -230,6 +236,9 @@ interface ResolvedWorkspaceSource {
 }
 
 const defaultDependencies: CreateWorkspaceDependencies = {
+  prepareWorkspaceEnvironment,
+  cleanupWorkspaceResources,
+  automaticallyPruneHistory,
   buildAgentResumeCommand,
   readWorkspaceRecord,
   listWorkspaceRecords,
@@ -693,6 +702,8 @@ async function rollbackCreateWorkspace(
   dependencies: CreateWorkspaceDependencies,
 ): Promise<string[]> {
   const cleanupErrors: string[] = [];
+  try { await dependencies.cleanupWorkspaceResources(state.resource_id); }
+  catch (error) { return [`Resource cleanup failed; workspace retained: ${formatError(error)}`]; }
 
   if (state.workspace_record_written) {
     try {
@@ -816,7 +827,17 @@ export async function createWorkspace(
       worktreeTarget.worktree_name,
       worktree.worktree_path,
     );
-    const workspaceAdditionalPaths = input.additional_paths ?? [];
+    if (environment.kind !== "host" && Object.keys(repoConfig.contexts?.[contextName ?? ""]?.provisioners ?? {}).length) {
+      throw new CreateWorkspaceError("Provisioners currently require a host execution environment");
+    }
+    const prepared = environment.kind === "host" ? await dependencies.prepareWorkspaceEnvironment({
+      config, repo: repoName, name: workspaceName, context: contextName, allow_create: true,
+    }) : undefined;
+    if (prepared) config = prepared.config;
+    rollbackState.resource_id = prepared?.resource_id;
+    const workspaceAdditionalPaths = prepared?.directory
+      ? [...new Set([...(input.additional_paths ?? repoConfig.additional_paths ?? []), prepared.directory])]
+      : input.additional_paths ?? [];
 
     const initialPrompt =
       input.session_id !== undefined || input.skip_prompt === true
@@ -970,9 +991,7 @@ export async function createWorkspace(
         session_name: tmuxSession,
         window_name: workspaceName,
         worktree_path: worktree.worktree_path,
-        ...(contextName === undefined
-          ? {}
-          : { environment: repoConfig.contexts?.[contextName]?.env ?? {} }),
+        ...(prepared?.environment_file ? { environment_file: prepared.environment_file } : contextName === undefined ? {} : { environment: repoConfig.contexts?.[contextName]?.env ?? {} }),
       });
       createdPanes = layout.panes;
       agentPaneId = layout.panes.agent_pane_id;
@@ -980,6 +999,7 @@ export async function createWorkspace(
 
     const timestamp = dependencies.now().toISOString();
     const workspaceRecord: WorkspaceRecord = {
+      ...(prepared ? { resource_id: prepared.resource_id, environment_file: prepared.environment_file } : {}),
       name: workspaceName,
       worktree_name: worktreeTarget.worktree_name,
       repo: repoName,
@@ -1018,12 +1038,12 @@ export async function createWorkspace(
       if (existingPane?.kind === "connected-shell") {
         await dependencies.sendKeysToPane({
           pane_id: agentPaneId,
-          command: formatAgentPaneCommand(agentCommand, true),
+          command: formatAgentPaneCommand(agentCommand, true, prepared?.environment_file),
         });
       } else {
         await dependencies.respawnPane({
           pane_id: agentPaneId,
-          command: formatAgentPaneCommand(agentCommand),
+          command: formatAgentPaneCommand(agentCommand, false, prepared?.environment_file),
           start_directory: workspacePaths.host_worktree_path,
         });
       }
@@ -1074,6 +1094,7 @@ export async function createWorkspace(
       ]);
     }
 
+    await dependencies.automaticallyPruneHistory(config, dependencies.reportWarning);
     return persistedRecord;
   } catch (error: unknown) {
     const cleanupErrors = await rollbackCreateWorkspace(

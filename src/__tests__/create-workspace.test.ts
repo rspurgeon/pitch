@@ -239,6 +239,9 @@ function makeDependencies(
   overrides: Partial<CreateWorkspaceDependencies> = {},
 ): CreateWorkspaceDependencies {
   return {
+    cleanupWorkspaceResources: vi.fn(async () => {}),
+    automaticallyPruneHistory: vi.fn(async () => {}),
+    prepareWorkspaceEnvironment: vi.fn(async ({ config }) => ({ config, resource_id: undefined as unknown as string, directory: "", environment_file: undefined as unknown as string, environment: {} })),
     readWorkspaceRecord: vi.fn(async () => null),
     listWorkspaceRecords: vi.fn(async () => []),
     writeWorkspaceRecord: vi.fn(async (workspace: WorkspaceRecord) => workspace),
@@ -317,6 +320,30 @@ function makeDependencies(
 }
 
 describe("create workspace", () => {
+  it("uses the same prepared environment for panes and the agent, and records ownership", async () => {
+    const config = makeConfig();
+    const resource_id = "a".repeat(32);
+    const environment_file = "/example/environment.sh";
+    const dependencies = makeDependencies({
+      prepareWorkspaceEnvironment: vi.fn(async () => ({ config, resource_id, environment_file, directory: "/example", environment: {} })),
+    });
+    const workspace = await createWorkspace({ repo: "kong/kongctl", issue: 42, slug: "fix-bug" }, config, dependencies);
+    expect(workspace.resource_id).toBe(resource_id);
+    expect(dependencies.createTmuxLayout).toHaveBeenCalledWith(expect.objectContaining({ environment_file }));
+    expect(dependencies.respawnPane).toHaveBeenCalledWith(expect.objectContaining({ command: expect.stringContaining(". '/example/environment.sh' &&") }));
+    expect(dependencies.cleanupWorkspaceResources).not.toHaveBeenCalled();
+  });
+
+  it("cleans up provisioned resources when later workspace setup fails", async () => {
+    const config = makeConfig();
+    const resource_id = "a".repeat(32);
+    const dependencies = makeDependencies({
+      prepareWorkspaceEnvironment: vi.fn(async () => ({ config, resource_id, environment_file: "/example/environment.sh", directory: "/example", environment: {} })),
+      createTmuxLayout: vi.fn(async () => { throw new Error("layout failed"); }),
+    });
+    await expect(createWorkspace({ repo: "kong/kongctl", issue: 42, slug: "fix-bug" }, config, dependencies)).rejects.toThrow("layout failed");
+    expect(dependencies.cleanupWorkspaceResources).toHaveBeenCalledWith(resource_id);
+  });
   it("creates a Claude workspace record and launches the agent pane", async () => {
     const config = makeConfig();
     const dependencies = makeDependencies();
@@ -332,6 +359,7 @@ describe("create workspace", () => {
     );
 
     expect(workspace).toEqual(makeWorkspaceRecord());
+    expect(dependencies.automaticallyPruneHistory).toHaveBeenCalledWith(config, dependencies.reportWarning);
     expect(dependencies.buildAgentStartCommand).toHaveBeenCalledWith({
       config,
       agent: "claude-enterprise",

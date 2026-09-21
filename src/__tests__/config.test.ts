@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { ConfigError, loadConfig } from "../config.js";
+import { ConfigError, loadConfig, PitchConfigSchema } from "../config.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(__dirname, "fixtures");
@@ -11,6 +11,14 @@ function fixture(name: string): string {
 }
 
 describe("loadConfig", () => {
+  it("defaults provisioner history buffers to seven days and validates overrides", () => {
+    const definition = { create: ["create"], delete: ["delete"] };
+    expect(PitchConfigSchema.parse({ provisioners: { example: definition } }).provisioners!.example.history_buffer_days).toBe(7);
+    expect(PitchConfigSchema.parse({ provisioners: { example: { ...definition, history_buffer_days: 0 } } }).provisioners!.example.history_buffer_days).toBe(0);
+    for (const invalid of [-1, 1.5, "7"]) {
+      expect(PitchConfigSchema.safeParse({ provisioners: { example: { ...definition, history_buffer_days: invalid } } }).success).toBe(false);
+    }
+  });
   describe("file handling", () => {
     it("returns defaults when file does not exist", async () => {
       const config = await loadConfig("/nonexistent/path/config.yaml");
@@ -71,6 +79,8 @@ describe("loadConfig", () => {
       expect(config.bootstrap_prompts).toEqual({});
 
       expect(config.repos["kong/kongctl"]).toEqual({
+        env: {},
+        env_from_files: {},
         default_agent: "claude-enterprise",
         default_environment: "sandbox-vm",
         default_context: "e2e-tech",
@@ -215,6 +225,8 @@ describe("loadConfig", () => {
       const config = await loadConfig(fixture("derived-repo-config.yaml"));
 
       expect(config.repos["kong/kongctl"]).toEqual({
+        env: {},
+        env_from_files: {},
         default_agent: "claude-enterprise",
         default_environment: undefined,
         default_context: undefined,

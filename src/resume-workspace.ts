@@ -1,3 +1,4 @@
+import { prepareWorkspaceEnvironment, cleanupWorkspaceResources } from "./workspace-resources.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { join, posix } from "node:path";
 import { z } from "zod";
@@ -77,6 +78,8 @@ export const ResumeWorkspaceInputSchema = z.object({
 export type ResumeWorkspaceInput = z.infer<typeof ResumeWorkspaceInputSchema>;
 
 export interface ResumeWorkspaceDependencies {
+  prepareWorkspaceEnvironment: typeof prepareWorkspaceEnvironment;
+  cleanupWorkspaceResources: typeof cleanupWorkspaceResources;
   buildAgentResumeCommand: typeof buildAgentResumeCommand;
   buildAgentStartCommand: typeof buildAgentStartCommand;
   createTmuxLayout: typeof createTmuxLayout;
@@ -110,6 +113,8 @@ export interface ResumeWorkspaceDependencies {
 }
 
 const defaultDependencies: ResumeWorkspaceDependencies = {
+  prepareWorkspaceEnvironment,
+  cleanupWorkspaceResources,
   buildAgentResumeCommand,
   buildAgentStartCommand,
   createTmuxLayout,
@@ -612,6 +617,18 @@ export async function resumeWorkspace(
   const contextName =
     input.context ?? currentContextName ?? repoConfig.default_context;
 
+  const launchEnvironment = resolveExecutionEnvironment(config, workspace.repo, input.environment ?? workspace.environment_name ?? undefined);
+  if (launchEnvironment.kind !== "host" && Object.keys(repoConfig.contexts?.[contextName ?? ""]?.provisioners ?? {}).length) {
+    throw new ResumeWorkspaceError("Provisioners currently require a host execution environment");
+  }
+  const prepared = launchEnvironment.kind === "host" ? await dependencies.prepareWorkspaceEnvironment({
+    config, repo: workspace.repo, name: workspace.name, context: contextName, resource_id: workspace.resource_id,
+  }) : undefined;
+  if (prepared) {
+    config = prepared.config;
+    workspace = { ...workspace, resource_id: prepared.resource_id, environment_file: prepared.environment_file };
+  }
+
   try {
     const restoredWorktree = await dependencies.restoreWorktree({
       repo: repoConfig,
@@ -701,9 +718,7 @@ export async function resumeWorkspace(
           session_name: workspace.tmux_session,
           window_name: workspace.tmux_window,
           worktree_path: workspace.worktree_path,
-          ...(contextName === undefined
-            ? {}
-            : { environment: repoConfig.contexts?.[contextName]?.env ?? {} }),
+          ...(prepared?.environment_file ? { environment_file: prepared.environment_file } : contextName === undefined ? {} : { environment: repoConfig.contexts?.[contextName]?.env ?? {} }),
         });
         createdPanes = layout.panes;
         agentPaneId = layout.panes.agent_pane_id;
@@ -761,6 +776,10 @@ export async function resumeWorkspace(
     workspace.additional_paths,
     input.additional_paths,
   );
+  if (prepared?.directory && !workspaceAdditionalPaths.includes(prepared.directory)) {
+    if (!workspaceAdditionalPaths.length) workspaceAdditionalPaths.push(...(repoConfig.additional_paths ?? []));
+    workspaceAdditionalPaths.push(prepared.directory);
+  }
   if (input.additional_paths !== undefined) {
     workspace = {
       ...workspace,
@@ -1058,7 +1077,7 @@ export async function resumeWorkspace(
       existingPaneInfo,
       command,
     );
-    paneCommand = formatAgentPaneCommand(command, reuseConnectedPane);
+    paneCommand = formatAgentPaneCommand(command, reuseConnectedPane, prepared?.environment_file);
   } catch (error: unknown) {
     throw new ResumeWorkspaceError(
       `Failed to format agent command for ${workspace.name}: ${formatError(error)}`,

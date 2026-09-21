@@ -1,3 +1,4 @@
+import { mergeEnvironment } from "./workspace-environment.js";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, realpathSync } from "node:fs";
@@ -673,7 +674,8 @@ function wrapSandboxCommand(
     resolveNonoProfile(agentType, sandbox),
     "--workdir",
     worktreePath,
-    "--allow-cwd",
+    "--allow",
+    worktreePath,
     ...readablePaths.flatMap((path) => ["--read", path]),
     ...writablePaths.flatMap((path) => ["--write", path]),
     ...(sandbox.network_profile === undefined
@@ -734,18 +736,7 @@ function resolveAgentTarget(
       ...(repoDefaults?.args ?? []),
       ...(repoOverride?.args ?? []),
     ],
-    env: {
-      ...agentConfig.env,
-      ...(repoDefaults?.env ?? {}),
-      ...(repoOverride?.env ?? {}),
-      ...(context?.env ?? {}),
-    },
-    env_from_files: {
-      ...(agentConfig.env_from_files ?? {}),
-      ...(repoDefaults?.env_from_files ?? {}),
-      ...(repoOverride?.env_from_files ?? {}),
-      ...(context?.env_from_files ?? {}),
-    },
+    ...mergeEnvironment(agentConfig, repoDefaults, repoOverride, repoConfig, context),
     warnings,
   };
 }
