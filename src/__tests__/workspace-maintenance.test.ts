@@ -3,7 +3,7 @@ import type { PitchConfig } from "../config.js";
 import type { WorkspaceRecord } from "../workspace-state.js";
 import { listWorkspaceRecords, readWorkspaceRecord, writeWorkspaceRecord } from "../workspace-state.js";
 import { cleanupWorkspaceResources, prepareWorkspaceEnvironment, workspaceResourceId } from "../workspace-resources.js";
-import { cleanupWorkspaceProvisioner, refreshWorkspaceEnvironment } from "../workspace-maintenance.js";
+import { cleanupWorkspaceProvisioner, refreshWorkspaceEnvironment, reprovisionWorkspaceProvisioner } from "../workspace-maintenance.js";
 
 vi.mock("../workspace-state.js", async (original) => ({
   ...await original<typeof import("../workspace-state.js")>(),
@@ -25,6 +25,25 @@ beforeEach(() => {
 });
 
 describe("workspace maintenance", () => {
+  it("reprovisions with saved ownership while preserving the checkout and agent fields", async () => {
+    vi.mocked(prepareWorkspaceEnvironment).mockResolvedValue({ resource_id: workspace.resource_id!,
+      directory: "/workspace", environment_file: "/workspace/environment.sh", config, environment: {} });
+    expect(await reprovisionWorkspaceProvisioner("example", "example", config)).toBe("/workspace/environment.sh");
+    expect(prepareWorkspaceEnvironment).toHaveBeenCalledWith({ config, repo: workspace.repo, name: workspace.name,
+      resource_id: workspace.resource_id, context: workspace.context_name, reprovision: "example" });
+    expect(writeWorkspaceRecord).toHaveBeenCalledWith({ ...workspace, environment_file: "/workspace/environment.sh", updated_at: expect.any(String) });
+  });
+
+  it("refuses reprovisioning missing, active, remote, or unowned workspaces before touching resources", async () => {
+    for (const [record, message] of [
+      [null, "Workspace not found"], [{ ...workspace, status: "active" }, "Close the workspace"],
+      [{ ...workspace, environment_kind: "vm-ssh" }, "host workspace"], [{ ...workspace, resource_id: undefined }, "resource identity"],
+    ] as const) {
+      vi.mocked(readWorkspaceRecord).mockResolvedValue(record);
+      await expect(reprovisionWorkspaceProvisioner("example", "example", config)).rejects.toThrow(message);
+    }
+    expect(prepareWorkspaceEnvironment).not.toHaveBeenCalled();
+  });
   it("uses the saved identity and requested provisioner for cleanup", async () => {
     await cleanupWorkspaceProvisioner("example", "example", config);
     expect(cleanupWorkspaceResources).toHaveBeenCalledWith(workspace.resource_id, undefined, "example");

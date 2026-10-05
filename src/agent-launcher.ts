@@ -638,7 +638,10 @@ function getCodexShellEnvironmentArgs(
 function getManagedCodexConfigArgs(
   sandbox: SandboxConfig | null,
 ): string[] {
+  // Per-launch config overrides require embedded mode. Select it explicitly
+  // so Codex does not warn about falling back from the shared daemon.
   return [
+    "--no-daemon",
     "-c",
     "check_for_update_on_startup=false",
     "--enable",

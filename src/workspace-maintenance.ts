@@ -25,3 +25,15 @@ export async function refreshWorkspaceEnvironment(name: string, config: PitchCon
     environment_file: prepared.environment_file, updated_at: new Date().toISOString() });
   return prepared.environment_file;
 }
+
+export async function reprovisionWorkspaceProvisioner(provisioner: string, name: string, config: PitchConfig): Promise<string> {
+  const workspace = await readWorkspaceRecord(name);
+  if (!workspace) throw new Error(`Workspace not found: ${name}`);
+  if (workspace.status !== "closed") throw new Error("Close the workspace before reprovisioning its resources");
+  if (workspace.environment_kind === "vm-ssh") throw new Error("Reprovision requires a host workspace");
+  if (!workspace.resource_id) throw new Error("Workspace has no recorded resource identity");
+  const prepared = await prepareWorkspaceEnvironment({ config, repo: workspace.repo, name: workspace.name,
+    context: workspace.context_name, resource_id: workspace.resource_id, reprovision: provisioner });
+  await writeWorkspaceRecord({ ...workspace, environment_file: prepared.environment_file, updated_at: new Date().toISOString() });
+  return prepared.environment_file;
+}

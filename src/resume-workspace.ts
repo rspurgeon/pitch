@@ -634,6 +634,7 @@ export async function resumeWorkspace(
       repo: repoConfig,
       workspace_name: getWorkspaceWorktreeName(workspace),
       branch: workspace.branch,
+      preserve_existing_checkout: input.sync !== true,
     });
     workspace = {
       ...workspace,

@@ -681,6 +681,54 @@ describe("git worktree management", () => {
     });
   });
 
+  it.each(["other-branch", "HEAD"])(
+    "preserves an existing checkout on %s when resuming",
+    async (checkout) => {
+      const created = await createWorktree({
+        repo,
+        workspace_name: "long-running",
+        branch: "original-branch",
+        start_point: "main",
+      });
+      await git(
+        checkout === "HEAD" ? ["checkout", "--detach"] : ["checkout", "-b", checkout],
+        created.worktree_path,
+      );
+      await git(["branch", "-D", "original-branch"], repo.main_worktree);
+      await writeFile(join(created.worktree_path, "README.md"), "unfinished work\n");
+      const before = await git(["diff"], created.worktree_path);
+      const head = await git(["rev-parse", "HEAD"], created.worktree_path);
+
+      await expect(restoreWorktree({
+        repo,
+        workspace_name: "long-running",
+        branch: "original-branch",
+        preserve_existing_checkout: true,
+      })).resolves.toEqual(created);
+      expect(await git(["rev-parse", "--abbrev-ref", "HEAD"], created.worktree_path)).toBe(checkout);
+      expect(await git(["rev-parse", "HEAD"], created.worktree_path)).toBe(head);
+      expect(await git(["diff"], created.worktree_path)).toBe(before);
+    },
+  );
+
+  it("still rejects a branch mismatch when restoring without checkout preservation", async () => {
+    const created = await createWorktree({
+      repo, workspace_name: "strict", branch: "original", start_point: "main",
+    });
+    await git(["checkout", "--detach"], created.worktree_path);
+    await expect(restoreWorktree({
+      repo, workspace_name: "strict", branch: "original",
+    })).rejects.toThrow("Existing path is not the expected worktree branch");
+  });
+
+  it("rejects an unrelated worktree even when preserving its checkout", async () => {
+    const unrelated = await createTempRepo(join(tempRoot, "unrelated"));
+    await git(["worktree", "add", "--detach", join(repo.worktree_base, "foreign")], unrelated.main_worktree);
+    await expect(restoreWorktree({
+      repo, workspace_name: "foreign", branch: "main", preserve_existing_checkout: true,
+    })).rejects.toThrow("Existing path is not a registered worktree");
+  });
+
   it("restores a deleted worktree from its existing branch", async () => {
     const created = await createWorktree({
       repo,
@@ -695,6 +743,7 @@ describe("git worktree management", () => {
       repo,
       workspace_name: "gh-131-restore-worktree",
       branch: "gh-131-restore-worktree",
+      preserve_existing_checkout: true,
     });
 
     expect(restored).toEqual(created);

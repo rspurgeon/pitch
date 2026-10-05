@@ -305,6 +305,7 @@ describe("agent launcher", () => {
       "gpt-5.5",
       "--ask-for-approval",
       "never",
+      "--no-daemon",
       "-c",
       "check_for_update_on_startup=false",
       "--enable",
@@ -468,6 +469,7 @@ describe("agent launcher", () => {
       "workspace-write",
       "--ask-for-approval",
       "on-request",
+      "--no-daemon",
       "-c",
       "check_for_update_on_startup=false",
       "--enable",
@@ -525,6 +527,7 @@ describe("agent launcher", () => {
 
     expect(command.command).toEqual([
       "codex",
+      "--no-daemon",
       "-c",
       "check_for_update_on_startup=false",
       "--enable",
@@ -555,6 +558,7 @@ describe("agent launcher", () => {
       "codex",
       "--add-dir",
       "/tmp/shared",
+      "--no-daemon",
       "-c",
       "check_for_update_on_startup=false",
       "--enable",
@@ -803,6 +807,7 @@ describe("agent launcher", () => {
       "--add-dir",
       "/home/rspurgeon/go",
       "--search",
+      "--no-daemon",
       "-c",
       "check_for_update_on_startup=false",
       "--enable",
@@ -948,6 +953,7 @@ describe("agent launcher", () => {
       "/home/rspurgeon/go",
       "--add-dir",
       "/home/rspurgeon/.config/kongctl",
+      "--no-daemon",
       "-c",
       "check_for_update_on_startup=false",
       "--enable",
@@ -1208,6 +1214,7 @@ describe("agent launcher", () => {
       "/home/rspurgeon/go",
       "--add-dir",
       "/home/rspurgeon/.config/kongctl",
+      "--no-daemon",
       "-c",
       "check_for_update_on_startup=false",
       "--enable",
@@ -1505,6 +1512,7 @@ describe("agent launcher", () => {
     expect(claude.command).toEqual(["claude", "--resume", "claude-session"]);
     expect(codex.command).toEqual([
       "codex",
+      "--no-daemon",
       "-c",
       "check_for_update_on_startup=false",
       "--enable",

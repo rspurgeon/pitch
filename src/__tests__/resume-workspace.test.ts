@@ -332,6 +332,7 @@ describe("resume workspace", () => {
       repo: config.repos["kong/kongctl"],
       workspace_name: "gh-42-fix-bug",
       branch: "gh-42-fix-bug",
+      preserve_existing_checkout: true,
     });
     expect(dependencies.ensureTmuxSession).toHaveBeenCalledWith({
       session_name: "kongctl",
@@ -715,6 +716,7 @@ describe("resume workspace", () => {
       repo: config.repos["kong/kongctl"],
       workspace_name: "gh-353-env-yaml-tag",
       branch: "gh-353-env-yaml-tag",
+      preserve_existing_checkout: true,
     });
   });
 
@@ -764,6 +766,12 @@ describe("resume workspace", () => {
     expect(dependencies.isWorktreeDirty).toHaveBeenCalledWith(
       "/tmp/worktrees/pr-42",
     );
+    expect(dependencies.restoreWorktree).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      workspace_name: "pr-42",
+      branch: "feature/example",
+      preserve_existing_checkout: false,
+    });
     expect(dependencies.readPullRequest).toHaveBeenCalledWith({
       repo: "kong/kongctl",
       pr_number: 42,
@@ -947,6 +955,12 @@ describe("resume workspace", () => {
       dependencies,
     );
 
+    expect(dependencies.restoreWorktree).toHaveBeenCalledWith({
+      repo: config.repos["kong/kongctl"],
+      workspace_name: "gh-42-fix-bug",
+      branch: "gh-42-fix-bug",
+      preserve_existing_checkout: true,
+    });
     expect(dependencies.buildAgentStartCommand).not.toHaveBeenCalled();
     expect(dependencies.buildAgentResumeCommand).toHaveBeenCalledWith({
       config,

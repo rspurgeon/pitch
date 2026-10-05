@@ -40,6 +40,27 @@ async function fixture() {
 }
 
 describe("Konnect example provisioner", () => {
+  it("allows replacing a backend-inactivated tech org without changing its retention or posting deactivation", async () => {
+    const { request, options, fetch, dir } = await fixture();
+    const techRequest = { ...request, inputs: { ...request.inputs, environment: "dev" } };
+    const techOptions = { ...options, env: { KAUTH_CLIENT_ID: "client", KAUTH_CLIENT_SECRET_DEV: "secret" } };
+    const outputs = await runProvisioner("create", techRequest, techOptions);
+    expect(await runProvisioner("inspect", { ...techRequest, outputs, verify: true }, techOptions))
+      .toMatchObject({ verified: true, remote_state: "active", reprovisionable: false });
+    const backendFetch = vi.fn(async (url: string, init: { body?: string; method: string }) =>
+      url.endsWith("/history") ? new Response(JSON.stringify({ data: [{ state: "inactive", changed_by: "quality-org-deactivation-job" }] })) : fetch(url, init));
+    const backendOptions = { ...techOptions, fetch: backendFetch };
+    expect(await runProvisioner("inspect", { ...techRequest, outputs, verify: true }, backendOptions))
+      .toMatchObject({ verified: true, remote_state: "inactive", reprovisionable: true });
+    backendFetch.mockClear();
+    const cleanup = await runProvisioner("deactivate", { ...techRequest, outputs }, backendOptions);
+    expect(cleanup.deactivated).toBe(true);
+    expect(cleanup.retention_days).toBeUndefined();
+    expect(backendFetch.mock.calls.every(([url]) => url.startsWith("https://global.api.konghq.tech/"))).toBe(true);
+    expect(backendFetch.mock.calls.some(([url]) => url.endsWith("/deletion-config") || url.endsWith("/state"))).toBe(false);
+    expect(JSON.parse(await readFile(join(dir, "receipt.json"), "utf8")).status).toBe("inactive");
+    await expect(readFile(outputs.pat_file)).rejects.toMatchObject({ code: "ENOENT" });
+  });
   it("invites configured users with the org PAT and avoids reinviting existing users", async () => {
     const { request, options, fetch, dir } = await fixture();
     const configured = { ...request, inputs: { ...request.inputs,

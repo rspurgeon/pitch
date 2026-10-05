@@ -70,6 +70,7 @@ export async function runProvisioner(action, request, { fetch: requestFetch = fe
       deactivated_at: receipt?.deactivated_at ?? null,
       verified: false,
       remote_state: null,
+      reprovisionable: false,
     };
     // Expose local blockers before Pitch attempts to load service credentials.
     if (!uuid.test(inspection.id ?? "")) {
@@ -89,6 +90,7 @@ export async function runProvisioner(action, request, { fetch: requestFetch = fe
         if (typeof history.data?.[0]?.state !== "string" || !history.data[0].state) throw new ApiError("Organization state unavailable", "invalid_response");
         inspection.remote_state = history.data[0].state;
         inspection.verified = true;
+        inspection.reprovisionable = inspection.remote_state === "inactive";
       } catch (error) {
         inspection.verification_error = error instanceof ApiError
           ? { code: error.code, phase, ...(error.status === undefined ? {} : { status: error.status }) }

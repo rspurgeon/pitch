@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, writeFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, stat, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,17 +21,27 @@ afterEach(async () => { await Promise.all(directories.splice(0).map((dir) => rm(
 async function fixture() {
   const dir = await temporary();
   const helper = join(dir, "helper.mjs");
-  await writeFile(helper, `import { writeFile, appendFile } from 'node:fs/promises';
+  await writeFile(helper, `import { writeFile, appendFile, readFile } from 'node:fs/promises';
 let input=''; for await (const chunk of process.stdin) input+=chunk;
 const r=JSON.parse(input); await appendFile(${JSON.stringify(join(dir, "calls"))}, process.argv[2]+'\\n');
 if (process.argv[2]==='create') {
+  if(r.resource_dir.includes('generation-')) {
+    await writeFile(r.resource_dir+'/receipt', 'registered');
+    if (await readFile(${JSON.stringify(join(dir, "fail-create"))}, 'utf8').catch(()=>'')) process.exit(1);
+  }
   const pat=r.resource_dir+'/pat'; await writeFile(pat, 'fixture-secret\\n', {mode:0o600});
-  console.log(JSON.stringify({name:r.inputs.name,pat_file:pat}));
-} else { console.log(JSON.stringify({deactivated:true,retention_days:1})); }
+  console.log(JSON.stringify({name:r.inputs.name,pat_file:pat,id:r.resource_dir}));
+} else if (process.argv[2]==='inspect') {
+  const remote=await readFile(${JSON.stringify(join(dir, "remote"))}, 'utf8').catch(()=>'inactive');
+  console.log(JSON.stringify({verified:remote!=='unknown',remote_state:remote,reprovisionable:remote==='inactive'}));
+} else {
+  if (await readFile(${JSON.stringify(join(dir, "fail-delete"))}, 'utf8').catch(()=>'')) process.exit(1);
+  console.log(JSON.stringify({deactivated:true,retention_days:1}));
+}
 `);
   const configPath = join(dir, "config.yaml");
   const raw = {
-    provisioners: { example: { create: [process.execPath, helper, "create"], delete: [process.execPath, helper, "delete"], env: { SERVICE_CREDENTIAL: "fixture-service" } } },
+    provisioners: { example: { create: [process.execPath, helper, "create"], delete: [process.execPath, helper, "delete"], inspect: [process.execPath, helper, "inspect"], env: { SERVICE_CREDENTIAL: "fixture-service" } } },
     repos: { "example/repo": { main_worktree: dir, default_context: "ephemeral", env: { SHARED: "repo" }, contexts: {
       static: { env: { SHARED: "static" } },
       ephemeral: {
@@ -47,6 +57,90 @@ if (process.argv[2]==='create') {
 }
 
 describe("workspace environments and resources", () => {
+  it("replaces only the selected inactive resource, archives its identity, and refreshes credential paths", async () => {
+    const { config, root } = await fixture();
+    config.provisioners!.second = structuredClone(config.provisioners!.example);
+    config.repos["example/repo"].contexts!.ephemeral.provisioners!.second = { inputs: { name: "second" } };
+    const input = { config, root, repo: "example/repo", name: "original" };
+    const first = await prepareWorkspaceEnvironment({ ...input, allow_create: true });
+    const statePath = join(first.directory, "resources.json");
+    const before = JSON.parse(await readFile(statePath, "utf8"));
+    const replacement = await prepareWorkspaceEnvironment({ ...input, name: "renamed", resource_id: first.resource_id, reprovision: "example" });
+    const after = JSON.parse(await readFile(statePath, "utf8"));
+    expect(replacement.resource_id).toBe(first.resource_id);
+    expect(after.provisioners.example.outputs.name).toBe("original_com");
+    expect(after.provisioners.example.outputs.id).not.toBe(before.provisioners.example.outputs.id);
+    expect(after.provisioners.second).toEqual(before.provisioners.second);
+    expect(after.reprovision).toBeUndefined();
+    expect(await readFile(replacement.environment_file, "utf8")).toContain(after.provisioners.example.outputs.pat_file);
+    const archives = (await readdir(first.directory)).filter((name) => name.startsWith("completed-"));
+    expect(archives).toHaveLength(1);
+    const archive = JSON.parse(await readFile(join(first.directory, archives[0]), "utf8"));
+    expect(Object.keys(archive.provisioners)).toEqual(["example"]);
+    expect(archive.provisioners.example).toMatchObject({ status: "deactivated", outputs: before.provisioners.example.outputs });
+  });
+
+  it.each(["active", "unknown"])("refuses replacement of %s resources without changing receipts", async (remote) => {
+    const { config, root, dir } = await fixture();
+    const input = { config, root, repo: "example/repo", name: "test" };
+    const first = await prepareWorkspaceEnvironment({ ...input, allow_create: true });
+    const before = await readFile(join(first.directory, "resources.json"), "utf8");
+    await writeFile(join(dir, "remote"), remote);
+    await expect(prepareWorkspaceEnvironment({ ...input, reprovision: "example" })).rejects.toThrow("has not confirmed");
+    expect(await readFile(join(first.directory, "resources.json"), "utf8")).toBe(before);
+    expect(await readFile(join(dir, "calls"), "utf8")).toBe("create\ninspect\n");
+  });
+
+  it("retries interrupted creation in the same generation and blocks refresh and cleanup meanwhile", async () => {
+    const { config, root, dir } = await fixture();
+    const input = { config, root, repo: "example/repo", name: "test" };
+    const first = await prepareWorkspaceEnvironment({ ...input, allow_create: true });
+    await writeFile(join(dir, "fail-create"), "fail");
+    await expect(prepareWorkspaceEnvironment({ ...input, reprovision: "example" })).rejects.toThrow("create failed");
+    const pending = JSON.parse(await readFile(join(first.directory, "resources.json"), "utf8"));
+    expect(pending.reprovision.phase).toBe("creating");
+    await expect(readFile(first.environment_file)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(prepareWorkspaceEnvironment(input)).rejects.toThrow("Reprovision is pending");
+    await expect(cleanupWorkspaceResources(first.resource_id, root)).rejects.toThrow("pending reprovision");
+    await rm(join(dir, "fail-create"));
+    await prepareWorkspaceEnvironment({ ...input, reprovision: "example" });
+    const final = JSON.parse(await readFile(join(first.directory, "resources.json"), "utf8"));
+    expect(final.provisioners.example.generation).toBe(pending.provisioners.example.generation);
+    expect((await readdir(first.directory)).filter((name) => name.startsWith("completed-"))).toHaveLength(1);
+    expect(await readFile(join(dir, "calls"), "utf8")).toBe("create\ninspect\ndelete\ncreate\ncreate\n");
+  });
+
+  it("retries failed environment rendering without creating another replacement", async () => {
+    const { config, root, dir } = await fixture();
+    const input = { config, root, repo: "example/repo", name: "test" };
+    const first = await prepareWorkspaceEnvironment({ ...input, allow_create: true });
+    const context = config.repos["example/repo"].contexts!.ephemeral;
+    context.env!.BROKEN = "{{ missing.value }}";
+    await expect(prepareWorkspaceEnvironment({ ...input, reprovision: "example" })).rejects.toThrow("Unknown template");
+    expect(JSON.parse(await readFile(join(first.directory, "resources.json"), "utf8")).reprovision.phase).toBe("refreshing");
+    delete context.env!.BROKEN;
+    await prepareWorkspaceEnvironment({ ...input, reprovision: "example" });
+    expect(await readFile(join(dir, "calls"), "utf8")).toBe("create\ninspect\ndelete\ncreate\n");
+  });
+
+  it("retains old ownership when retirement fails and reuses the operation on retry", async () => {
+    const { config, root, dir } = await fixture();
+    const input = { config, root, repo: "example/repo", name: "test" };
+    const first = await prepareWorkspaceEnvironment({ ...input, allow_create: true });
+    const statePath = join(first.directory, "resources.json");
+    const before = JSON.parse(await readFile(statePath, "utf8"));
+    await writeFile(join(dir, "fail-delete"), "fail");
+    await expect(prepareWorkspaceEnvironment({ ...input, reprovision: "example" })).rejects.toThrow("delete failed");
+    const pending = JSON.parse(await readFile(statePath, "utf8"));
+    expect(pending.provisioners).toEqual(before.provisioners);
+    expect(pending.reprovision.phase).toBe("retiring");
+    await rm(join(dir, "fail-delete"));
+    await prepareWorkspaceEnvironment({ ...input, reprovision: "example" });
+    const after = JSON.parse(await readFile(statePath, "utf8"));
+    expect(after.provisioners.example.generation).toBe(pending.reprovision.generation);
+    expect(await readFile(join(dir, "calls"), "utf8")).toBe("create\ninspect\ndelete\ndelete\ncreate\n");
+    expect((await readdir(first.directory)).filter((name) => name.startsWith("completed-"))).toEqual([pending.reprovision.archive]);
+  });
   it("scopes cleanup to one provisioner and completes only after all are deactivated", async () => {
     const { config, root, dir } = await fixture();
     config.provisioners!.second = structuredClone(config.provisioners!.example);

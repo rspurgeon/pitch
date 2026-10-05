@@ -188,6 +188,13 @@ session ID for the agent's resume command. With
 same workspace instead. Closed workspaces remain tracked
 and can be resumed later.
 
+Resume and restart preserve the current checkout of an existing
+worktree registered to the configured repository, including switched
+branches and detached HEAD. The recorded workspace branch remains
+the fallback for recreating a missing worktree. Creating or adopting
+a workspace, and resuming with `--sync`, still require the expected
+branch.
+
 When `--sync` is requested for a PR workspace, Pitch
 fetches the latest PR head and fast-forwards the local
 branch before resuming. This is intentionally conservative:
@@ -345,10 +352,10 @@ working directory has already been changed to the worktree.
 
 ```
 # Start
-codex [user flags] --enable remote_control --cd {worktree_path} [prompt]
+codex [user flags] --no-daemon --enable remote_control --cd {worktree_path} [prompt]
 
 # Resume
-codex --enable remote_control resume {session_id}
+codex --no-daemon --enable remote_control resume {session_id}
 ```
 
 Session ID is discovered after launch from `~/.codex/sessions/`
@@ -356,6 +363,8 @@ or captured from exit output (`To continue this session, run
 codex resume {id}`).
 Pitch also disables Codex startup update checks for managed
 sessions.
+Managed sessions explicitly use embedded mode because their
+command-line configuration overrides prevent shared daemon use.
 
 **OpenCode:**
 
@@ -763,6 +772,25 @@ workspace record and leaves the shared worktree in place.
 **Returns:** Final closed workspace record
 
 ---
+
+## Reprovisioning workspace resources
+
+`pitch reprovision <provisioner> --workspace <name>` replaces one resource for a
+closed host workspace without changing its checkout, branch, or agent identity.
+It requires verified provider approval (`reprovisionable: true`), reconciles the
+old receipt through cleanup, and archives only that provisioner's old record.
+The Konnect inspector approves only remotely inactive organizations.
+
+Resource records may contain a `generation` directory name. Helpers receive
+that directory beneath their provisioner directory, isolating replacement
+receipts and credentials from previous generations. A persisted `reprovision`
+operation records the target, archive filename, generation, and phase:
+`retiring`, `creating`, or `refreshing`. Each phase is retryable. Normal refresh,
+resume, and cleanup refuse an unfinished operation. Replacement uses recorded
+commands and inputs, then renders current configuration with the new outputs.
+Successful rendering clears the marker. It never rolls back unrelated resources.
+
+See [workspace environments](workspace-environments.md) for recovery commands.
 
 ## Security Model
 

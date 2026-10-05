@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -14,6 +14,7 @@ export interface ResourceRecord {
   outputs?: Record<string, unknown>;
   created_at?: string;
   deactivated_at?: string;
+  generation?: string;
   cleanup?: {
     outcome: "deactivated" | "not_created";
     confirmed_at: string;
@@ -28,6 +29,12 @@ export interface ResourceState {
   workspace_name: string;
   context?: string;
   completed?: boolean;
+  reprovision?: {
+    name: string;
+    archive: string;
+    generation: string;
+    phase: "retiring" | "creating" | "refreshing";
+  };
   provisioners: Record<string, ResourceRecord>;
 }
 
@@ -38,6 +45,7 @@ export interface PrepareEnvironmentInput {
   context?: string;
   resource_id?: string;
   allow_create?: boolean;
+  reprovision?: string;
   root?: string;
 }
 
@@ -80,6 +88,15 @@ export async function readResourceState(directory: string, filename = "resources
           ![record.definition.create, record.definition.delete].every((cmd) => Array.isArray(cmd) && cmd.length > 0 && cmd.every((arg) => typeof arg === "string"))) {
         throw new Error("Invalid provisioner ownership record");
       }
+      if (record.generation !== undefined && !/^generation-[a-f0-9-]{36}$/.test(record.generation)) {
+        throw new Error("Invalid provisioner generation");
+      }
+    }
+    if (state.reprovision && (!Object.hasOwn(state.provisioners, state.reprovision.name) ||
+        !/^completed-\d+\.json$/.test(state.reprovision.archive) ||
+        !/^generation-[a-f0-9-]{36}$/.test(state.reprovision.generation) ||
+        !["retiring", "creating", "refreshing"].includes(state.reprovision.phase))) {
+      throw new Error("Invalid reprovision operation");
     }
     return state;
   }
@@ -160,7 +177,7 @@ async function invoke(
   const command = record.definition[action];
   if (!command?.length) throw new Error(`Provisioner ${name} has no ${action} command`);
   const env = preparedEnv ?? await provisionerEnvironment(record);
-  const resourceDir = join(directory, name);
+  const resourceDir = join(directory, name, ...(record.generation ? [record.generation] : []));
   if (action !== "inspect") await mkdir(resourceDir, { recursive: true, mode: 0o700 });
   const input = {
     version: 1,
@@ -221,6 +238,7 @@ export async function cleanupWorkspaceResources(id?: string, root?: string, prov
   await locked(directory, async () => {
     const state = await readResourceState(directory);
     if (!state || state.id !== id) throw new Error(`Missing or mismatched ownership record: ${directory}`);
+    if (state.reprovision) throw new Error("Finish the pending reprovision operation before cleanup");
     if (provisioner !== undefined && !Object.hasOwn(state.provisioners, provisioner)) {
       throw new Error(`Provisioner ${provisioner} has no resource in this workspace`);
     }
@@ -229,6 +247,48 @@ export async function cleanupWorkspaceResources(id?: string, root?: string, prov
     await saveState(directory, state);
     await rm(join(directory, "environment.sh"), { force: true });
   });
+}
+
+// The durable operation marker and separate helper directory allow retries at
+// every boundary without overwriting the old receipt or repeating registration.
+async function replaceResource(input: PrepareEnvironmentInput, directory: string, state: ResourceState): Promise<void> {
+  const name = input.reprovision!;
+  let record = state.provisioners[name];
+  if (!record) throw new Error(`Provisioner ${name} has no resource in this workspace`);
+  if (state.reprovision && state.reprovision.name !== name) throw new Error("Another reprovision operation is pending");
+  if (!state.reprovision) {
+    if (record.status === "creating") throw new Error("Cannot replace a resource with uncertain creation; reconcile its receipt first");
+    const command = input.config.provisioners?.[name]?.inspect ?? record.definition.inspect;
+    if (!command) throw new Error(`Provisioner ${name} must support verified inspection before reprovisioning`);
+    const inspection = await inspectWorkspaceResource(record, state, directory, name, command, true, false);
+    if (inspection.verified !== true || inspection.reprovisionable !== true) {
+      throw new Error(`Provisioner ${name} has not confirmed that its resource can be replaced; verify its remote state first`);
+    }
+    await provisionerEnvironment(record);
+    state.reprovision = { name, archive: `completed-${Date.now()}${Math.floor(Math.random() * 1000000).toString().padStart(6, "0")}.json`,
+      generation: `generation-${randomUUID()}`, phase: "retiring" };
+    await saveState(directory, state);
+  }
+  const operation = state.reprovision;
+  // A stale shell must not be able to reload the old generated environment.
+  await rm(join(directory, "environment.sh"), { force: true });
+  if (operation.phase === "retiring") {
+    await deactivateRecords(directory, state, name);
+    await saveState(directory, { version: 1, id: state.id, repo: state.repo, workspace_name: state.workspace_name,
+      context: state.context, completed: true, provisioners: { [name]: record } }, operation.archive);
+    record = { definition: record.definition, selection: record.selection, status: "creating",
+      created_at: new Date().toISOString(), generation: operation.generation };
+    state.provisioners[name] = record;
+    state.completed = false;
+    operation.phase = "creating";
+    await saveState(directory, state);
+  }
+  if (operation.phase === "creating") {
+    record.outputs = await invoke("create", record, state, directory, name);
+    record.status = "ready";
+    operation.phase = "refreshing";
+    await saveState(directory, state);
+  }
 }
 
 export async function prepareWorkspaceEnvironment(input: PrepareEnvironmentInput): Promise<PreparedEnvironment> {
@@ -242,6 +302,17 @@ export async function prepareWorkspaceEnvironment(input: PrepareEnvironmentInput
     if (contextName && !context) throw new Error(`Unknown context: ${contextName}`);
     let state = await readResourceState(directory);
     if (state && (state.id !== id || state.repo !== input.repo)) throw new Error("Resource ownership mismatch");
+    if (state?.reprovision && !input.reprovision) throw new Error(`Reprovision is pending; rerun pitch reprovision ${state.reprovision.name} --workspace ${input.name}`);
+    if (input.reprovision) {
+      if (input.allow_create) throw new Error("Reprovision cannot be combined with workspace creation");
+      if (!state || state.context !== contextName || !Object.hasOwn(context?.provisioners ?? {}, input.reprovision)) {
+        throw new Error("Reprovision requires the workspace's recorded provisioned context");
+      }
+      for (const [name, record] of Object.entries(state.provisioners)) {
+        if (name !== input.reprovision && record.status !== "ready") throw new Error(`Other provisioner ${name} is not ready`);
+      }
+      await replaceResource(input, directory, state);
+    }
     if (input.allow_create && state && !state.completed && Object.keys(state.provisioners).length) {
       throw new Error(`Resources already exist for this workspace identity: ${directory}. Resume the owning workspace or clean up its resources before creating another.`);
     }
@@ -315,6 +386,10 @@ export async function prepareWorkspaceEnvironment(input: PrepareEnvironmentInput
       }
       const environmentFile = join(directory, "environment.sh");
       await atomicWrite(environmentFile, environmentScript(bindings, environmentFile, input.name, [...privateNames]));
+      if (state.reprovision) {
+        delete state.reprovision;
+        await saveState(directory, state);
+      }
       const config = { ...input.config, repos: { ...input.config.repos, [input.repo]: {
         ...repo, ...bindings,
         contexts: { ...repo.contexts, ...(contextName ? { [contextName]: { ...context, env: {}, env_from_files: {} } } : {}) },

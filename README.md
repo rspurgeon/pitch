@@ -686,6 +686,19 @@ window. Pitch keeps the real PR head branch checked out
 and reuses an existing tracked worktree on that branch
 when possible.
 
+To replace a backend-deactivated organization while retaining its workspace:
+
+```sh
+# Run outside the workspace's tmux window.
+pitch close aigw-2-2
+pitch reprovision konnect_org --workspace aigw-2-2
+pitch resume aigw-2-2
+```
+
+Reprovision verifies replacement eligibility, archives the old organization,
+creates a new one, and regenerates the workspace configuration and credentials.
+See [recovery details](docs/workspace-environments.md#replacing-a-backend-deactivated-organization).
+
 ## Available Tools
 
 - **ping** — Returns a server status/config summary plus

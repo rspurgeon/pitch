@@ -36,6 +36,8 @@ export interface RestoreWorktreeParams {
   workspace_name: string;
   branch: string;
   allow_branch_reuse?: boolean;
+  /** Keep the current checkout; branch remains the fallback for a missing worktree. */
+  preserve_existing_checkout?: boolean;
 }
 
 export interface DeleteBranchIfEmptyParams {
@@ -397,6 +399,7 @@ async function ensureAdoptableWorktree(
   mainWorktree: string,
   worktreePath: string,
   branch: string,
+  preserveExistingCheckout = false,
 ): Promise<void> {
   const normalizedWorktreePath = await normalizePath(worktreePath);
   const registeredWorktrees = await listRegisteredWorktrees(mainWorktree);
@@ -412,7 +415,7 @@ async function ensureAdoptableWorktree(
   }
 
   const activeBranch = await currentBranch(worktreePath);
-  if (activeBranch !== branch) {
+  if (!preserveExistingCheckout && activeBranch !== branch) {
     throw new GitWorktreeError(
       "WORKTREE_EXISTS",
       `Existing path is not the expected worktree branch at ${worktreePath}`,
@@ -983,7 +986,9 @@ export async function restoreWorktree(
   const branch = await ensureValidBranchName(mainWorktree, params.branch);
 
   if (await pathExists(worktreePath)) {
-    await ensureAdoptableWorktree(mainWorktree, worktreePath, branch);
+    await ensureAdoptableWorktree(
+      mainWorktree, worktreePath, branch, params.preserve_existing_checkout,
+    );
 
     return {
       branch,

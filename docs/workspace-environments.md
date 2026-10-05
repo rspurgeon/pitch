@@ -134,6 +134,9 @@ until affected resources have been cleaned up.
 - `pitch refresh <name>` regenerates the workspace environment from current
   configuration and existing outputs, then prints its file path. It does not
   provision resources or change running shells or agents.
+- `pitch reprovision <provisioner> --workspace <name>` replaces a resource whose
+  inspector confirms it is eligible for replacement. The workspace must be
+  closed. Its checkout, branch, name, and saved agent session are retained.
 - `pitch show <name>` displays workspace details, including its environment-file
   path when available. Both commands support `--json`.
 
@@ -145,6 +148,52 @@ cleaned up; this prevents two workspaces from sharing an organization by acciden
 Completed receipts remain until their local retention expires. A filesystem
 lock prevents overlapping lifecycle commands; after a killed process, confirm
 it is no longer running before removing the `.lock` directory named in the error.
+
+## Replacing a backend-deactivated organization
+
+A backend can deactivate an organization while Pitch still records the workspace
+as active. `pitch list konnect_org --verify` checks remote state but does not
+change local ownership records. Refresh and resume never create a replacement.
+
+Run the following from a terminal outside the workspace being closed:
+
+```sh
+pitch close aigw-2-2
+pitch reprovision konnect_org --workspace aigw-2-2
+pitch resume aigw-2-2
+```
+
+The Konnect inspector permits replacement only after a successful remote check
+reports `inactive`. Active organizations, failed verification, and missing remote
+IDs are refused. No force bypass is provided. `.tech` organizations keep their
+recorded `dev` environment, organization name, owner, and invited-user inputs.
+
+Reprovision reconciles the old receipt through the recorded cleanup command,
+archives that provisioner's old outputs, creates a replacement in a separate
+helper directory, and regenerates configuration and environment bindings. Other
+provisioners remain unchanged. The command prints the environment-file path;
+`--json` returns it under `result`. Resume opens terminals and an agent with the
+new credentials. For an external terminal that needs the workspace environment:
+
+```sh
+source "$(pitch refresh aigw-2-2)"
+kcp aigw-2-2_tech
+kongctl get org
+```
+
+If replacement fails, rerun the same reprovision command after addressing the
+reported problem. A durable operation marker preserves the retirement, creation,
+or environment-refresh phase. Refresh, resume, and cleanup refuse pending
+reprovision operations. Creation retries reuse the same helper receipt; an
+uncertain registration without a saved response still requires reconciliation
+with the service team. Do not delete that receipt to force a retry.
+
+Inspectors opt into replacement by returning both `verified: true` and
+`reprovisionable: true` during verified inspection. This is a provider-specific
+decision, not a generic interpretation of a status string. The Konnect helper
+returns it only for remotely inactive organizations. Cleaning up an already
+inactive organization does not reset its retention policy; unknown retention
+remains unknown in the archived record.
 
 ## Local history retention
 

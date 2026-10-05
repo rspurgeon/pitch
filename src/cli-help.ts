@@ -7,7 +7,7 @@ interface CommandHelp {
 
 const options: Record<string, [string, string]> = {
   repo: ["--repo REPO", "GitHub owner/repository."],
-  workspace: ["--workspace NAME", "Workspace whose provisioner resources should be cleaned up."],
+  workspace: ["--workspace NAME", "Workspace whose provisioner resources should be managed."],
   issue: ["--issue N", "Create from a GitHub issue."],
   pr: ["--pr N", "Create from a GitHub pull request."],
   name: ["--name NAME", "Workspace name."],
@@ -80,6 +80,7 @@ const commands: Record<string, CommandHelp> = {
   delete: { summary: "Deactivate workspace resources and remove its worktree and saved record.", usage: ["delete <name> [options]"], options: ["name", "force", "delete-branch-if-empty", "json"], details: ["Shared worktrees remain while other workspaces reference them.", "Failed resource cleanup stops deletion and retains the ownership records."] },
   refresh: { summary: "Regenerate a workspace's environment and print the resulting file path.", usage: ["refresh <name>"], options: ["json"], details: ["Uses current configuration and existing provisioner outputs; creates no resources.", "To update the current shell: source \"$(pitch refresh NAME)\"."] },
   cleanup: { summary: "Deactivate one provisioner's resources for the selected workspace.", usage: ["cleanup <provisioner> --workspace NAME [options]"], options: ["workspace", "repo", "json"], details: ["Close an active workspace first. Other provisioners are left alone.", "Also supports interrupted creation without a workspace record."] },
+  reprovision: { summary: "Replace an inactive provisioned resource in an existing workspace.", usage: ["reprovision <provisioner> --workspace NAME"], options: ["workspace", "json"], details: ["Close the workspace first. The inspector must verify that replacement is allowed.", "Archives the old resource, creates its replacement, and prints the refreshed environment-file path.", "Preserves the checkout and saved agent session. Retry the same command after an interrupted attempt.", "Resume the workspace afterward, or source the printed file path in an external shell."] },
   prune: { summary: "Remove expired local provisioner history without contacting remote services.", usage: ["prune <provisioner> [options]"], options: ["repo", "dry-run", "json"], details: ["Preserves workspace-owned records and unresolved cleanup outcomes.", "Expiry uses the recorded retention period plus history_buffer_days."] },
   "status-right": { summary: "Render agent status for the tmux status bar.", usage: ["status-right [options]"], options: ["separator", "tmux-session", "tmux-window", "json"] },
   "waybar-status": { summary: "Render agent status for Waybar, optionally streaming updates.", usage: ["waybar-status [--watch]"], options: ["watch", "json"] },

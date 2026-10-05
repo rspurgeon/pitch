@@ -1,7 +1,7 @@
 import { buildHelpText, helpCommandNames } from "./cli-help.js";
 import { formatPruneResult, pruneProvisionerHistory } from "./provisioner-pruning.js";
 import { createInterface } from "node:readline/promises";
-import { cleanupWorkspaceProvisioner, refreshWorkspaceEnvironment } from "./workspace-maintenance.js";
+import { cleanupWorkspaceProvisioner, refreshWorkspaceEnvironment, reprovisionWorkspaceProvisioner } from "./workspace-maintenance.js";
 import { formatProvisionerInventory, listProvisionerInventory, provisionerCompletionNames } from "./provisioner-inventory.js";
 import { basename } from "node:path";
 import {
@@ -50,6 +50,7 @@ import { shellEscape } from "./shell.js";
 import { displayTmuxMenu, listTmuxSessions } from "./tmux.js";
 
 type CliVerb =
+  | "reprovision"
   | "refresh"
   | "show"
   | "cleanup"
@@ -118,6 +119,7 @@ interface JsonCommandResult {
 }
 
 export interface CliDependencies {
+  reprovisionWorkspaceProvisioner: typeof reprovisionWorkspaceProvisioner;
   listProvisionerInventory: typeof listProvisionerInventory;
   provisionerCompletionNames: typeof provisionerCompletionNames;
   refreshWorkspaceEnvironment: typeof refreshWorkspaceEnvironment;
@@ -147,6 +149,7 @@ export interface CliDependencies {
 }
 
 const defaultDependencies: CliDependencies = {
+  reprovisionWorkspaceProvisioner,
   listProvisionerInventory,
   provisionerCompletionNames,
   refreshWorkspaceEnvironment,
@@ -275,7 +278,7 @@ function hasImplicitCreateFlags(flags: Map<string, FlagValue>): boolean {
 function isCliVerbToken(token: string): token is CliVerb {
   return (
     token === "create" ||
-    token === "refresh" ||
+    token === "refresh" || token === "reprovision" ||
     token === "show" ||
     token === "cleanup" ||
     token === "prune" ||
@@ -1413,6 +1416,9 @@ function buildZshCompletionScript(): string {
     "    prune)",
     "      _arguments -s -S '1:provisioner:_pitch_provisioners' '--repo[Repository]:repo:_pitch_repos' '--dry-run[Preview local history removal]' '--json[Emit JSON]' '--help[Show help]'",
     "      ;;",
+    "    reprovision)",
+    "      _arguments -s -S '1:provisioner:_pitch_provisioners' '--workspace[Workspace name]:workspace:_pitch_workspaces' '--json[Emit JSON]' '--help[Show help]'",
+    "      ;;",
     "    cleanup)",
     "      _arguments -s -S '1:provisioner:_pitch_provisioners' '--workspace[Workspace name]:workspace:_pitch_cleanup_workspaces' '--repo[Repository]:repo:_pitch_repos' '--json[Emit JSON]' '--help[Show help]'",
     "      ;;",
@@ -1591,6 +1597,7 @@ function buildZshCompletionScript(): string {
     "      'list[List workspaces]' \\",
     "      'show[Show workspace details]' \\",
     "      'refresh[Refresh workspace environment]' \\",
+    "      'reprovision[Replace inactive workspace resource]' \\",
     "      'cleanup[Clean up a workspace provisioner]' \\",
     "      'prune[Remove expired local provisioner history]' \\",
     "      'get[Show a workspace]' \\",
@@ -1626,6 +1633,7 @@ function buildZshCompletionScript(): string {
     "        'list[List workspaces]' \\",
     "        'show[Show workspace details]' \\",
     "        'refresh[Refresh workspace environment]' \\",
+    "        'reprovision[Replace inactive workspace resource]' \\",
     "        'cleanup[Clean up a workspace provisioner]' \\",
     "        'prune[Remove expired local provisioner history]' \\",
     "        'get[Show a workspace]' \\",
@@ -1808,6 +1816,20 @@ async function executeCommand(
       return {
         command: parsed.verb,
         result: await dependencies.refreshWorkspaceEnvironment(parsed.positionals[0], await dependencies.loadConfig()),
+        warnings: [],
+      };
+    }
+    case "reprovision": {
+      const workspace = readStringFlag(parsed.flags, "workspace");
+      if (parsed.positionals.length !== 1 || !workspace) {
+        throw new Error("Usage: pitch reprovision <provisioner> --workspace NAME");
+      }
+      for (const flag of parsed.flags.keys()) {
+        if (!["workspace", "json"].includes(flag)) throw new Error(`Option --${flag} is not supported for reprovision`);
+      }
+      return {
+        command: parsed.verb,
+        result: await dependencies.reprovisionWorkspaceProvisioner(parsed.positionals[0], workspace, await dependencies.loadConfig()),
         warnings: [],
       };
     }

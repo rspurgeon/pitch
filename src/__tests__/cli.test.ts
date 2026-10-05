@@ -132,6 +132,7 @@ function makeDependencies(
     listProvisionerInventory: vi.fn<CliDependencies["listProvisionerInventory"]>(async (input) => ({ kind: "provisioner_inventory", provisioner: input.provisioner, verify: input.verify === true, items: [], warnings: [] })),
     provisionerCompletionNames: vi.fn(async () => ({ provisioners: [], workspaces: [] })),
     refreshWorkspaceEnvironment: vi.fn(async () => "/example/environment.sh"),
+    reprovisionWorkspaceProvisioner: vi.fn(async () => "/example/environment.sh"),
     cleanupWorkspaceProvisioner: vi.fn(async () => "example deactivated"),
     pruneProvisionerHistory: vi.fn(async (input) => ({ dry_run: input.dry_run === true, items: [], warnings: [] })),
     getAgentsView: vi.fn(async (): Promise<AgentsView> => ({
@@ -351,7 +352,7 @@ describe("runCli", () => {
     // exercise dispatch with zsh's own array/index semantics.
     const prelude = 'compdef() { print -r -- "registered:$*"; }\n';
     const commands = ["create", "agents", "agents-popup", "jump", "agent-status", "agent-error", "list", "get", "show",
-      "refresh", "cleanup", "prune", "resume", "restart", "move", "rename", "close", "delete", "status-right", "waybar-status", "view", "completion", "help"];
+      "refresh", "reprovision", "cleanup", "prune", "resume", "restart", "move", "rename", "close", "delete", "status-right", "waybar-status", "view", "completion", "help"];
     const script = prelude + completion + '\n_arguments() { print -r -- "arguments:$*"; }\n' +
       '_pitch_complete_workspace_target() { return 1; }\n' +
       commands.map((command) => `words=(pitch ${command} ''); CURRENT=3; print -r -- 'command:${command}'; _pitch`).join("\n");
@@ -410,6 +411,22 @@ describe("runCli", () => {
     expect(await runCli(["refresh", "example"], dependencies)).toBe(0);
     expect(dependencies.refreshWorkspaceEnvironment).toHaveBeenCalledWith("example", expect.any(Object));
     expect(dependencies.stdoutBuffer.join("")).toBe("/example/environment.sh\n");
+  });
+
+  it("reprovisions a selected workspace resource and returns its environment path", async () => {
+    const dependencies = makeDependencies();
+    expect(await runCli(["reprovision", "konnect_org", "--workspace", "example", "--json"], dependencies)).toBe(0);
+    expect(dependencies.reprovisionWorkspaceProvisioner).toHaveBeenCalledWith("konnect_org", "example", expect.any(Object));
+    expect(JSON.parse(dependencies.stdoutBuffer.join(""))).toMatchObject({ command: "reprovision", result: "/example/environment.sh" });
+  });
+
+  it.each([
+    ["reprovision"], ["reprovision", "konnect_org"], ["reprovision", "konnect_org", "extra", "--workspace", "example"],
+    ["reprovision", "konnect_org", "--workspace", "example", "--force"],
+  ])("rejects invalid reprovision arguments %j", async (...args) => {
+    const dependencies = makeDependencies();
+    expect(await runCli(args, dependencies)).toBe(1);
+    expect(dependencies.reprovisionWorkspaceProvisioner).not.toHaveBeenCalled();
   });
 
   it.each([
