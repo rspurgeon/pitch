@@ -45,6 +45,17 @@ async function fixture() {
 }
 
 describe("provisioner inventory", () => {
+  it("distinguishes abandoned ownership from confirmed deactivation", async () => {
+    const f = await fixture();
+    const a = await f.add("abandoned", "deactivated");
+    a.state.provisioners.example.cleanup = { outcome: "abandoned", confirmed_at: "2026-09-15T00:00:00Z", reason: "Released intentionally" };
+    await writeFile(join(a.directory, "resources.json"), JSON.stringify(a.state));
+    expect((await listProvisionerInventory({ provisioner: "example" }, f.config, f.deps)).items).toEqual([]);
+    const result = await listProvisionerInventory({ provisioner: "example", all: true }, f.config, f.deps);
+    expect(result.items[0]).toMatchObject({ status: "abandoned", abandonment_reason: "Released intentionally", remote_state: null });
+    expect(formatProvisionerInventory(result)).toContain("abandoned");
+  });
+
   it("completes retained types and unfinished workspace names without invoking inspectors", async () => {
     const f = await fixture();
     await f.add("unfinished", "creating");

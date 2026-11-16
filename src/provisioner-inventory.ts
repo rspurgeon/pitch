@@ -22,7 +22,7 @@ export interface ProvisionerInventoryRow {
   repo: string;
   workspace: string;
   workspace_status: "active" | "closed" | "missing";
-  status: "active workspace" | "closed workspace" | "orphaned" | "needs attention" | "deactivated";
+  status: "active workspace" | "closed workspace" | "orphaned" | "needs attention" | "deactivated" | "abandoned";
   orphaned: boolean;
   lifecycle: "creating" | "ready" | "deactivated";
   name: string | null;
@@ -33,6 +33,7 @@ export interface ProvisionerInventoryRow {
   remote_state: string | null;
   verification: "not requested" | "verified" | "failed";
   inspection_error?: string;
+  abandonment_reason?: string;
 }
 
 export interface ProvisionerInventory {
@@ -186,12 +187,13 @@ export async function listProvisionerInventory(
       provisioner: input.provisioner, repo: state.repo,
       workspace: owner?.name ?? state.workspace_name,
       workspace_status: owner?.status ?? "missing",
-      status: completed ? "deactivated" : orphaned ? "orphaned" : record.status === "creating" ? "needs attention"
+      status: record.cleanup?.outcome === "abandoned" ? "abandoned" : completed ? "deactivated" : orphaned ? "orphaned" : record.status === "creating" ? "needs attention"
         : owner?.status === "closed" ? "closed workspace" : "active workspace",
       orphaned, lifecycle: record.status,
       name: null, id: null, environment: null,
       created_at: record.created_at ?? null, deactivated_at: record.deactivated_at ?? null,
       remote_state: null, verification: "not requested",
+      ...(record.cleanup?.outcome === "abandoned" ? { abandonment_reason: record.cleanup.reason } : {}),
     };
     const definition = Object.hasOwn(config.provisioners ?? {}, input.provisioner)
       ? config.provisioners?.[input.provisioner] : undefined;

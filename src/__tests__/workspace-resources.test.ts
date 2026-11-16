@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, writeFile, rm, stat, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm, stat, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import { stringify, parse } from "yaml";
 import { loadConfig } from "../config.js";
 import { environmentScript, mergeEnvironment } from "../workspace-environment.js";
 import { cleanupWorkspaceResources, prepareWorkspaceEnvironment, renderTemplate } from "../workspace-resources.js";
+import { pruneProvisionerHistory } from "../provisioner-pruning.js";
 
 const exec = promisify(execFile);
 const directories: string[] = [];
@@ -57,6 +58,42 @@ if (process.argv[2]==='create') {
 }
 
 describe("workspace environments and resources", () => {
+  it("releases stuck ownership explicitly without invoking helpers or claiming remote cleanup", async () => {
+    const root = await temporary();
+    const id = "a".repeat(32);
+    const directory = join(root, id);
+    await mkdir(directory);
+    const path = join(directory, "resources.json");
+    const record = { definition: { create: ["must-not-run"], delete: ["must-not-run"],
+      env_from_files: { SECRET: "/must-not-read" } }, selection: { inputs: {} }, status: "ready" };
+    await writeFile(path, JSON.stringify({ version: 1, id, repo: "owner/repo", workspace_name: "stuck",
+      provisioners: { example: record, other: record } }));
+    await mkdir(join(directory, "example"));
+    await writeFile(join(directory, "example", "receipt.json"), "ownership receipt");
+    await writeFile(join(directory, "environment.sh"), "old environment");
+    await expect(cleanupWorkspaceResources(id, root, "example", " ")).rejects.toThrow("reason");
+    await expect(cleanupWorkspaceResources(id, root, undefined, "reason")).rejects.toThrow("one provisioner");
+    await cleanupWorkspaceResources(id, root, "example", "Confirmed gone by service team");
+    const first = JSON.parse(await readFile(path, "utf8"));
+    expect(first.provisioners.example).toMatchObject({ status: "deactivated",
+      cleanup: { outcome: "abandoned", reason: "Confirmed gone by service team", confirmed_at: expect.any(String) } });
+    expect(first.provisioners.example.deactivated_at).toBeUndefined();
+    expect(first.provisioners.other).toEqual(record);
+    expect(first.completed).toBe(false);
+    await expect(readFile(join(directory, "environment.sh"))).rejects.toMatchObject({ code: "ENOENT" });
+    await cleanupWorkspaceResources(id, root, "example", "Second attempt");
+    expect(JSON.parse(await readFile(path, "utf8")).provisioners.example).toEqual(first.provisioners.example);
+    await cleanupWorkspaceResources(id, root, "other", "Explicit local release");
+    // A subsequent delete skips both helpers, even with inaccessible credentials.
+    await cleanupWorkspaceResources(id, root);
+    expect(JSON.parse(await readFile(path, "utf8")).completed).toBe(true);
+    const config = await loadConfig(join(root, "absent.yaml"));
+    const pruned = await pruneProvisionerHistory({}, config, { root,
+      listWorkspaceRecords: async () => [], now: () => Date.now() + 8 * 86400000 });
+    expect(pruned.items.map((item) => item.status)).toEqual(["pruned", "pruned"]);
+    await expect(readdir(directory)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("replaces only the selected inactive resource, archives its identity, and refreshes credential paths", async () => {
     const { config, root } = await fixture();
     config.provisioners!.second = structuredClone(config.provisioners!.example);

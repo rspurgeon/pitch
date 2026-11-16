@@ -15,10 +15,13 @@ export interface ResourceRecord {
   created_at?: string;
   deactivated_at?: string;
   generation?: string;
+  // Local history expiry is separate from evidence of remote deletion.
+  local_history_started_at?: string;
   cleanup?: {
-    outcome: "deactivated" | "not_created";
+    outcome: "deactivated" | "not_created" | "abandoned";
     confirmed_at: string;
     retention_days?: number;
+    reason?: string;
   };
 }
 
@@ -192,7 +195,8 @@ async function invoke(
       env, timeout: record.definition.timeout_ms ?? 120000, maxBuffer: 1024 * 1024,
     }, (error, stdout) => {
       // Helpers must not expose secrets through diagnostics. Do not forward arbitrary stdout/stderr.
-      if (error) reject(new Error(`Provisioner ${name} ${action} failed. State retained at ${resourceDir}; inspect its receipt before retrying.`));
+      if (error) reject(new Error(`Provisioner ${name} ${action} failed. State retained at ${resourceDir}; inspect its receipt before retrying.` +
+        (action === "delete" ? ` Run pitch list ${name} --verify for diagnostics. To release local ownership without confirming remote deletion, close the workspace and run pitch cleanup ${name} --workspace ${state.workspace_name} --abandon 'REASON'.` : "")));
       else resolveOutput(stdout);
     });
     child.stdin?.on("error", () => {});
@@ -232,7 +236,10 @@ async function deactivateRecords(directory: string, state: ResourceState, provis
   }
 }
 
-export async function cleanupWorkspaceResources(id?: string, root?: string, provisioner?: string): Promise<void> {
+export async function cleanupWorkspaceResources(id?: string, root?: string, provisioner?: string, abandonReason?: string): Promise<void> {
+  if (abandonReason !== undefined && (!provisioner || !abandonReason.trim() || abandonReason.length > 1000)) {
+    throw new Error("Abandonment requires one provisioner and a reason of 1–1000 characters");
+  }
   if (!id) return;
   const directory = resourceDirectory(id, root);
   await locked(directory, async () => {
@@ -242,7 +249,18 @@ export async function cleanupWorkspaceResources(id?: string, root?: string, prov
     if (provisioner !== undefined && !Object.hasOwn(state.provisioners, provisioner)) {
       throw new Error(`Provisioner ${provisioner} has no resource in this workspace`);
     }
-    await deactivateRecords(directory, state, provisioner);
+    if (abandonReason !== undefined) {
+      const record = state.provisioners[provisioner!];
+      // A durable release, not evidence that the remote resource was deleted.
+      // Keep the first reason/time on retries so retention cannot slide forever.
+      if (record.cleanup?.outcome !== "abandoned") {
+        record.status = "deactivated";
+        record.cleanup = { outcome: "abandoned", confirmed_at: new Date().toISOString(), reason: abandonReason.trim() };
+        await saveState(directory, state);
+      }
+    } else {
+      await deactivateRecords(directory, state, provisioner);
+    }
     state.completed = Object.values(state.provisioners).every((record) => record.status === "deactivated");
     await saveState(directory, state);
     await rm(join(directory, "environment.sh"), { force: true });

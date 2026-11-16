@@ -224,16 +224,47 @@ For the Konnect helper's one-day retention, local history expires eight days
 after confirmed cleanup. Explicitly confirmed never-created resources use the
 buffer alone. This is local history expiry, not proof of remote deletion.
 
-Pruning preserves active resources, uncertain outcomes, records with missing
-cleanup evidence or retention, and current records referenced by any workspace.
+Pruning preserves active resources, uncertain outcomes, and current records
+referenced by any workspace.
 Old archived generations can expire while a newer generation remains active.
 Generated assets are removed only after all history in an unowned directory
 expires. Provisioning, cleanup, and pruning share the same per-directory lock.
 Dry runs create no locks and change no files.
 
-Older records without structured cleanup evidence remain listed as retained,
-with the reason shown by `pitch prune`. They require reconciliation; Pitch does
-not guess their retention from names, missing IDs, or free-text notes.
+Completed records with missing cleanup evidence or unknown remote retention use
+a local history period of 30 days plus `history_buffer_days`. The clock starts
+at the cleanup confirmation or deactivation timestamp. If neither is valid, the
+first pruning run saves `local_history_started_at`. Dry runs preview that
+deadline without saving it. A known longer retention period is preserved.
+This applies to current and archived records,
+preserves workspace-owned records, and does not assert remote deletion.
+
+### Recovering stuck cleanup
+
+A failed token exchange, including HTTP 404, does not prove remote deletion.
+`pitch list konnect_org --verify` reports the failed phase. Retrying `cleanup`
+or `delete` uses the saved ownership record and command. If cleanup cannot be
+completed, explicitly release local ownership for one provisioner:
+
+```sh
+pitch cleanup konnect_org --workspace metering-and-billing-triage \
+  --abandon 'Organization unavailable; local ownership intentionally released'
+pitch delete metering-and-billing-triage
+pitch prune konnect_org --dry-run
+```
+
+Close an active workspace first. Abandonment makes no remote calls, requires a
+nonempty reason (at most 1000 characters), and records outcome `abandoned`, its
+timestamp, and the reason. Remote resources may remain; do not put credentials
+in the reason. `list --all` shows these records as `abandoned`, and JSON output
+includes `abandonment_reason`. Subsequent deletion skips the abandoned
+provisioner. Other provisioners still require cleanup.
+
+Abandoned history expires after `history_buffer_days` from the recorded release,
+once no workspace references it. Retries preserve the original reason and clock.
+Until then, its receipt and files remain available for investigation. Unresolved
+resources never expire automatically based on age; `prune` lists them with
+instructions for retrying cleanup or explicitly abandoning local ownership.
 
 All commands support zsh completion. Regenerate an installed completion file,
 or reload completion in the current terminal after updating Pitch:

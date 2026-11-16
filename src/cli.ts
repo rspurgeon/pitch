@@ -197,6 +197,7 @@ const BOOLEAN_FLAGS = new Set([
 ]);
 
 const STRING_FLAGS = new Set([
+  "abandon",
   "workspace",
   "additional-dir",
   "agent",
@@ -1420,7 +1421,7 @@ function buildZshCompletionScript(): string {
     "      _arguments -s -S '1:provisioner:_pitch_provisioners' '--workspace[Workspace name]:workspace:_pitch_workspaces' '--json[Emit JSON]' '--help[Show help]'",
     "      ;;",
     "    cleanup)",
-    "      _arguments -s -S '1:provisioner:_pitch_provisioners' '--workspace[Workspace name]:workspace:_pitch_cleanup_workspaces' '--repo[Repository]:repo:_pitch_repos' '--json[Emit JSON]' '--help[Show help]'",
+    "      _arguments -s -S '1:provisioner:_pitch_provisioners' '--workspace[Workspace name]:workspace:_pitch_cleanup_workspaces' '--repo[Repository]:repo:_pitch_repos' '--abandon[Release local ownership without remote cleanup]:reason:' '--json[Emit JSON]' '--help[Show help]'",
     "      ;;",
     "    create)",
     "      _arguments -s -S \\",
@@ -1835,16 +1836,21 @@ async function executeCommand(
     }
     case "cleanup": {
       const workspace = readStringFlag(parsed.flags, "workspace");
+      const abandonReason = readStringFlag(parsed.flags, "abandon");
+      if (abandonReason !== undefined && (!abandonReason.trim() || abandonReason.length > 1000)) {
+        throw new Error("--abandon requires a reason of 1–1000 characters");
+      }
       if (parsed.positionals.length !== 1 || !workspace) {
         throw new Error("Usage: pitch cleanup <provisioner> --workspace NAME [--repo owner/repo]");
       }
       for (const flag of parsed.flags.keys()) {
-        if (!["workspace", "repo", "json"].includes(flag)) throw new Error(`Option --${flag} is not supported for cleanup`);
+        if (!["workspace", "repo", "json", "abandon"].includes(flag)) throw new Error(`Option --${flag} is not supported for cleanup`);
       }
       return {
         command: parsed.verb,
         result: await dependencies.cleanupWorkspaceProvisioner(parsed.positionals[0], workspace,
-          await dependencies.loadConfig(), readStringFlag(parsed.flags, "repo")),
+          await dependencies.loadConfig(), readStringFlag(parsed.flags, "repo"),
+          ...(abandonReason !== undefined ? [abandonReason] : [])),
         warnings: [],
       };
     }

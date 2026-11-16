@@ -314,6 +314,19 @@ function makeDependencies(
 }
 
 describe("runCli", () => {
+  it("passes an explicit abandonment reason to scoped cleanup", async () => {
+    const dependencies = makeDependencies();
+    expect(await runCli(["cleanup", "konnect_org", "--workspace", "stuck", "--abandon", "Service confirmed deletion"], dependencies)).toBe(0);
+    expect(dependencies.cleanupWorkspaceProvisioner).toHaveBeenCalledWith("konnect_org", "stuck", expect.any(Object), undefined, "Service confirmed deletion");
+    expect(dependencies.deleteWorkspace).not.toHaveBeenCalled();
+  });
+
+  it.each([[], [""], ["   "]])("requires a nonempty reason for abandonment %j", async (...reason) => {
+    const dependencies = makeDependencies();
+    expect(await runCli(["cleanup", "konnect_org", "--workspace", "stuck", "--abandon", ...reason], dependencies)).toBe(1);
+    expect(dependencies.cleanupWorkspaceProvisioner).not.toHaveBeenCalled();
+  });
+
   it("previews local pruning and keeps the command read-only when --dry-run is passed", async () => {
     const dependencies = makeDependencies();
     expect(await runCli(["prune", "konnect_org", "--dry-run", "--repo", "kong/kongctl", "--json"], dependencies)).toBe(0);

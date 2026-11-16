@@ -36,6 +36,63 @@ async function fixture() {
 }
 
 describe("local provisioner history pruning", () => {
+  it("expires legacy completed history without inventing remote cleanup evidence", async () => {
+    const f = await fixture();
+    const old = await f.add({ cleanup: undefined, deactivated_at: "2026-08-01T00:00:00Z" });
+    const result = await pruneProvisionerHistory({}, f.config, f.deps);
+    expect(result.items[0]).toMatchObject({ status: "pruned", reason: "Local history retention elapsed; remote retention unknown" });
+    await expect(readdir(old.directory)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("starts a durable local retention clock for undated legacy records; previews never write", async () => {
+    const f = await fixture();
+    const old = await f.add({ cleanup: undefined });
+    const path = join(old.directory, "resources.json");
+    const before = await readFile(path, "utf8");
+    const preview = await pruneProvisionerHistory({ dry_run: true }, f.config, f.deps);
+    expect(preview.items[0].reason).toContain("2026-10-26");
+    expect(await readFile(path, "utf8")).toBe(before);
+    await pruneProvisionerHistory({}, f.config, f.deps);
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    expect(saved.provisioners.example.local_history_started_at).toBe("2026-09-19T00:00:00.000Z");
+    expect(saved.provisioners.example.cleanup).toBeUndefined();
+    const later = { ...f.deps, now: () => Date.parse("2026-10-26T00:00:00Z") };
+    expect((await pruneProvisionerHistory({}, f.config, later)).items[0].status).toBe("pruned");
+  });
+
+  it("expires abandoned history after the buffer, while preserving workspace ownership", async () => {
+    const f = await fixture();
+    await f.add({ cleanup: { outcome: "abandoned", confirmed_at: "2026-09-01T00:00:00Z", reason: "Confirmed externally" } });
+    const owned = await f.add({ cleanup: { outcome: "abandoned", confirmed_at: "2026-09-01T00:00:00Z", reason: "Confirmed externally" } });
+    f.owners.push({ resource_id: owned.id } as WorkspaceRecord);
+    const result = await pruneProvisionerHistory({}, f.config, f.deps);
+    expect(result.items.map((item) => item.status)).toEqual(["pruned", "retained"]);
+  });
+
+  it("never shortens known remote retention when repairing an incomplete timestamp", async () => {
+    const f = await fixture();
+    await f.add({ deactivated_at: "2026-08-01T00:00:00Z",
+      cleanup: { outcome: "deactivated", confirmed_at: "invalid", retention_days: 90 } });
+    const result = await pruneProvisionerHistory({}, f.config, f.deps);
+    expect(result.items[0].status).toBe("retained");
+    expect(result.items[0].reason).toContain("2026-11-06");
+  });
+
+  it("expires legacy archives while retaining current owned resources and files", async () => {
+    const f = await fixture();
+    const a = await f.add({ cleanup: undefined, deactivated_at: "2026-08-01T00:00:00Z" });
+    await writeFile(join(a.directory, "completed-123.json"), JSON.stringify(a.state));
+    a.state.provisioners.example = { ...a.record, status: "ready", cleanup: undefined };
+    await writeFile(join(a.directory, "resources.json"), JSON.stringify(a.state));
+    f.owners.push({ resource_id: a.id } as WorkspaceRecord);
+    const result = await pruneProvisionerHistory({}, f.config, f.deps);
+    expect(result.items[0].status).toBe("pruned");
+    expect(result.items[1]).toMatchObject({ status: "retained" });
+    expect(result.items[1].reason).toContain("Cleanup unconfirmed");
+    expect(await readFile(join(a.directory, "example", "receipt.json"), "utf8")).toBe("private-receipt");
+    expect(await readFile(join(a.directory, "environment.sh"), "utf8")).toBe("private-environment");
+  });
+
   it("previews without writing, then removes expired unowned history and assets", async () => {
     const f = await fixture();
     const a = await f.add();
@@ -60,7 +117,7 @@ describe("local provisioner history pruning", () => {
     const owned = await f.add();
     f.owners.push({ resource_id: owned.id, repo: "owner/repo", name: "renamed", status: "closed" } as WorkspaceRecord);
     const result = await pruneProvisionerHistory({}, f.config, f.deps);
-    expect(result.items).toHaveLength(4);
+    expect(result.items).toHaveLength(6);
     expect(result.items.every((item) => item.status === "retained")).toBe(true);
     expect(await readdir(f.root)).toHaveLength(6);
   });

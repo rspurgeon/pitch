@@ -49,6 +49,16 @@ describe("workspace maintenance", () => {
     expect(cleanupWorkspaceResources).toHaveBeenCalledWith(workspace.resource_id, undefined, "example");
   });
 
+  it("records explicit abandonment and still refuses active workspace abandonment", async () => {
+    expect(await cleanupWorkspaceProvisioner("example", "example", config, undefined, "Service confirmed deletion"))
+      .toContain("remote deletion unconfirmed");
+    expect(cleanupWorkspaceResources).toHaveBeenCalledWith(workspace.resource_id, undefined, "example", "Service confirmed deletion");
+    vi.mocked(cleanupWorkspaceResources).mockClear();
+    vi.mocked(readWorkspaceRecord).mockResolvedValue({ ...workspace, status: "active" });
+    await expect(cleanupWorkspaceProvisioner("example", "example", config, undefined, "reason")).rejects.toThrow("Close the workspace");
+    expect(cleanupWorkspaceResources).not.toHaveBeenCalled();
+  });
+
   it("recovers interrupted creation using an explicit repository", async () => {
     vi.mocked(readWorkspaceRecord).mockResolvedValue(null);
     vi.mocked(listWorkspaceRecords).mockResolvedValue([]);

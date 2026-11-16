@@ -2,7 +2,7 @@ import type { PitchConfig } from "./config.js";
 import { listWorkspaceRecords, readWorkspaceRecord, writeWorkspaceRecord } from "./workspace-state.js";
 import { cleanupWorkspaceResources, prepareWorkspaceEnvironment, resourceDirectory, workspaceResourceId } from "./workspace-resources.js";
 
-export async function cleanupWorkspaceProvisioner(provisioner: string, name: string, config: PitchConfig, repo?: string): Promise<string> {
+export async function cleanupWorkspaceProvisioner(provisioner: string, name: string, config: PitchConfig, repo?: string, abandonReason?: string): Promise<string> {
   const workspace = await readWorkspaceRecord(name);
   if (workspace && repo && workspace.repo !== repo) throw new Error(`Workspace ${name} belongs to ${workspace.repo}, not ${repo}`);
   const repoName = workspace?.repo ?? repo ?? config.defaults.repo;
@@ -11,6 +11,10 @@ export async function cleanupWorkspaceProvisioner(provisioner: string, name: str
   const owner = (await listWorkspaceRecords({ status: "all" })).find((entry) => entry.resource_id === id);
   if (owner && owner.name !== name) throw new Error(`Resources belong to workspace ${owner.name}; use its current name`);
   if (workspace?.status === "active") throw new Error("Close the workspace before cleaning up its resources");
+  if (abandonReason !== undefined) {
+    await cleanupWorkspaceResources(id, undefined, provisioner, abandonReason);
+    return `${provisioner} abandoned locally; remote deletion unconfirmed. Receipt retained at ${resourceDirectory(id)} until workspace deletion and history expiry.`;
+  }
   await cleanupWorkspaceResources(id, undefined, provisioner);
   return `${provisioner} deactivated; receipt retained at ${resourceDirectory(id)}`;
 }

@@ -24,11 +24,13 @@ interface PruneDependencies {
   listWorkspaceRecords: typeof listWorkspaceRecords;
 }
 
+const UNKNOWN_RETENTION_HISTORY_DAYS = 30;
+
 function expiration(record: ResourceRecord, buffer: number): number | undefined {
   const cleanup = record.cleanup;
-  if (!cleanup || !["deactivated", "not_created"].includes(cleanup.outcome)) return undefined;
+  if (!cleanup || !["deactivated", "not_created", "abandoned"].includes(cleanup.outcome)) return undefined;
   const confirmed = typeof cleanup.confirmed_at === "string" ? Date.parse(cleanup.confirmed_at) : NaN;
-  const retention = cleanup.outcome === "not_created" ? 0 : cleanup.retention_days;
+  const retention = cleanup.outcome === "not_created" || cleanup.outcome === "abandoned" ? 0 : cleanup.retention_days;
   if (!Number.isFinite(confirmed) || typeof retention !== "number" || !Number.isSafeInteger(retention) || retention < 0 ||
       !Number.isSafeInteger(buffer) || buffer < 0) return undefined;
   const expires = confirmed + (retention + buffer) * 86400000;
@@ -77,12 +79,35 @@ export async function pruneProvisionerHistory(
         if (input.repo && state.repo !== input.repo) continue;
         const current = filename === "resources.json";
         for (const [name, record] of Object.entries(state.provisioners)) {
-          if ((input.provisioner && name !== input.provisioner) || record.status !== "deactivated") continue;
+          if (input.provisioner && name !== input.provisioner) continue;
+          if (record.status !== "deactivated") {
+            result.items.push({ workspace: state.workspace_name, provisioner: name, record: join(directory, filename),
+              status: "retained", reason: `Cleanup unconfirmed; retry pitch cleanup ${name} --workspace ${state.workspace_name}, or explicitly release local ownership with --abandon REASON` });
+            continue;
+          }
           const buffer = config.provisioners?.[name]?.history_buffer_days ?? record.definition.history_buffer_days ?? 7;
-          const expires = expiration(record, buffer);
+          let expires = expiration(record, buffer);
+          const legacy = expires === undefined && (!record.cleanup || record.cleanup.outcome === "deactivated");
+          if (legacy && Number.isSafeInteger(buffer) && buffer >= 0) {
+            // A completed record can outlive unknown remote retention. This is
+            // a local history policy only; never synthesize cleanup evidence.
+            const candidates = [record.cleanup?.confirmed_at, record.deactivated_at, record.local_history_started_at];
+            const started = candidates.map((value) => value ? Date.parse(value) : NaN).find(Number.isFinite);
+            const baseline = started ?? deps.now();
+            if (started === undefined && !result.dry_run) {
+              record.local_history_started_at = new Date(baseline).toISOString();
+              await saveState(directory, state, filename);
+            }
+            const recordedRetention = record.cleanup?.retention_days;
+            const retention = typeof recordedRetention === "number" && Number.isSafeInteger(recordedRetention) && recordedRetention >= 0
+              ? Math.max(UNKNOWN_RETENTION_HISTORY_DAYS, recordedRetention) : UNKNOWN_RETENTION_HISTORY_DAYS;
+            const deadline = baseline + (retention + buffer) * 86400000;
+            if (Number.isFinite(deadline) && !Number.isNaN(new Date(deadline).getTime())) expires = deadline;
+          }
           const reason = current && owned ? "Workspace still references this record"
-            : expires === undefined ? "Missing cleanup evidence or retention period; reconcile before pruning"
-            : deps.now() < expires ? `Retained until ${new Date(expires).toISOString()}` : "Retention and buffer elapsed";
+            : expires === undefined ? "Invalid history retention metadata; inspect this record"
+            : deps.now() < expires ? `Retained until ${new Date(expires).toISOString()}${legacy ? " (local history policy; remote retention unknown)" : ""}`
+            : legacy ? "Local history retention elapsed; remote retention unknown" : "Retention and buffer elapsed";
           const eligible = !(current && owned) && expires !== undefined && deps.now() >= expires;
           const row: PruneResult["items"][number] = { workspace: state.workspace_name, provisioner: name,
             record: join(directory, filename), status: eligible ? result.dry_run ? "would prune" : "pruned" : "retained", reason };

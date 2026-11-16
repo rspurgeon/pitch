@@ -792,6 +792,32 @@ Successful rendering clears the marker. It never rolls back unrelated resources.
 
 See [workspace environments](workspace-environments.md) for recovery commands.
 
+## Local resource history and abandonment
+
+Completed resource history expires after the recorded remote retention plus
+`history_buffer_days` (default seven). Older deactivated records with missing
+evidence or unknown retention use a local history policy of 30 days plus the
+buffer, without inventing remote cleanup evidence. Expiry starts at the cleanup
+confirmation or deactivation timestamp; undated records persist a
+`local_history_started_at` on the first pruning run. A known longer retention
+period is preserved. Dry runs never write.
+Workspace-owned current records remain protected. Archived generations may
+expire independently. Generated assets are removed after all unowned history
+in their directory expires.
+
+`pitch cleanup <provisioner> --workspace <name> --abandon REASON` explicitly
+releases local ownership for a closed workspace or interrupted creation. It
+makes no remote calls and records `cleanup.outcome: abandoned`, a timestamp,
+and a required reason. Internally the record becomes terminal (`deactivated`)
+so future deletion skips the helper; inventory labels it `abandoned` and never
+treats the release as proof of remote deactivation. Other provisioners are
+unaffected. The original release time and reason survive retries. Abandoned
+history expires after the buffer once the workspace record is deleted.
+
+Failed cleanup, including token-exchange HTTP 404, never expires on age alone.
+Pruning reports unresolved records and their recovery command. Abandonment is
+explicit; normal deletion never silently releases unresolved remote resources.
+
 ## Security Model
 
 Pitch runs locally, bound to stdio. There is no network exposure.
